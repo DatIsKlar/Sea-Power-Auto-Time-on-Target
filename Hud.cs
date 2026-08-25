@@ -159,12 +159,103 @@ namespace AutoTOT
             Vector2 m = new Vector2(Input.mousePosition.x, Screen.height - Input.mousePosition.y);
             bool overNow = _win.Contains(m);
 
-            if (Input.GetMouseButtonDown(0)) _mouseDownOverUi = overNow;
-            bool held = Input.GetMouseButton(0);
-            if (!held) _mouseDownOverUi = false;
+            // Latch is button-agnostic: BOTH left and right drags rotate/pan the camera
+            // (CameraBase LeftMousePressed, FollowCamera RightMousePressed), so a fast
+            // right-drag over the panel must capture too.
+            bool anyDown = Input.GetMouseButtonDown(0) || Input.GetMouseButtonDown(1);
+            bool anyHeld = Input.GetMouseButton(0) || Input.GetMouseButton(1);
+            if (anyDown)
+            {
+                // Seed the held-drag latch generously: to press ON the panel the cursor was
+                // over it the frame before, so honour _lastOverUi even if this frame's rect
+                // sample glitches (a fast entry outruns the IMGUI-updated _win). A few px of
+                // margin covers a same-frame arrival with no prior hover frame.
+                Rect grab = new Rect(_win.x - 4f, _win.y - 4f, _win.width + 8f, _win.height + 8f);
+                _mouseDownOverUi = overNow || _lastOverUi || grab.Contains(m);
+            }
+            if (!anyHeld) _mouseDownOverUi = false;
 
-            bool over = overNow || (held && _mouseDownOverUi) || _resizing;
-            if (over != _lastOverUi) SetOverUi(over);
+            bool over = overNow || (anyHeld && _mouseDownOverUi) || _resizing;
+
+            // _isMouseOverUIWindow is a SINGLE global flag the game also writes from its own
+            // edge-triggered UI hit-testing (DM.cs, the test UIs), so it can be cleared mid-drag.
+            if (over)
+            {
+                if (anyHeld || _resizing)
+                {
+                    // Active drag — the only time the camera can move. Re-assert EVERY frame so
+                    // a game-clear never leaves even a one-frame gap for the camera to catch.
+                    SetOverUi(true);
+                }
+                else
+                {
+                    // Idle hover — assert only on desync (avoids the setter's per-frame
+                    // FindObjectsByType). A stray cleared frame here is harmless: the camera
+                    // needs a held button to move.
+                    bool gameHasUi = Singleton<MouseControlState>.InstanceExists()
+                        && Singleton<MouseControlState>.Instance.getState() == MouseControlState.State.UI;
+                    if (!_lastOverUi || !gameHasUi) SetOverUi(true);
+                }
+            }
+            else if (_lastOverUi)
+            {
+                SetOverUi(false);   // release once when we leave; let the game manage it again
+            }
+
+            DiagnoseDrag(m, overNow, anyHeld, over);
+        }
+
+        private bool _leakActive;
+
+        // Diagnostic: the camera moves whenever the mouse is held and the game's
+        // MouseControlState is NOT State.UI. So a "leak" is: button held + cursor over
+        // our panel (plus a margin) + state != UI. Log the full flag set when that
+        // happens (and on every mouse-down) so we can see exactly why capture failed.
+        // Gated behind the Debug/VerboseLogging config so normal play stays quiet.
+        private void DiagnoseDrag(Vector2 m, bool overNow, bool held, bool over)
+        {
+            if (!Coordinator.VerboseLog) return;
+
+            string state = "n/a";
+            bool exists = Singleton<MouseControlState>.InstanceExists();
+            if (exists) state = Singleton<MouseControlState>.Instance.getState().ToString();
+
+            bool hud = false;
+            try { hud = SeapowerUI.ViewModels.MainGameViewModel.GetHudVisible(); } catch { }
+
+            // Cursor over our panel with a small margin (the drag surface).
+            Rect grab = new Rect(_win.x - 4f, _win.y - 4f, _win.width + 8f, _win.height + 8f);
+            bool nearPanel = grab.Contains(m);
+
+            bool down = Input.GetMouseButtonDown(0);
+            bool up = Input.GetMouseButtonUp(0);
+            bool rHeld = Input.GetMouseButton(1);
+
+            // A leak: we're holding a mouse button over our panel but the game isn't in UI state.
+            bool leak = (held || rHeld) && nearPanel && state != "UI";
+
+            if (leak && !_leakActive)
+            {
+                _leakActive = true;
+                Bootstrap.Log.LogWarning(
+                    $"[AutoTOT][drag] LEAK STARTS — camera can move: state={state} " +
+                    $"L={held} R={rHeld} overNow={overNow} over={over} nearPanel={nearPanel} " +
+                    $"lastOverUi={_lastOverUi} downOverUi={_mouseDownOverUi} resizing={_resizing} " +
+                    $"hudVisible={hud} mcsExists={exists} cursor=({m.x:0},{m.y:0}) " +
+                    $"win=({_win.x:0},{_win.y:0},{_win.width:0},{_win.height:0})");
+            }
+            else if (!leak && _leakActive)
+            {
+                _leakActive = false;
+                Bootstrap.Log.LogWarning($"[AutoTOT][drag] leak ends — state={state} L={held} R={rHeld}");
+            }
+
+            if (down || up)
+                Bootstrap.Log.LogInfo(
+                    $"[AutoTOT][drag] {(down ? "DOWN" : "UP  ")} state={state} " +
+                    $"overNow={overNow} over={over} nearPanel={nearPanel} lastOverUi={_lastOverUi} " +
+                    $"downOverUi={_mouseDownOverUi} resizing={_resizing} hudVisible={hud} " +
+                    $"cursor=({m.x:0},{m.y:0}) win=({_win.x:0},{_win.y:0},{_win.width:0},{_win.height:0})");
         }
 
         private void SetOverUi(bool over)
