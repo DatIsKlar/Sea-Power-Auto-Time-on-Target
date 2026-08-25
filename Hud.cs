@@ -221,7 +221,29 @@ namespace AutoTOT
             GUILayout.EndHorizontal();
         }
 
+        private string _lastDrawError;
+
         private void DrawWindow(int id)
+        {
+            // Log-only guard: capture which panel draw threw (with a full stack), then
+            // re-throw so IMGUI behaviour is identical to before. Deduped by message so
+            // a per-frame throw doesn't flood the log.
+            try
+            {
+                DrawWindowInner(id);
+            }
+            catch (System.Exception e)
+            {
+                if (e.Message != _lastDrawError)
+                {
+                    _lastDrawError = e.Message;
+                    Bootstrap.Log.LogError($"[AutoTOT] HUD DrawWindow threw:\n{e}");
+                }
+                throw;
+            }
+        }
+
+        private void DrawWindowInner(int id)
         {
             Coordinator.CollectSalvos(_salvos);   // live engagement snapshot (used by header + list)
 

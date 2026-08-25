@@ -106,15 +106,38 @@ namespace AutoTOT
 
             LoadConfig();
 
+            // Forward uncaught Unity/game-side exceptions into the BepInEx log so a
+            // crash triggered while this mod is active is captured with a full stack,
+            // even when it fires inside the game's own code rather than ours.
+            Application.logMessageReceived -= OnUnityLog; // guard against double-subscribe
+            Application.logMessageReceived += OnUnityLog;
+
             Harmony = new Harmony(Guid);
-            Harmony.PatchAll(typeof(Bootstrap).Assembly);
+
+            // A null target here means the game's InsertEngageTask signature changed
+            // (e.g. after a game update) — PatchAll would then fail. Log it either way.
+            var patchTarget = AccessTools.Method(typeof(ObjectBase), nameof(ObjectBase.InsertEngageTask));
+            if (patchTarget == null)
+                Log.LogError("[AutoTOT] patch target ObjectBase.InsertEngageTask NOT found — the game version may be incompatible; patching will likely fail.");
+            else
+                Log.LogInfo($"[AutoTOT] patch target resolved: {patchTarget.DeclaringType?.FullName}.{patchTarget.Name}");
+
+            try
+            {
+                Harmony.PatchAll(typeof(Bootstrap).Assembly);
+            }
+            catch (Exception e)
+            {
+                Log.LogError($"[AutoTOT] Harmony PatchAll failed — mod will not function:\n{e}");
+                throw;
+            }
 
             GameObject pump = new GameObject("AutoTOTPump");
             UnityEngine.Object.DontDestroyOnLoad(pump);
             pump.AddComponent<Pump>();
             pump.AddComponent<Hud>();
 
-            Log.LogInfo($"Auto Time-on-Target v0.1.0 loaded (Enabled={Coordinator.Enabled}, Armed={Coordinator.Active}).");
+            Log.LogInfo($"Auto Time-on-Target v0.1.0 loaded (Enabled={Coordinator.Enabled}, Armed={Coordinator.Active}, Unity={Application.unityVersion}).");
         }
 
         private static void LoadConfig()
@@ -156,6 +179,16 @@ namespace AutoTOT
             _cfgDebounce.SettingChanged += (_, __) => ApplyConfig();
             _cfgMaxWindow.SettingChanged += (_, __) => ApplyConfig();
             _cfgVerbose.SettingChanged += (_, __) => ApplyConfig();
+        }
+
+        // Forwards uncaught Unity exceptions to the BepInEx log. Only LogType.Exception
+        // is relayed (real crashes / uncaught throws) to avoid drowning the log in the
+        // game's routine LogType.Error output. ManualLogSource does not route back
+        // through Debug.Log, so this cannot feed back on itself.
+        private static void OnUnityLog(string condition, string stackTrace, LogType type)
+        {
+            if (type != LogType.Exception) return;
+            Log.LogError($"[AutoTOT] Unity exception: {condition}\n{stackTrace}");
         }
 
         private static void ApplyConfig()
@@ -223,7 +256,7 @@ namespace AutoTOT
                     if (msg != _lastErrorMsg)
                     {
                         _lastErrorMsg = msg;
-                        Log.LogError($"[AutoTOT] coordinator tick error: {msg}");
+                        Log.LogError($"[AutoTOT] coordinator tick error:\n{e}");
                     }
                 }
             }

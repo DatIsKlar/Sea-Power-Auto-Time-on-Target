@@ -1,0 +1,45 @@
+[h1]Auto Time-on-Target[/h1]
+Missiles you fire at one target have flight times that differ by minutes, so they trickle in one after another and the target's defenses pick them off in order. This mod holds each launch and lets it go late enough that every warhead lands together. It handles a formation attacking one target, and it handles a single ship throwing several missile types at the same target.
+
+b][url=https://steamcommunity.com/sharedfiles/filedetails/?id=3380210757]Requires the Anchor Chain framework[/url][/b][ (subscribe to it as well, or the mod will not load).
+
+[h1]Install[/h1]
+[olist]
+[*]Subscribe here on the Workshop
+[*]Turn on the Mod in the game's Mods menu
+[*]Restart the game
+[/olist]
+
+[h1]Two ways to use it[/h1]
+[olist]
+[*][b]Planner panel (Alt+G).[/b] A window you can drag around & collapse. Pick missiles from one ship or the whole formation, read the live ETA & range on each row, set salvo sizes, then fire one coordinated strike. Weapons that can engage the selected target are shown.
+
+[*][b]Automatic mode (Alt+T).[/b] Arm it, then give normal attack orders. Launches sent at the same target inside a 0.75 second window get grouped & staggered to arrive together. Guns and one-off shots pass through untouched.
+[/olist]
+
+[h1]Hotkeys[/h1]
+[list]
+[*][b]Alt+G[/b] opens & closes the planner
+[*][b]Alt+T[/b] arms & disarms automatic coordination
+[/list]
+Both keys and the Alt modifier live in BepInEx/config/com.seapowermods.autotot.cfg. Set the modifier to None if you want single-key hotkeys.
+
+[h1]Rough edges worth knowing[/h1]
+[list]
+[*]A slow cruise missile on a long routed flight can land a few seconds late. In my testing an SM-6 lands within 1 second, while a Tomahawk on a roughly 9.5 minute cruise came in about 14 seconds late.
+[*]Orders group only when they hit the same target inside the collection window. Space them further apart & you get separate strikes.
+[/list]
+
+
+[h1]Hit a crash? Here's how to get me a useful log[/h1]
+If the mod crashes your game, I can't do much with "it crashed." I need the log, and there's a setting that makes the log actually say what happened. Turn it on before you reproduce the crash.
+[olist]
+[*]Launch the game once with the mod enabled so it writes its config file, then quit.
+[*]Open BepInEx/config/com.seapowermods.autotot.cfg in any text editor.
+[*]Under the [Debug] section, change VerboseLogging = false to VerboseLogging = true, and save.
+[*]Start the game & do whatever makes it crash.
+[*]Grab BepInEx/LogOutput.log from your Sea Power folder and attach it to a comment here, or open an issue on the GitHub page below. Tell me roughly what you were doing when it went down.
+[/olist]
+
+[hr][/hr]
+[i]Source & bug reports: https://github.com/DatIsKlar/Sea-Power-Auto-Time-on-Target[/i]

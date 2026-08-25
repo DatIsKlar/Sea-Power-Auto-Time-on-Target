@@ -1,3 +1,5 @@
+using System;
+using System.Reflection;
 using System.Collections.Generic;
 using SeaPower;
 using UnityEngine;
@@ -370,13 +372,17 @@ namespace AutoTOT
                 // iterations = 0: single-pass estimate. The precise iterative version (the game uses
                 // 8) is ~8-9x the sim work and only nudged the fast kinematic missile by ~3s while
                 // doing nothing for the low-kinematics cruise missile (which the game forces to a
-                // single pass anyway) — not worth the per-frame cost / stutter for a ~3s gain.
-                Missile.KinematicRangeResult kr = ap.MaxRangePrecise(unit, targetPos, targetVel, 0, evasive);
-                return (kr != null) ? kr.InterceptTime : -1f;   // InterceptTime < 0 => out of range
+                MethodInfo maxRangePreciseMethod = typeof(AmmunitionParameters).GetMethod("MaxRangePrecise", new Type[] { typeof(ObjectBase), typeof(Vector3), typeof(Vector3), typeof(int), typeof(bool) });
+                object krObj = maxRangePreciseMethod.Invoke(ap, new object[] { unit, targetPos, targetVel, 0, evasive });
+                if (krObj == null) return -1f;
+                var krType = krObj.GetType();
+                var interceptTimeProp = krType.GetField("InterceptTime");
+                float interceptTime = (float)interceptTimeProp.GetValue(krObj);
+                return interceptTime;
             }
             catch (System.Exception e)
             {
-                if (VerboseLog) Bootstrap.Log.LogWarning($"[AutoTOT] kinematic flight-time failed: {e.Message}");
+                if (VerboseLog) Bootstrap.Log.LogWarning($"[AutoTOT] kinematic flight-time failed: {e.GetType().Name}: {e.Message}");
                 return -1f;
             }
         }

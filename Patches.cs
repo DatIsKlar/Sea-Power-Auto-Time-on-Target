@@ -1,3 +1,4 @@
+using System;
 using HarmonyLib;
 using SeaPower;
 using UnityEngine;
@@ -30,18 +31,37 @@ namespace AutoTOT
         {
             if (Bypass) return true;
 
-            if (!Coordinator.TryIntercept(
-                    __instance, ammoId, targetObject,
-                    autoAttack, isFormationAttack, shotsToFire, priority))
+            try
             {
-                return true; // not a coordinated player group missile attack — run normally
-            }
+                if (!Coordinator.TryIntercept(
+                        __instance, ammoId, targetObject,
+                        autoAttack, isFormationAttack, shotsToFire, priority))
+                {
+                    return true; // not a coordinated player group missile attack — run normally
+                }
 
-            // Deferred. Hand back a valid (but un-queued) EngageTask so the caller's
-            // logging (which reads engageTask._uid) doesn't NRE. It is never added to
-            // the ship's task list; the real task is created later by the Coordinator.
-            __result = new EngageTask(ammoId, targetObject, __instance, shotsToFire, priority, autoAttack, isFormationAttack);
-            return false;
+                // Deferred. Hand back a valid (but un-queued) EngageTask so the caller's
+                // logging (which reads engageTask._uid) doesn't NRE. It is never added to
+                // the ship's task list; the real task is created later by the Coordinator.
+                __result = new EngageTask(ammoId, targetObject, __instance, shotsToFire, priority, autoAttack, isFormationAttack);
+                return false;
+            }
+            catch (Exception e)
+            {
+                // Log with the order context that pinpoints which launch broke, then
+                // re-throw so behaviour is unchanged (the game sees the same exception
+                // it would have seen without this mod's logging).
+                Bootstrap.Log.LogError(
+                    $"[AutoTOT] InsertEngageTask prefix threw for " +
+                    $"{Safe(() => __instance?.getUIDAndName())} -> {Safe(() => targetObject?.getUIDAndName())} " +
+                    $"(ammo={ammoId}, shots={shotsToFire}, formation={isFormationAttack}, auto={autoAttack}):\n{e}");
+                throw;
+            }
+        }
+
+        private static string Safe(Func<string> f)
+        {
+            try { return f() ?? "null"; } catch { return "?"; }
         }
     }
 }
