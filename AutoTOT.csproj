@@ -1,5 +1,9 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
+  <!-- Optional machine-local paths (GameDir / AnchorChainDll). Not shipped with the
+       mod; see README, "Build". -->
+  <Import Project="AutoTOT.local.props" Condition="Exists('AutoTOT.local.props')" />
+
   <PropertyGroup>
     <TargetFramework>netstandard2.1</TargetFramework>
     <AssemblyName>AutoTOT</AssemblyName>
@@ -10,13 +14,22 @@
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
     <Deterministic>true</Deterministic>
-    <!-- Path to the Sea Power install; override with -p:GameDir=... if it moves -->
-    <GameDir>/NEW-DRIVE/SteamLibrary/steamapps/common/Sea Power</GameDir>
+    <!-- Where the game + AnchorChain live. Resolution order: -p:GameDir/-p:AnchorChainDll,
+         AutoTOT.local.props, then the GAME_DIR / ANCHORCHAIN_DLL environment variables. -->
+    <GameDir Condition="'$(GameDir)' == ''">$(GAME_DIR)</GameDir>
     <Managed>$(GameDir)/Sea Power_Data/Managed</Managed>
     <BepInExCore>$(GameDir)/BepInEx/core</BepInExCore>
     <!-- AnchorChain chainloader (Steam Workshop item 3380210757) -->
-    <AnchorChainDll>/NEW-DRIVE/SteamLibrary/steamapps/workshop/content/1286220/3380210757/AnchorChain.dll</AnchorChainDll>
+    <AnchorChainDll Condition="'$(AnchorChainDll)' == ''">$(ANCHORCHAIN_DLL)</AnchorChainDll>
   </PropertyGroup>
+
+  <!-- Fail early with a helpful message instead of a wall of missing-reference errors. -->
+  <Target Name="CheckGamePaths" BeforeTargets="ResolveAssemblyReferences">
+    <Error Condition="'$(GameDir)' == ''"
+           Text="GameDir is not set. Point the build at your Sea Power install via -p:GameDir=&quot;/path/to/Sea Power&quot;, the GAME_DIR environment variable, or an AutoTOT.local.props file (see README, Build)." />
+    <Error Condition="'$(AnchorChainDll)' == ''"
+           Text="AnchorChainDll is not set. Point the build at the Anchor Chain workshop item's AnchorChain.dll via -p:AnchorChainDll=&quot;...&quot;, the ANCHORCHAIN_DLL environment variable, or AutoTOT.local.props (see README, Build)." />
+  </Target>
 
   <ItemGroup>
     <!-- BCL (Mono) -->

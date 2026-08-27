@@ -54,7 +54,7 @@ release condition re-evaluates `liveFlightTime` every tick; a `½·simStep`
 lookahead absorbs motion during the release frame and corrects time-compression's
 late-bias (simStep is measured in sim time, so pause adds no lookahead).
 
-## Release lead (half-span vs full-span)
+## Release lead: half-span vs full-span
 
 A launcher ripples N rounds over `(N−1)·interval` seconds; the release lead is how
 long BEFORE the coordinated impact that ripple must start
@@ -66,18 +66,18 @@ long BEFORE the coordinated impact that ripple must start
 | Grouped (`_maxGroupSize > 1`) | one convergent impact at the ripple's **trailing edge** | **full** span |
 
 Why grouped salvos land near the trailing edge: `MissileGroup.AdjustMembersVelocities`
-(MissileGroup.cs:106-141) applies ±40% speed clamps — the leader sheds up to 40% while
+(MissileGroup.cs:106-141) applies ±40% speed clamps: the leader sheds up to 40% while
 stragglers lag, and the farthest trailer gains up to 40%. The group cashes in together
 once formed (Missile.cs:839-842). The baseline is **convergent impact = last launch +
 that round's lone flight time**.
 
-### Group-drag correction (`groupDelay`)
+### Group-drag correction: `groupDelay`
 
 The baseline above under-predicts, because the leader spends a real interval throttled
-to 0.6× stage speed while the ripple forms — so the GROUP flies slower than the solo
+to 0.6× stage speed while the ripple forms, so the GROUP flies slower than the solo
 kinematic estimate. `FlightTime.GroupFormingDelay` adds a range-aware **τ_form** term,
 computed per shot from the game's OWN shot speed profile (`SimulateShotLinear`) plus the
-observed launch span — no per-type constants:
+observed launch span, with no per-type constants:
 
 ```
 P(t)      = cumulative distance from the sim speed profile
@@ -91,16 +91,16 @@ missile that has descended to slow final-flight by `2.5·P(span)` (short range) 
 Validated in-game (SS-N-19) to ~±2 s at mid/long range. `groupDelay` is 0 for non-grouped
 ammo (`_maxGroupSize ≤ 1`), so it never affects independent salvos.
 
-**Known limitation** (deferred — see `FUTURE-grouped-salvo-refinements.md`): at very short
+**Known limitation** (deferred; see `FUTURE-grouped-salvo-refinements.md`): at close
 range the terminal seeker trips before the group finishes forming (it cashes in near the
 LEADING edge), so the full-span trailing-edge assumption over-predicts and the salvo lands
-~10–20 s early. Salvos still converge; only very-short-range ETAs are affected.
+~10–20 s early. Salvos still converge; only close-range ETAs are affected.
 
 ## Observation anchoring
 
 The realized launch cadence of many launchers is produced by machinery no INI
-declares as a cadence field (per-cell hatch animations, engage-task reassignment) —
-e.g. the Kirov's SS-N-19 realizes ~3.9 s/round while its INI fire-rate implies
+declares as a cadence field (per-cell hatch animations, engage-task reassignment).
+The Kirov's SS-N-19 realizes ~3.9 s/round while its INI fire-rate implies
 1 s/round. Once launches are observed, measuring it is trivial. So:
 
 1. The batch's anchor (longest enroute incl. lead) releases first.
@@ -126,7 +126,7 @@ impact    = lastRound + liveKinematicEstimate − centering + groupDelay
 any launch is observed, so it can't use the measured cadence. To keep the right order
 leading, `LauncherFacts.Compute` floors the a-priori `ShotInterval` with the launcher's
 hatch-open animation duration (`max(declared, hatchOpenSeconds)`) for per-tube-hatch
-launchers that declare no cadence field — e.g. the SS-N-19's ~3 s shaft-hatch animation,
+launchers that declare no cadence field, e.g. the SS-N-19's ~3 s shaft-hatch animation,
 which its INI omits. This only RAISES an unset cadence, never overrides a declared one,
 so it's a pure fallback with no effect on launchers that set their timing.
 
@@ -136,7 +136,7 @@ tick until the ripple finalizes, so their unchanged release formula tracks reali
 ## Reload waves
 
 An order larger than the launcher's ready rounds fires in reload-separated waves
-(only when a magazine reserve exists — all-tubes-ready launchers like the Slava
+(only when a magazine reserve exists; all-tubes-ready launchers like the Slava
 stay one wave). The first wave carries the anchoring; later waves arrive
 `waveGap = readyRounds·interval + reloadGap` apart each, shown split out in the
 ENGAGEMENTS overview.
@@ -149,9 +149,9 @@ reflection, `iterations=0` single pass) and falls back to straight-line max spee
 only if the simulator declines (out of range). Those lookups are
 version-independent, so one DLL rides out game-version drift (the beta moved the result type
 from `Missile.KinematicRangeResult` to `MissileSimulator`); a lookup that a future
-build breaks degrades gracefully — the speed-profile sim then reports no profile and
+build breaks degrades gracefully: the speed-profile sim then reports no profile and
 `groupDelay` falls back to 0. Estimates are single-missile;
-grouped behaviour never enters here (see above). All estimates are cached 0.5 real
+grouped behaviour never enters here (the group-drag term handles it). All estimates are cached 0.5 real
 seconds per shooter/ammo/target (`TtlCache`) because the planner UI asks for every
 weapon row's ETA every OnGUI frame. Same caching for `LauncherFactsSource` (launcher
 cadence/ready rounds), which also sits on the UI path.
@@ -163,7 +163,7 @@ cadence/ready rounds), which also sits on the UI path.
 | `AnchorChainEntry.cs` | AnchorChain entry point (`[ACPlugin]`) |
 | `Bootstrap.cs` | Mod-menu gate, config, Harmony patching + DOTS shield install, pump/HUD lifecycle, Unity-exception forwarding |
 | `Patches.cs` | Harmony prefix on `ObjectBase.InsertEngageTask` (ThreadStatic `Bypass` flag) |
-| `DotsScanHardening.cs` | Multiplayer mission-load crash shield for the DOTS assembly scan (see below) |
+| `DotsScanHardening.cs` | Multiplayer mission-load crash shield for the DOTS assembly scan |
 | `Coordinator.cs` | The pipeline: batching, anchor selection, open-loop scheduling, release, fire |
 | `FlightTime.cs` | Kinematic flight-time estimation + TTL cache |
 | `LauncherFacts.cs` | Launcher cadence / ready rounds / reserve + TTL cache + reload-wave helpers |
@@ -173,7 +173,7 @@ cadence/ready rounds), which also sits on the UI path.
 | `GameUnits.cs` | Shared unit conversions (Unity units ↔ metres/nm/knots) |
 | `TtlCache.cs` | Tiny real-time TTL cache used by FlightTime and LauncherFacts |
 
-## Multiplayer crash shield (`DotsScanHardening`)
+## Multiplayer crash shield: `DotsScanHardening`
 
 Separate from the TOT pipeline: a defensive Harmony shield for a base-game crash on
 the multiplayer mission-load path. `PlottingTableSerializer.RecreateWorldUsingTemp`
@@ -188,14 +188,14 @@ Install is load-order- and version-independent:
 1. Resolve `Unity.Entities.TypeManager` (`AccessTools.TypeByName`); if the assembly
    isn't loaded yet, try `Assembly.Load("Unity.Entities")`, else register an
    `AppDomain.AssemblyLoad` hook and install the moment it loads.
-2. Discover and patch every static `IsAssemblyReferencing*(Assembly, ...)` method —
-   older builds have `IsAssemblyReferencingEntities(Assembly)`, the Unity 6 build
+2. Discover and patch every static `IsAssemblyReferencing*(Assembly, ...)` method.
+   Older builds have `IsAssemblyReferencingEntities(Assembly)`, the Unity 6 build
    additionally `IsAssemblyReferencingEntitiesOrUnityEngine(Assembly, out bool, out bool)`.
 3. Each gets a finalizer-only patch: a swallowed throw leaves the caller-side
    result/outputs at their defaults ("does not reference entities"), so the unnameable
    assembly is skipped and mission load continues. The throw is logged once.
 
-A missing target logs a warning and the mod continues unshielded — the TOT pipeline
+A missing target logs a warning and the mod continues unshielded; the TOT pipeline
 itself never depends on it.
 
 ## State lifecycle
@@ -212,11 +212,12 @@ itself never depends on it.
 clears all of the above. The HUD's per-frame row cache resets every frame; its
 checked/salvo selections prune dead ships every ~300 frames.
 
-## Grounding principle (design constraint — preserve)
+## Grounding principle
 
-The mod uses ONLY: the player's sensor track of the target, the weapon's declared
-performance (INI), and the game's own kinematic simulator — plus observation of the
-PLAYER'S OWN launch timing (user-approved ruling). It does NOT: learn per-type
-speeds at runtime, read own missiles' in-flight positions for guidance, use
-closure-rate feedback, or apply fitted constants. See
-`docs/ISSUE-grouped-salvo-convergence.md` for the history that produced this.
+Design constraint for all future pipeline work. The mod uses ONLY: the player's
+sensor track of the target, the weapon's declared performance (INI), and the game's
+own kinematic simulator, plus observation of the PLAYER'S OWN launch timing
+(user-approved ruling). It does NOT: learn per-type speeds at runtime, read own
+missiles' in-flight positions for guidance, use closure-rate feedback, or apply
+fitted constants. See `docs/ISSUE-grouped-salvo-convergence.md` for the history
+that produced this.

@@ -1,0 +1,7 @@
+<Project>
+  <!-- Machine-local build paths for this PC. Not shipped with the mod — see README, "Build". -->
+  <PropertyGroup>
+    <GameDir>/NEW-DRIVE/SteamLibrary/steamapps/common/Sea Power</GameDir>
+    <AnchorChainDll>/NEW-DRIVE/SteamLibrary/steamapps/workshop/content/1286220/3380210757/AnchorChain.dll</AnchorChainDll>
+  </PropertyGroup>
+</Project>

@@ -5,13 +5,13 @@ Coordinates missile launches so the whole salvo arrives at the target simultaneo
 multiple missile types** at the same target. Packaged as an **AnchorChain** mod: it
 appears in the in-game **Mods** menu like any other mod.
 
-- **TOT planner panel** (Alt+G) — a movable, collapsible window: hand-pick missiles
+- **TOT planner panel** (Alt+G), a movable, collapsible window: hand-pick missiles
   from one ship or the whole formation and fire them as a coordinated strike, with
   live ETA/range readouts, salvo steppers, reload warnings, and a live ENGAGEMENTS
   overview.
-- **Auto-coordination mode** (Alt+T, off by default) — intercepts your normal missile
+- **Auto-coordination mode** (Alt+T, off by default), intercepts your normal missile
   orders and holds/releases them so orders aimed at the same target arrive together.
-- Works for stock and modded missiles alike — all timing comes from the game's own
+- Works for stock and modded missiles alike. All timing comes from the game's own
   weapon data and shot simulator, no per-type tuning.
 
 ## Requirements
@@ -29,8 +29,8 @@ appears in the in-game **Mods** menu like any other mod.
 
 | Requirement | Notes |
 |---|---|
-| .NET SDK | Project targets `netstandard2.1`; developed and built with SDK 8 (installed at `~/.dotnet-sdk` on this machine) |
-| A Sea Power install | The build references the game's own DLLs in place: `Seapower-Scripts.dll`, `UnityEngine.*`, BCL — from `Sea Power_Data/Managed` |
+| .NET SDK | Project targets `netstandard2.1`; any recent SDK works (developed with SDK 8) |
+| A Sea Power install | The build references the game's own DLLs in place: `Seapower-Scripts.dll`, `UnityEngine.*`, BCL, all from `Sea Power_Data/Managed` |
 | BepInEx in that install | `BepInEx/core/BepInEx.dll` and `0Harmony.dll` |
 | `AnchorChain.dll` | From the Workshop item folder: `steamapps/workshop/content/1286220/3380210757/AnchorChain.dll` |
 
@@ -39,34 +39,49 @@ offline.
 
 ## Build
 
-`AutoTOT.csproj` resolves all references through three properties:
+`AutoTOT.csproj` references the game's DLLs in place, so the build needs two paths
+from you: your Sea Power install and the Anchor Chain chainloader DLL.
 
-| Property | Default on this machine | Resolves |
-|---|---|---|
-| `GameDir` | `/NEW-DRIVE/SteamLibrary/steamapps/common/Sea Power` | Game/Unity/BCL DLLs via `Sea Power_Data/Managed` |
-| `BepInExCore` | `$(GameDir)/BepInEx/core` | `BepInEx.dll`, `0Harmony.dll` |
-| `AnchorChainDll` | `steamapps/workshop/content/1286220/3380210757/AnchorChain.dll` | the chainloader |
+| Property | Points at |
+|---|---|
+| `GameDir` | Your Sea Power install folder (the build uses `Sea Power_Data/Managed` and `BepInEx/core` under it) |
+| `AnchorChainDll` | The Anchor Chain workshop item's DLL: `<steamapps>/workshop/content/1286220/3380210757/AnchorChain.dll` |
+
+Provide them in any of three ways (checked in this order):
+
+1. On the command line:
+
+   ```
+   dotnet build -c Release \
+     -p:GameDir="/path/to/Sea Power" \
+     -p:AnchorChainDll="/path/to/AnchorChain.dll"
+   ```
+
+2. As environment variables: `GAME_DIR` and `ANCHORCHAIN_DLL`.
+
+3. An optional `AutoTOT.local.props` file next to the csproj (machine-local, not
+   shipped), so repeated builds need no arguments:
+
+   ```xml
+   <Project>
+     <PropertyGroup>
+       <GameDir>/path/to/Sea Power</GameDir>
+       <AnchorChainDll>/path/to/AnchorChain.dll</AnchorChainDll>
+     </PropertyGroup>
+   </Project>
+   ```
+
+Then:
 
 ```
 cd AutoTOT
 dotnet build -c Release
 ```
 
-If your game or AnchorChain live elsewhere, override the paths:
+If `dotnet` is not on your PATH (e.g. a tarball install of the SDK), point
+`DOTNET_ROOT` and `PATH` at the SDK first.
 
-```
-dotnet build -c Release \
-  -p:GameDir="/path/to/Sea Power" \
-  -p:AnchorChainDll="/path/to/AnchorChain.dll"
-```
-
-If your .NET SDK is not on `PATH` (e.g. a private install in `~/.dotnet-sdk`):
-
-```
-export DOTNET_ROOT="$HOME/.dotnet-sdk" PATH="$HOME/.dotnet-sdk:$PATH"
-```
-
-Output: `bin/Release/AutoTOT.dll`. Building alone does not touch the game — that is
+Output: `bin/Release/AutoTOT.dll`. Building alone does not touch the game; that is
 the install step below.
 
 ## Install & enable
@@ -75,11 +90,13 @@ A local mod is any subfolder of `StreamingAssets/` containing an `_info.ini` + t
 DLL; it shows up in the in-game **Mods** menu and AnchorChain loads its DLL when
 enabled.
 
-Use the helper script (builds, stages `dist/`, installs):
+Use the helper script (builds, stages `dist/`, installs). The install destination is
+the `GAME_DIR` environment variable, falling back to `AutoTOT.local.props` if you
+have one:
 
 ```
 ./install.sh
-# or to a different install:  GAME_DIR="/path/to/Sea Power" ./install.sh
+# or explicitly:  GAME_DIR="/path/to/Sea Power" ./install.sh
 ```
 
 Or manually:
@@ -94,7 +111,7 @@ cp bin/Release/AutoTOT.dll "$DEST/AutoTOT.dll"
 
 Then: launch the game → **Mods** menu → enable **Auto Time-on-Target** →
 **fully restart the game**. Code mods are only chainloaded at process start;
-"applying" a mod change merely reloads the scene, so enabling or reordering mods
+clicking Apply only reloads the scene, so enabling or reordering mods
 without a full restart leaves the mod listed but inactive in-game.
 
 Confirm in `<Sea Power>/BepInEx/LogOutput.log`:
@@ -105,7 +122,7 @@ Confirm in `<Sea Power>/BepInEx/LogOutput.log`:
 
 **Keep exactly one copy installed.** If you are also subscribed to the Workshop
 version of this mod, AnchorChain finds two copies and loads only the first one it
-scans (log: `Attempted to load a duplicate plugin`) — so *which* build runs depends
+scans (log: `Attempted to load a duplicate plugin`), so *which* build runs depends
 on load order. Use either the local folder or the Workshop subscription, not both.
 
 The `dist/AutoTOT/` folder is exactly what you'd upload as a Steam Workshop item.
@@ -124,9 +141,9 @@ Both use the configurable modifier (`ToggleModifier`; set to `None` for single-k
 Starts minimized; expand via the ▸ chevron, drag it anywhere, resize the edges. It
 tracks your last-selected friendly ship as shooter (with a **This-ship /
 Whole-formation** toggle) and your last-selected enemy as target (fog-of-war-correct
-labels — no intel leakage). Rows list each ship's missiles with **live ETA/range**,
+labels, no intel leakage). Rows list each ship's missiles with **live ETA/range**,
 checkboxes, and salvo steppers. Weapon-target validation uses the game's own
-`DoesAmmoMatchTarget()`, so only missiles that can actually engage the selected
+`DoesAmmoMatchTarget()`, so only missiles that can engage the selected
 target are pickable. Salvos larger than the launcher's ready rounds show a
 ⚠ `needs reload` note and arrive in waves (shown in the overview).
 **FIRE — TIME ON TARGET** launches the selection coordinated; **FIRE NOW** launches
@@ -143,14 +160,14 @@ auto-attacks are never intercepted.
 
 ## How it works
 
-Short version — full detail with formulas in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+Short version; full detail with formulas in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 - **Flight times** come from the game's own kinematic shot simulator
   (`AmmunitionParameters.MaxRangePrecise`, invoked via reflection, `iterations=0`
   single pass), cached 0.5 real s per shooter/ammo/target; straight-line max speed
   only as a fallback.
 - Scheduling is **open-loop**: the impact time is fixed at FIRE, and each held shot
-  releases when its live flight-time estimate reaches the time-to-impact — shooter or
+  releases when its live flight-time estimate reaches the time-to-impact; shooter or
   target motion during the stagger is absorbed by re-evaluating every tick.
 - Multi-shot orders are **kept whole** (a single `InsertEngageTask(N)`, exactly like
   the game-UI path) and led by **half** their ripple span (independent salvos: centers
@@ -161,12 +178,12 @@ Short version — full detail with formulas in [`docs/ARCHITECTURE.md`](docs/ARC
   locks to the launcher's realized cadence instead of an INI promise.
 - **Group-drag correction** (`τ_form`): grouped missiles (e.g. SS-N-12/19) shed speed
   while their formation forms, arriving later than a solo estimate; a range-aware
-  delay computed from the game's own shot speed profile compensates — no per-type
+  delay computed from the game's own shot speed profile compensates, with no per-type
   constants.
 - **Reload waves**: orders larger than a launcher's ready rounds are predicted and
   displayed as separate waves with the reload gap between them.
 - **Multiplayer crash shield** (`DotsScanHardening.cs`): shields a base-game crash on
-  the multiplayer mission-load path — the DOTS world re-init scans every loaded
+  the multiplayer mission-load path. The DOTS world re-init scans every loaded
   assembly and throws on any whose name it cannot read (e.g. a mod's emitted dynamic
   assembly), which aborts the mission load. The shield patches the scan filter(s),
   auto-adapts to the installed Unity Entities version, and installs whenever
@@ -232,7 +249,7 @@ All settings take effect live when edited (BepInEx reloads the file; no restart 
   ~9.5-min cruise) because their routing adds distance the linear sim doesn't
   capture. Fast missiles (e.g. SM-6) land within ±1s.
 - Grouped-salvo group drag (e.g. SS-N-19, once ~20s late) is corrected by the
-  `τ_form` term and lands within ~±2s at mid/long range. Remaining: at **very short
+  `τ_form` term and lands within ~±2s at mid/long range. Remaining: at **close
   range** the terminal seeker trips before the group forms, so grouped salvos land
   ~10–20s early (they still converge). Deferred; see
   [`docs/FUTURE-grouped-salvo-refinements.md`](docs/FUTURE-grouped-salvo-refinements.md).
@@ -261,9 +278,9 @@ Everything interesting lands in `<Sea Power>/BepInEx/LogOutput.log`, prefixed
 | `anchored tgt: k/n launched over Xs` | ripple finalized; shared impact fixed |
 | `impact ... (flight Ns, final range m)` | verbose: where/when a missile ended |
 | `SHORTFALL ...` | **WARN**: fewer missiles launched than ordered against a live target (check ready/reserve numbers in the message) |
-| `DOTS scan hardening active: N scan method(s) shielded` | multiplayer crash shield installed — OK |
-| `DOTS scan hardening: Unity.Entities not loaded yet ...` | shield defers until DOTS loads — OK; a `target resolved` line follows later |
-| `DOTS assembly scan would have crashed on an unnameable assembly` | the shield absorbed the multiplayer mission-load crash — load continues |
+| `DOTS scan hardening active: N scan method(s) shielded` | multiplayer crash shield installed (OK) |
+| `DOTS scan hardening: Unity.Entities not loaded yet ...` | shield defers until DOTS loads (OK); a `target resolved` line follows later |
+| `DOTS assembly scan would have crashed on an unnameable assembly` | the shield absorbed the multiplayer mission-load crash; load continues |
 | `DOTS scan hardening target NOT found` | **WARN**: shield disabled (DOTS layout changed); the rest of the mod still works |
 | `AnchorChain: Attempted to load a duplicate plugin` | two copies of the mod are installed (local + Workshop); remove one |
 | `present but not enabled in the Mods menu — standing down` | mod is unticked in the menu |
@@ -271,6 +288,6 @@ Everything interesting lands in `<Sea Power>/BepInEx/LogOutput.log`, prefixed
 
 If the mod is enabled but does nothing in-game: **fully restart the game** (code mods
 only chainload at process start), and check for the `loaded` line above. The panel
-shows `— no missiles that can engage this target —` when the selected weapon types
+shows `(no missiles that can engage this target)` when the selected weapon types
 can't hit the selected target class (game's own `DoesAmmoMatchTarget`). Only
-player-issued orders are intercepted — AI auto-attacks never are.
+player-issued orders are intercepted; AI auto-attacks never are.
