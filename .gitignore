@@ -1,3 +1,8 @@
 # Build output
 bin/
 obj/
+
+# Local docs (not tracked)
+docs/FUTURE-grouped-salvo-refinements.md
+docs/ISSUE-grouped-salvo-convergence.md
+docs/PLAN-analytical-group-forming-model.md
