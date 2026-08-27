@@ -241,6 +241,7 @@ namespace AutoTOT
         private static void OnUnityLog(string condition, string stackTrace, LogType type)
         {
             if (type != LogType.Exception) return;
+            if (stackTrace == null || !stackTrace.Contains("AutoTOT")) return;
             Log.LogError($"[AutoTOT] Unity exception: {condition}\n{stackTrace}");
         }
 
