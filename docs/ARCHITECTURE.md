@@ -146,7 +146,11 @@ ENGAGEMENTS overview.
 `FlightTime.Estimate` asks the game's own kinematic simulator
 (`AmmunitionParameters.MaxRangePrecise` → `Missile.SimulateShotLinear`, invoked via
 reflection, `iterations=0` single pass) and falls back to straight-line max speed
-only if the simulator declines (out of range). Estimates are single-missile;
+only if the simulator declines (out of range). Those lookups are
+version-independent, so one DLL rides out game-version drift (the beta moved the result type
+from `Missile.KinematicRangeResult` to `MissileSimulator`); a lookup that a future
+build breaks degrades gracefully — the speed-profile sim then reports no profile and
+`groupDelay` falls back to 0. Estimates are single-missile;
 grouped behaviour never enters here (see above). All estimates are cached 0.5 real
 seconds per shooter/ammo/target (`TtlCache`) because the planner UI asks for every
 weapon row's ETA every OnGUI frame. Same caching for `LauncherFactsSource` (launcher
@@ -157,8 +161,9 @@ cadence/ready rounds), which also sits on the UI path.
 | File | Responsibility |
 |---|---|
 | `AnchorChainEntry.cs` | AnchorChain entry point (`[ACPlugin]`) |
-| `Bootstrap.cs` | Mod-menu gate, config, Harmony patching, pump/HUD lifecycle, Unity-exception forwarding |
+| `Bootstrap.cs` | Mod-menu gate, config, Harmony patching + DOTS shield install, pump/HUD lifecycle, Unity-exception forwarding |
 | `Patches.cs` | Harmony prefix on `ObjectBase.InsertEngageTask` (ThreadStatic `Bypass` flag) |
+| `DotsScanHardening.cs` | Multiplayer mission-load crash shield for the DOTS assembly scan (see below) |
 | `Coordinator.cs` | The pipeline: batching, anchor selection, open-loop scheduling, release, fire |
 | `FlightTime.cs` | Kinematic flight-time estimation + TTL cache |
 | `LauncherFacts.cs` | Launcher cadence / ready rounds / reserve + TTL cache + reload-wave helpers |
@@ -167,6 +172,31 @@ cadence/ready rounds), which also sits on the UI path.
 | `Hud.cs` (+ `.Render` `.Mouse` `.Styles` partials) | IMGUI planner panel: layout/data, drawing, pointer capture, styling |
 | `GameUnits.cs` | Shared unit conversions (Unity units ↔ metres/nm/knots) |
 | `TtlCache.cs` | Tiny real-time TTL cache used by FlightTime and LauncherFacts |
+
+## Multiplayer crash shield (`DotsScanHardening`)
+
+Separate from the TOT pipeline: a defensive Harmony shield for a base-game crash on
+the multiplayer mission-load path. `PlottingTableSerializer.RecreateWorldUsingTemp`
+re-runs the DOTS bootstrap (`DefaultWorldInitialization.Initialize`), which scans
+every AppDomain assembly through a `Unity.Entities.TypeManager.IsAssemblyReferencing*`
+filter that calls `Assembly.GetName()`. An assembly with an unreadable name (e.g. a
+mod's emitted dynamic assembly with a bad culture string) makes that throw and aborts
+the LoadMission coroutine.
+
+Install is load-order- and version-independent:
+
+1. Resolve `Unity.Entities.TypeManager` (`AccessTools.TypeByName`); if the assembly
+   isn't loaded yet, try `Assembly.Load("Unity.Entities")`, else register an
+   `AppDomain.AssemblyLoad` hook and install the moment it loads.
+2. Discover and patch every static `IsAssemblyReferencing*(Assembly, ...)` method —
+   older builds have `IsAssemblyReferencingEntities(Assembly)`, the Unity 6 build
+   additionally `IsAssemblyReferencingEntitiesOrUnityEngine(Assembly, out bool, out bool)`.
+3. Each gets a finalizer-only patch: a swallowed throw leaves the caller-side
+   result/outputs at their defaults ("does not reference entities"), so the unnameable
+   assembly is skipped and mission load continues. The throw is logged once.
+
+A missing target logs a warning and the mod continues unshielded — the TOT pipeline
+itself never depends on it.
 
 ## State lifecycle
 
