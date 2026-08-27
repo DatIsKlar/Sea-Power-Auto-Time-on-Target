@@ -172,7 +172,7 @@ missile that has descended to slow final-flight by `2.5·P(span)` (short range) 
 Validated in-game (SS-N-19) to ~±2 s at mid/long range. `groupDelay` is 0 for non-grouped
 ammo (`_maxGroupSize ≤ 1`), so it never affects independent salvos.
 
-**Known limitation** (deferred; see `plans/FUTURE-grouped-salvo-refinements.md`): at close
+**Known limitation** (deferred): at close
 range the terminal seeker trips before the group finishes forming (it cashes in near the
 LEADING edge), so the full-span trailing-edge assumption over-predicts and the salvo lands
 ~10–20 s early. Salvos still converge; only close-range ETAs are affected.
