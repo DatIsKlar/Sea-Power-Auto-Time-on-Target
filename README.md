@@ -31,38 +31,49 @@ strike. Features:
 - Fog-of-war-correct target labels (no intel leakage)
 - Only active inside a mission (nothing in the main menu)
 
-### Flight-time model
+### Coordination model (short version)
 
-Flight time comes from `AmmunitionParameters.MaxRangePrecise(...).InterceptTime`, which
-runs `Missile.SimulateShotLinear` — the game's own kinematic integration (boost, loft
-arc, drag, velocity bleed). Exact for any missile, stock or modded, with no per-type
-tuning. A straight-line max-speed fallback is used only if the simulator declines
-(out of range). Results are cached for 0.5 real seconds per shooter/ammo/target to
-avoid per-frame stutter in the planner UI.
+Scheduling is **open-loop**: the impact time is fixed at FIRE from the longest
+estimate, then refined live by **observation anchoring** — the batch's slowest order
+(the anchor) releases first, its *actual* launches are observed, and the shared
+impact time every other held order syncs to is rewritten every tick from the game's
+own launch timing. Each held shot releases when
+`timeLeft ≤ liveFlightTime + releaseLead + ½·simStep`.
 
-Scheduling is **open-loop**: the impact time is fixed at FIRE from the longest estimate;
-each held shot releases live at `impact − its own live flight time + 0.5 × simStep`
-lookahead (absorbs shooter/target motion during the stagger and corrects time-compression
-late-bias). No aim-lead — missiles home themselves.
+- **Flight times** come from the game's own kinematic simulator
+  (`MaxRangePrecise` → `SimulateShotLinear`), cached 0.5 real s per
+  shooter/ammo/target; straight-line max speed only as a fallback.
+- **Release lead**: independent salvos lead by half their ripple span (centers
+  arrivals); grouped salvos (fly in formation, e.g. SS-N-12/19) lead by the full
+  span because the group's convergent impact lands at the ripple's trailing edge.
+- **Group-drag correction**: a grouped salvo's leader throttles to 0.6× speed while
+  the group forms, so it arrives later than the solo estimate. A range-aware `τ_form`
+  term (`FlightTime.GroupFormingDelay`) adds this delay, computed per shot from the
+  game's own speed profile — no per-type constants (see `docs/ARCHITECTURE.md`).
+- **Reload waves**: orders larger than the ready rounds arrive in waves, shown
+  split out in the ENGAGEMENTS overview.
 
-### Salvo interval handling
+Full detail with formulas and the why: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
-When firing multiple missiles of the same type from one ship, the launcher physically fires
-them one at a time with a per-launcher interval (from the game's `WeaponParameters`:
-`max(60/fireRate, reloadTime)`, or `_salvoFireTime` for multi-shot salvos). The coordinator
-splits multi-shot orders into individual `Shots=1` intents with staggered impact times
-centered on the planned coordination time (mean-centered: for 3 missiles, the middle one
-arrives at the planned time). Each ship's launcher interval is read independently so
-different ship types still synchronize. The ENGAGEMENTS overview shows the arrival spread
-(e.g. `arrival 2m30s ±8s`) when it exceeds 2 seconds.
+## Code organization
 
-### Weapon-target compatibility
+| File | Purpose |
+|---|---|
+| `AnchorChainEntry.cs` | AnchorChain entry point (`[ACPlugin]` + `IAnchorChainMod`) |
+| `Bootstrap.cs` | Mod-menu gate, Harmony patching, config, pump/HUD lifecycle |
+| `Patches.cs` | Harmony prefix on `ObjectBase.InsertEngageTask` |
+| `Coordinator.cs` | Core pipeline: batching, anchor selection, open-loop scheduling, release, fire |
+| `FlightTime.cs` | Kinematic flight-time estimation + cache |
+| `LauncherFacts.cs` | Launcher cadence/ready rounds/reserve + cache, reload-wave helpers |
+| `LaunchDiagnostics.cs` | Impact reports + launch shortfall detection; feeds anchor observations |
+| `EngagementBoard.cs` | Per-target engagement state behind the HUD's ENGAGEMENTS list |
+| `Hud.cs` (+`Hud.Render.cs`, `Hud.Mouse.cs`, `Hud.Styles.cs`) | IMGUI planner panel: layout/data, drawing, pointer capture, styling |
+| `GameUnits.cs` | Shared unit conversions (Unity units ↔ metres/nm/knots) |
+| `TtlCache.cs` | Tiny real-time TTL cache used on the per-frame UI paths |
 
-Validated via `ObjectBase.DoesAmmoMatchTarget()` — the game's definitive check that validates
-weapon type exclusions, `_targetType`/`_secondaryTargetType` matching (AAW vs ASuW vs ASW),
-`_canNotAttackTypes` blacklist, land attack capability, and situational restrictions (ARH
-signal strength, TV visual range). Incompatible weapons are hidden from the planner and
-rejected in auto-intercept mode.
+Design history: `docs/ISSUE-grouped-salvo-convergence.md` (the grouped-salvo
+convergence problem and its resolution), `docs/PLAN-analytical-group-forming-model.md`
+(superseded approach, kept for the decompiled-mechanics analysis).
 
 ## Build
 
@@ -145,23 +156,40 @@ Grouping is **by target**, within the collection window:
 ## Known limitations
 
 - The kinematic simulator (`iterations=0`, single pass) slightly underestimates
-  flight time for low-kinematics cruise missiles (e.g. Tomahawk ~14s late on a
+  flight time for low-kinematics cruise missiles (e.g. Tomahawk ~a few s off on a
   ~9.5-min cruise) because their routing adds distance the linear sim doesn't
   capture. Fast missiles (e.g. SM-6) land within ±1s.
+- Grouped-salvo group drag (e.g. SS-N-19, once ~20s late) is now corrected by the
+  `τ_form` term and lands within ~±2s at mid/long range. Remaining: at **very short
+  range** the terminal seeker trips before the group forms, so grouped salvos land
+  ~10–20s early (they still converge). Deferred; see
+  `docs/FUTURE-grouped-salvo-refinements.md`.
 - Coordination groups by shared **target** within the collection window; orders
   spaced further apart form separate batches.
 - Coordinates **across** orders/missile types, not **within** one salvo: a single
-  order of N same-type missiles launches over the launcher's own salvo interval.
-- Once a missile is airborne, timing is not re-anchored to the in-flight leader.
-  The open-loop approach absorbs shooter/target motion during the stagger but
-  trusts the initial impact-time estimate.
+  order of N same-type missiles launches over the launcher's own salvo interval
+  (grouped salvos converge at the trailing edge; independent salvos are centered).
+- Held orders track the anchor's predicted impact until the anchor's ripple
+  completes; after that the impact time is final. A salvo ordered after the anchor
+  finalized joins a fresh batch with its own anchor.
 
-## Files
+## Troubleshooting
 
-| File | Purpose |
+Everything interesting lands in `<Sea Power>/BepInEx/LogOutput.log`, prefixed
+`[AutoTOT]`. Enable `VerboseLogging` for the full picture. Key lines:
+
+| Log line | Meaning |
 |---|---|
-| `AnchorChainEntry.cs` | AnchorChain entry point (`[ACPlugin]` + `IAnchorChainMod`) |
-| `Bootstrap.cs` | Mod-menu gate, Harmony patching, config, pump/HUD lifecycle |
-| `Coordinator.cs` | Core logic: batching, kinematic flight-time, open-loop scheduling |
-| `Hud.cs` | IMGUI planner panel (movable, collapsible, mission-gated) |
-| `Patches.cs` | Harmony prefix on `ObjectBase.InsertEngageTask` |
+| `queued A -> B` | an order was intercepted and is being held |
+| `coordinating N missile order(s)` | batch locked in, anchor chosen |
+| `launch ... (anchor)` | a held shot was released; shows est flight vs. impactAt |
+| `anchoring tgt: k/n launched` | anchor ripple being observed (also shown in the panel as `anchoring k/n`) |
+| `anchored tgt: k/n launched over Xs` | ripple finalized; shared impact fixed |
+| `impact ... (flight Ns, final range m)` | verbose: where/when a missile ended |
+| `SHORTFALL ...` | **WARN**: fewer missiles launched than ordered against a live target (check ready/reserve numbers in the message) |
+| `coordinator tick error` / `Unity exception` | something threw; report with the stack |
+
+Panel shows `— no missiles that can engage this target —` when the selected weapon
+types can't hit the selected target class (game's own `DoesAmmoMatchTarget`). If
+the mod loads but nothing is intercepted, check the panel's AUTO indicator and
+that the target orders are player-issued (AI auto-attacks are never intercepted).

@@ -1,6 +1,6 @@
 using System;
 using System.IO;
-using System.Linq;
+using System.Reflection;
 using BepInEx;
 using BepInEx.Configuration;
 using BepInEx.Logging;
@@ -18,6 +18,10 @@ namespace AutoTOT
     public static class Bootstrap
     {
         public const string Guid = "com.seapowermods.autotot";
+
+        // Mod version. Keep in sync with AutoTOT.csproj <Version> and the [ACPlugin]
+        // attribute in AnchorChainEntry.cs (which references this constant).
+        internal const string Version = "0.1.1";
 
         internal static ManualLogSource Log = BepInEx.Logging.Logger.CreateLogSource("AutoTOT");
         public static Harmony Harmony { get; private set; }
@@ -132,12 +136,61 @@ namespace AutoTOT
                 throw;
             }
 
+            // Shield the DOTS assembly scan (multiplayer mission-load crash). Done explicitly
+            // rather than via PatchAll: the exact target differs between Entities versions and
+            // Unity.Entities.dll may not be loaded yet at this point — Install handles both.
+            DotsScanHardening.Install(Harmony);
+
+            // Diagnostic for the multiplayer mission-load crash: DOTS re-init
+            // (PlottingTableSerializer.RecreateWorldUsingTemp) enumerates every AppDomain
+            // assembly and calls GetName() on each; one bad-culture assembly makes that throw
+            // and aborts mission load. Name any such assembly up front so the real culprit is
+            // identifiable even before the DOTS scan runs. DotsScanHardening then shields the
+            // actual scan so load survives regardless.
+            LogAssembliesThatFailGetName();
+
             GameObject pump = new GameObject("AutoTOTPump");
             UnityEngine.Object.DontDestroyOnLoad(pump);
             pump.AddComponent<Pump>();
             pump.AddComponent<Hud>();
 
-            Log.LogInfo($"Auto Time-on-Target v0.1.0 loaded (Enabled={Coordinator.Enabled}, Armed={Coordinator.Active}, Unity={Application.unityVersion}).");
+            Log.LogInfo($"Auto Time-on-Target v{Version} loaded (Enabled={Coordinator.Enabled}, Armed={Coordinator.Active}, Unity={Application.unityVersion}).");
+        }
+
+        // One-shot sweep mirroring what Unity's DOTS TypeManager does during multiplayer
+        // world re-init: call GetName() on every loaded assembly and report the ones that
+        // throw (the "Parameter name: name" / invalid-culture case). Purely diagnostic —
+        // never throws itself.
+        private static void LogAssembliesThatFailGetName()
+        {
+            try
+            {
+                int bad = 0;
+                foreach (Assembly asm in AppDomain.CurrentDomain.GetAssemblies())
+                {
+                    try
+                    {
+                        // The exact call DOTS makes; this is what throws on a bad-culture name.
+                        var _ = asm.GetName();
+                    }
+                    catch (Exception ge)
+                    {
+                        bad++;
+                        Log.LogWarning(
+                            $"[AutoTOT] Assembly with unreadable name ({DotsScanHardening.SafeIdentify(asm)}) " +
+                            $"— this is the kind that crashes the DOTS multiplayer world re-init. " +
+                            $"{ge.GetType().Name}: {ge.Message}");
+                    }
+                }
+                if (bad == 0)
+                    Log.LogInfo("[AutoTOT] AppDomain assembly-name sweep: all assemblies name cleanly at load time.");
+                else
+                    Log.LogWarning($"[AutoTOT] AppDomain assembly-name sweep: {bad} assembly(ies) fail GetName(); DOTS scan hardening will shield mission load.");
+            }
+            catch (Exception e)
+            {
+                Log.LogWarning($"[AutoTOT] assembly-name sweep skipped: {e.Message}");
+            }
         }
 
         private static void LoadConfig()
@@ -206,9 +259,12 @@ namespace AutoTOT
         /// <summary>Waits for the mod menu state to become readable, then loads or stands down.</summary>
         private sealed class ModMenuGate : MonoBehaviour
         {
+            // Give up waiting for the mod-menu state after this long and load anyway.
+            private const float GateDeadlineSeconds = 120f;
+
             private float _deadline;
 
-            private void Awake() => _deadline = Time.realtimeSinceStartup + 120f;
+            private void Awake() => _deadline = Time.realtimeSinceStartup + GateDeadlineSeconds;
 
             private void Update()
             {
