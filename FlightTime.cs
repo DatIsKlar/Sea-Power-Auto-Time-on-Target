@@ -102,6 +102,14 @@ namespace AutoTOT
 
         internal static void ClearCache() { _cache.Clear(); _profileCache.Clear(); }
 
+        internal static long TofHits => _cache.HitCount;
+        internal static long TofMisses => _cache.MissCount;
+        internal static long ProfileHits => _profileCache.HitCount;
+        internal static long ProfileMisses => _profileCache.MissCount;
+        internal static int TofCacheSize => _cache.Count;
+        internal static int ProfileCacheSize => _profileCache.Count;
+        internal static void ResetStats() { _cache.ResetStats(); _profileCache.ResetStats(); }
+
         // ---- Grouped-salvo forming delay (group-drag correction), range-aware tau_form model ----
         //
         // A grouped salvo's leader throttles to 0.6x its stage speed (MissileGroup.AdjustMembersVelocities

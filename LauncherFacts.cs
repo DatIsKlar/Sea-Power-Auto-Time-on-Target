@@ -69,6 +69,10 @@ namespace AutoTOT
         }
 
         internal static void ClearCache() => _cache.Clear();
+        internal static long CacheHits => _cache.HitCount;
+        internal static long CacheMisses => _cache.MissCount;
+        internal static int CacheSize => _cache.Count;
+        internal static void ResetStats() => _cache.ResetStats();
 
         private static Facts Compute(ObjectBase ship, string ammoId)
         {

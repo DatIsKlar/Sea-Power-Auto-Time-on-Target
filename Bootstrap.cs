@@ -45,6 +45,7 @@ namespace AutoTOT
         private static ConfigEntry<float> _cfgDebounce;
         private static ConfigEntry<float> _cfgMaxWindow;
         private static ConfigEntry<bool> _cfgVerbose;
+        private static ConfigEntry<bool> _cfgProfiling;
 
         public static void InitIfEnabled()
         {
@@ -220,6 +221,8 @@ namespace AutoTOT
                     new AcceptableValueRange<float>(0.25f, 20.0f)));
             _cfgVerbose = _config.Bind("Debug", "VerboseLogging", false,
                 "Log every queued and released launch.");
+            _cfgProfiling = _config.Bind("Debug", "Profiling", false,
+                "Log per-frame timing every 60 frames to diagnose performance issues.");
 
             Coordinator.Active = _cfgDefaultOn.Value; // runtime toggle's starting state
 
@@ -232,6 +235,7 @@ namespace AutoTOT
             _cfgDebounce.SettingChanged += (_, __) => ApplyConfig();
             _cfgMaxWindow.SettingChanged += (_, __) => ApplyConfig();
             _cfgVerbose.SettingChanged += (_, __) => ApplyConfig();
+            _cfgProfiling.SettingChanged += (_, __) => ApplyConfig();
         }
 
         // Forwards uncaught Unity exceptions to the BepInEx log. Only LogType.Exception
@@ -251,6 +255,7 @@ namespace AutoTOT
             Coordinator.DebounceSeconds = _cfgDebounce.Value;
             Coordinator.MaxWindowSeconds = _cfgMaxWindow.Value;
             Coordinator.VerboseLog = _cfgVerbose.Value;
+            Coordinator.ProfilingEnabled = _cfgProfiling.Value;
             ShowIndicator = _cfgShowIndicator.Value;
             ToggleModifier = _cfgToggleModifier.Value;
             ToggleKey = _cfgToggleKey.Value;

@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Diagnostics;
 using SeaPower;
 using UnityEngine;
 
@@ -39,6 +40,14 @@ namespace AutoTOT
         private static readonly Dictionary<WeaponBase, FlightSample> _flightTracker =
             new Dictionary<WeaponBase, FlightSample>();
         private static readonly List<WeaponBase> _trackerScratch = new List<WeaponBase>();
+        private static readonly Stopwatch _tickSw = new Stopwatch();
+        internal static float LastTickMs;
+        internal static int LastWeaponCount;
+        internal static int LastTrackedMissiles;
+        internal static float LastScanLoopMs;
+        internal static float LastFinalizeMs;
+        internal static float LastCleanupMs;
+        private static readonly Stopwatch _subSw = new Stopwatch();
 
         // ---- Per-ship shot-count accounting ----
         // Records, per coordinated order, how many missiles were requested vs. how many actually
@@ -78,8 +87,12 @@ namespace AutoTOT
         internal static void Tick(float simNow)
         {
             if (!Singleton<ObjectsManager>.InstanceExists()) return;
+            _tickSw.Restart();
 
             List<WeaponBase> weapons = Singleton<ObjectsManager>.Instance._listOfAllWeapons;
+            LastWeaponCount = weapons.Count;
+            
+            _subSw.Restart();
             for (int i = 0; i < weapons.Count; i++)
             {
                 WeaponBase w = weapons[i];
@@ -123,9 +136,17 @@ namespace AutoTOT
                     _flightTracker[w] = fresh;
                 }
             }
+            _subSw.Stop();
+            LastScanLoopMs = (float)(_subSw.Elapsed.TotalMilliseconds);
 
+            LastTrackedMissiles = _flightTracker.Count;
+            
+            _subSw.Restart();
             FinalizeExpectations(simNow);
+            _subSw.Stop();
+            LastFinalizeMs = (float)(_subSw.Elapsed.TotalMilliseconds);
 
+            _subSw.Restart();
             _trackerScratch.Clear();
             foreach (KeyValuePair<WeaponBase, FlightSample> kv in _flightTracker)
             {
@@ -133,6 +154,12 @@ namespace AutoTOT
                 if (w == null || w.IsDestroyed || w._type != ObjectBase.ObjectType.Missile)
                     _trackerScratch.Add(w);
             }
+            _subSw.Stop();
+            LastCleanupMs = (float)(_subSw.Elapsed.TotalMilliseconds);
+
+            _tickSw.Stop();
+            LastTickMs = (float)(_tickSw.Elapsed.TotalMilliseconds);
+
             for (int i = 0; i < _trackerScratch.Count; i++)
             {
                 WeaponBase w = _trackerScratch[i];

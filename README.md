@@ -206,13 +206,6 @@ Short version; full detail with formulas in [`docs/ARCHITECTURE.md`](docs/ARCHIT
 | `GameUnits.cs` | Shared unit conversions (Unity units ↔ metres/nm/knots) |
 | `TtlCache.cs` | Tiny real-time TTL cache used on the per-frame UI paths |
 
-Design history: [`docs/ISSUE-grouped-salvo-convergence.md`](docs/ISSUE-grouped-salvo-convergence.md)
-(the grouped-salvo convergence problem and its resolution),
-[`docs/PLAN-analytical-group-forming-model.md`](docs/PLAN-analytical-group-forming-model.md)
-(superseded approach, kept for the decompiled-mechanics analysis),
-[`docs/FUTURE-grouped-salvo-refinements.md`](docs/FUTURE-grouped-salvo-refinements.md)
-(deferred refinements).
-
 ## Config
 
 After first launch: `<Sea Power>/BepInEx/config/com.seapowermods.autotot.cfg`
@@ -251,8 +244,7 @@ All settings take effect live when edited (BepInEx reloads the file; no restart 
 - Grouped-salvo group drag (e.g. SS-N-19, once ~20s late) is corrected by the
   `τ_form` term and lands within ~±2s at mid/long range. Remaining: at **close
   range** the terminal seeker trips before the group forms, so grouped salvos land
-  ~10–20s early (they still converge). Deferred; see
-  [`docs/FUTURE-grouped-salvo-refinements.md`](docs/FUTURE-grouped-salvo-refinements.md).
+  ~10–20s early (they still converge).
 - Coordination groups by shared **target** within the collection window; orders
   spaced further apart form separate batches.
 - Coordinates **across** orders/missile types, not **within** one salvo: a single

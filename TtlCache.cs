@@ -25,6 +25,8 @@ namespace AutoTOT
         private readonly List<TKey> _evictScratch = new List<TKey>();
         private readonly float _ttlSeconds;
         private readonly int _capacity;
+        private long _hits;
+        private long _misses;
 
         public TtlCache(float ttlSeconds, int capacity = 512)
         {
@@ -38,9 +40,11 @@ namespace AutoTOT
             if (_map.TryGetValue(key, out Entry hit) && (Time.unscaledTime - hit.StampUnscaled) < _ttlSeconds)
             {
                 value = hit.Value;
+                _hits++;
                 return true;
             }
             value = default;
+            _misses++;
             return false;
         }
 
@@ -59,6 +63,10 @@ namespace AutoTOT
             _map[key] = new Entry { StampUnscaled = now, Value = value };
         }
 
-        public void Clear() => _map.Clear();
+        public long HitCount => _hits;
+        public long MissCount => _misses;
+        public int Count => _map.Count;
+        public void ResetStats() { _hits = 0; _misses = 0; }
+        public void Clear() { _map.Clear(); _hits = 0; _misses = 0; }
     }
 }
