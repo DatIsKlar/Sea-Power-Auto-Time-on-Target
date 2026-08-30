@@ -22,7 +22,8 @@ namespace AutoTOT
     /// </summary>
     internal sealed partial class Hud : MonoBehaviour
     {
-        private bool _open = false;   // start minimized; expand via the ▸ chevron or Alt+G
+        private bool _visible = true; // fully shown; Alt+G hides the panel entirely (even the tab)
+        private bool _open = false;   // when visible: expanded vs. collapsed tab; toggled by the ▸ chevron
         private ObjectBase _anchor;      // last selected friendly unit
         private ObjectBase _target;      // last selected enemy unit (real object, for firing)
         private Vehicle _targetVehicle;  // the enemy contact, for fog-of-war-correct display
@@ -45,6 +46,7 @@ namespace AutoTOT
         private Rect _win = new Rect(0, 0, DefaultWindowW, DefaultWindowH);
         private float _expandedW = DefaultWindowW, _expandedH = DefaultWindowH;
         private bool _placed;
+        private float _lastScale;   // previous EffectiveScale, to re-anchor the window on scale changes
         private bool _resizing;
         private bool _lastOverUi;
         private bool _mouseDownOverUi;
@@ -70,6 +72,27 @@ namespace AutoTOT
         // so the planner neither draws nor eats mouse input there.
         private static bool InMission() => Globals._mainGameViewModel != null;
 
+        // Uniform UI scale for the whole panel. 0 in config = auto: 1x at 1080p, ~2x at 2160p.
+        // Shared by OnGUI (GUI.matrix) and the Update-path input handlers (Hud.Mouse.cs), which
+        // must divide real screen pixels by this to reach the panel's scaled GUI space.
+        // Human-readable form of the configured hide combo (e.g. "Alt+G", or just "G" with no modifier).
+        private static string HideHint()
+        {
+            string key = Bootstrap.PanelKey.ToString();
+            if (Bootstrap.ToggleModifier == KeyCode.None) return key;
+            string mod = Bootstrap.ToggleModifier.ToString()
+                .Replace("Left", "").Replace("Right", "");   // "LeftAlt" -> "Alt"
+            return mod + "+" + key;
+        }
+
+        private static float EffectiveScale()
+        {
+            float s = Bootstrap.UiScale;
+            if (s <= 0f) s = Mathf.Max(1f, Screen.height / 1280f); // gentler auto: 1x up to 1280p, ~1.13x at 1440p, ~1.69x at 4K
+            s *= Bootstrap.UiScaleMultiplier;
+            return Mathf.Clamp(s, 0.5f, 4f);
+        }
+
         private void Update()
         {
             if (!InMission())
@@ -82,11 +105,19 @@ namespace AutoTOT
             TrackSelection();
 
             bool modOk = Bootstrap.ToggleModifier == KeyCode.None || Input.GetKey(Bootstrap.ToggleModifier);
-            if (modOk && Input.GetKeyDown(Bootstrap.PanelKey)) _open = !_open;
+            if (modOk && Input.GetKeyDown(Bootstrap.PanelKey)) _visible = !_visible;
             if (modOk && Input.GetKeyDown(Bootstrap.ToggleKey))
             {
                 Coordinator.Active = !Coordinator.Active;
                 Bootstrap.Log.LogInfo($"[AutoTOT] auto-coordination {(Coordinator.Active ? "ON" : "OFF")}");
+            }
+
+            // While hidden, draw nothing and release any input capture so the camera is free.
+            if (!_visible)
+            {
+                _resizing = false;
+                SetOverUi(false);
+                return;
             }
 
             HandleResizeInput();
@@ -139,23 +170,42 @@ namespace AutoTOT
 
         private void OnGUI()
         {
-            if (!Coordinator.Enabled || !Bootstrap.ShowIndicator || !InMission()) return;
+            if (!Coordinator.Enabled || !Bootstrap.ShowIndicator || !InMission() || !_visible) return;
             EnsureStyles();
+
+            // Everything below works in scaled GUI space (see EffectiveScale). sw/sh are the
+            // screen extents expressed in that space, so placement and clamps stay correct.
+            float s = EffectiveScale();
+            float sw = Screen.width / s, sh = Screen.height / s;
+
+            // Keep the panel's on-screen top-left fixed when the scale changes (the matrix
+            // scales about the screen origin, so a bare _win.x would drift as s changes).
+            if (_lastScale > 0f && !Mathf.Approximately(_lastScale, s))
+            {
+                float k = _lastScale / s;
+                _win.x *= k;
+                _win.y *= k;
+            }
+            _lastScale = s;
 
             if (!_placed)   // first paint: drop it near the top-center
             {
-                _win.x = Mathf.Max(InitialSideMargin, (Screen.width - _expandedW) * 0.5f);
+                _win.x = Mathf.Max(InitialSideMargin, (sw - _expandedW) * 0.5f);
                 _win.y = InitialTopMargin;
                 _placed = true;
             }
 
             _win.width = _expandedW;
             _win.height = _open ? _expandedH : CollapsedH;
+
+            Matrix4x4 prevMatrix = GUI.matrix;
+            GUI.matrix = Matrix4x4.TRS(Vector3.zero, Quaternion.identity, new Vector3(s, s, 1f));
             _win = GUI.Window(WindowId, _win, DrawWindow, GUIContent.none, _winStyle);
+            GUI.matrix = prevMatrix;
 
             // Keep the window on-screen.
-            _win.x = Mathf.Clamp(_win.x, -_win.width + OffscreenMargin, Screen.width - OffscreenMargin);
-            _win.y = Mathf.Clamp(_win.y, 0f, Screen.height - CollapsedH);
+            _win.x = Mathf.Clamp(_win.x, -_win.width + OffscreenMargin, sw - OffscreenMargin);
+            _win.y = Mathf.Clamp(_win.y, 0f, sh - CollapsedH);
         }
 
         private string _lastDrawError;
@@ -207,6 +257,10 @@ namespace AutoTOT
             GUILayout.Space(4);
             DrawDivider();
 
+            GUI.color = TextDim;
+            GUILayout.Label("salvo ±:  Shift +10  ·  Ctrl +5", _hdr);
+            GUI.color = Color.white;
+
             List<ObjectBase> shooters = GetShooters();
 
             // Periodically prune destroyed ships from _checked/_salvo to prevent unbounded growth.
@@ -252,12 +306,16 @@ namespace AutoTOT
             DrawEngagements();
             DrawDivider();
 
+            GUILayout.BeginHorizontal();
             bool auto = DrawCheckbox(Coordinator.Active, "Also auto-coordinate normal group orders (Alt+T)", _row);
             if (auto != Coordinator.Active)
             {
                 Coordinator.Active = auto;
                 Bootstrap.Log.LogInfo($"[AutoTOT] auto-coordination {(auto ? "ON" : "OFF")}");
             }
+            GUILayout.FlexibleSpace();
+            DrawScaleControl();
+            GUILayout.EndHorizontal();
 
             GUILayout.Space(4);
             GUILayout.BeginHorizontal();

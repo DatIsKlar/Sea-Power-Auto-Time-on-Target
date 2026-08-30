@@ -117,7 +117,7 @@ without a full restart leaves the mod listed but inactive in-game.
 Confirm in `<Sea Power>/BepInEx/LogOutput.log`:
 
 ```
-[AutoTOT] Auto Time-on-Target v0.1.1 loaded (Enabled=True, Armed=False, Unity=...)
+[AutoTOT] Auto Time-on-Target v0.1.4 loaded (Enabled=True, Armed=False, Unity=...)
 ```
 
 **Keep exactly one copy installed.** If you are also subscribed to the Workshop
@@ -131,7 +131,7 @@ The `dist/AutoTOT/` folder is exactly what you'd upload as a Steam Workshop item
 
 | Key | Action |
 |---|---|
-| **Alt+G** | Open/close the TOT planner panel |
+| **Alt+G** | Show/hide the TOT planner panel (fully hidden, tab and all) |
 | **Alt+T** | Toggle auto-coordination on/off |
 
 Both use the configurable modifier (`ToggleModifier`; set to `None` for single-key).
@@ -142,13 +142,20 @@ Starts minimized; expand via the ▸ chevron, drag it anywhere, resize the edges
 tracks your last-selected friendly ship as shooter (with a **This-ship /
 Whole-formation** toggle) and your last-selected enemy as target (fog-of-war-correct
 labels, no intel leakage). Rows list each ship's missiles with **live ETA/range**,
-checkboxes, and salvo steppers. Weapon-target validation uses the game's own
+checkboxes, and salvo steppers. The **–/+ salvo steppers** step by 1 per click;
+hold **Ctrl** for ±5 or **Shift** for ±10, clamped to the launcher's cell count.
+Weapon-target validation uses the game's own
 `DoesAmmoMatchTarget()`, so only missiles that can engage the selected
 target are pickable. Salvos larger than the launcher's ready rounds show a
 ⚠ `needs reload` note and arrive in waves (shown in the overview).
 **FIRE — TIME ON TARGET** launches the selection coordinated; **FIRE NOW** launches
 it without sync. The **ENGAGEMENTS** overview shows every coordinated target with
 queued/in-flight counts, a synced arrival countdown, and the ±arrival spread.
+
+The panel **auto-scales to your screen** (high-DPI/4K-aware). The footer's
+**Scale –/+** control fine-tunes the size in 0.1 steps; both the auto reference
+(`UIScale`, `0` = auto) and the relative trim (`UIScaleMultiplier`) are also editable
+in the config file under `[Interface]`. Pressing **Alt+G** hides the panel completely.
 
 ### Automatic mode (Alt+T)
 

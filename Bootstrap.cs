@@ -21,7 +21,7 @@ namespace AutoTOT
 
         // Mod version. Keep in sync with AutoTOT.csproj <Version> and the [ACPlugin]
         // attribute in AnchorChainEntry.cs (which references this constant).
-        internal const string Version = "0.1.1";
+        internal const string Version = "0.1.4";
 
         internal static ManualLogSource Log = BepInEx.Logging.Logger.CreateLogSource("AutoTOT");
         public static Harmony Harmony { get; private set; }
@@ -33,6 +33,8 @@ namespace AutoTOT
         internal static KeyCode ToggleModifier = KeyCode.LeftAlt;
         internal static KeyCode ToggleKey = KeyCode.T;   // arm/disarm auto mode
         internal static KeyCode PanelKey = KeyCode.G;    // open/close the planner
+        internal static float UiScale = 0f;              // 0 = auto (scale to screen height)
+        internal static float UiScaleMultiplier = 1f;    // fine-tune on top of UiScale
 
         // --- Config ---
         private static ConfigFile _config;
@@ -42,6 +44,8 @@ namespace AutoTOT
         private static ConfigEntry<KeyCode> _cfgToggleModifier;
         private static ConfigEntry<KeyCode> _cfgToggleKey;
         private static ConfigEntry<KeyCode> _cfgPanelKey;
+        private static ConfigEntry<float> _cfgUiScale;
+        private static ConfigEntry<float> _cfgUiScaleMultiplier;
         private static ConfigEntry<float> _cfgDebounce;
         private static ConfigEntry<float> _cfgMaxWindow;
         private static ConfigEntry<bool> _cfgVerbose;
@@ -102,6 +106,16 @@ namespace AutoTOT
                 Log.LogWarning($"Could not read mod menu state: {e.Message}");
                 return null;
             }
+        }
+
+        // Live-adjust the panel scale multiplier from the HUD's on-panel –/+ buttons.
+        // Writing the ConfigEntry persists to disk and fires SettingChanged -> ApplyConfig,
+        // which refreshes the UiScaleMultiplier field the HUD reads.
+        internal static void SetUiScaleMultiplier(float v)
+        {
+            v = Mathf.Clamp(v, 0.5f, 2.0f);
+            if (_cfgUiScaleMultiplier != null) _cfgUiScaleMultiplier.Value = v;
+            else UiScaleMultiplier = v;
         }
 
         private static void Init()
@@ -211,6 +225,14 @@ namespace AutoTOT
                 "Key (with ToggleModifier) that toggles the auto-coordinate-normal-orders mode.");
             _cfgPanelKey = _config.Bind("Interface", "OpenPanelKey", KeyCode.G,
                 "Key (with ToggleModifier) that opens/closes the Time-on-Target planner panel.");
+            _cfgUiScale = _config.Bind("Interface", "UIScale", 0f,
+                new ConfigDescription(
+                    "Scale factor for the planner panel and its text. 0 = auto (scales with screen height, so 4K screens get a larger panel). Otherwise an explicit multiplier, e.g. 1.5 or 2.0.",
+                    new AcceptableValueRange<float>(0f, 4.0f)));
+            _cfgUiScaleMultiplier = _config.Bind("Interface", "UIScaleMultiplier", 1.0f,
+                new ConfigDescription(
+                    "Fine-tune multiplier applied on top of UIScale. 1.0 = no change; below 1.0 makes the panel smaller, above 1.0 larger. Lets you shrink the auto scale without giving up auto-adaptation to your resolution.",
+                    new AcceptableValueRange<float>(0.5f, 2.0f)));
             _cfgDebounce = _config.Bind("Timing", "GroupWindowSeconds", 0.75f,
                 new ConfigDescription(
                     "After the last missile order at a target, wait this many real seconds (with no new orders) before locking in the coordinated launch. Larger = easier to group several manual orders from one ship; smaller = snappier single attacks.",
@@ -232,6 +254,8 @@ namespace AutoTOT
             _cfgToggleModifier.SettingChanged += (_, __) => ApplyConfig();
             _cfgToggleKey.SettingChanged += (_, __) => ApplyConfig();
             _cfgPanelKey.SettingChanged += (_, __) => ApplyConfig();
+            _cfgUiScale.SettingChanged += (_, __) => ApplyConfig();
+            _cfgUiScaleMultiplier.SettingChanged += (_, __) => ApplyConfig();
             _cfgDebounce.SettingChanged += (_, __) => ApplyConfig();
             _cfgMaxWindow.SettingChanged += (_, __) => ApplyConfig();
             _cfgVerbose.SettingChanged += (_, __) => ApplyConfig();
@@ -260,6 +284,8 @@ namespace AutoTOT
             ToggleModifier = _cfgToggleModifier.Value;
             ToggleKey = _cfgToggleKey.Value;
             PanelKey = _cfgPanelKey.Value;
+            UiScale = _cfgUiScale.Value;
+            UiScaleMultiplier = _cfgUiScaleMultiplier.Value;
         }
 
         /// <summary>Waits for the mod menu state to become readable, then loads or stands down.</summary>

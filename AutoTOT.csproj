@@ -7,7 +7,7 @@
   <PropertyGroup>
     <TargetFramework>netstandard2.1</TargetFramework>
     <AssemblyName>AutoTOT</AssemblyName>
-    <Version>0.1.1</Version>
+    <Version>0.1.4</Version>
     <LangVersion>latest</LangVersion>
     <!-- We reference game/Unity/BepInEx DLLs by hint path; don't pull the ref pack -->
     <DisableImplicitFrameworkReferences>true</DisableImplicitFrameworkReferences>

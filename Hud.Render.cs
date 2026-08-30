@@ -40,6 +40,11 @@ namespace AutoTOT
                 _open = !_open;
             GUILayout.Label("TIME-ON-TARGET", _title, GUILayout.Height(HeaderH));
             GUILayout.FlexibleSpace();
+            // Hint in the otherwise-empty middle of the title bar: which key hides the panel.
+            GUI.color = TextDim;
+            GUILayout.Label($"{HideHint()} to hide", _hdr, GUILayout.Height(HeaderH));
+            GUI.color = Color.white;
+            GUILayout.FlexibleSpace();
             // Live engagement count — visible even while minimized.
             int rounds = 0, tgts = _salvos.Count;
             foreach (var e in _salvos) rounds += e.Queued + e.InFlight;
@@ -54,6 +59,16 @@ namespace AutoTOT
             GUI.color = Color.white;
             GUILayout.Space(4);
             GUILayout.EndHorizontal();
+        }
+
+        // Held modifier grows the salvo step so large launchers fill faster.
+        // Read from Event.current (live during OnGUI). Result is still clamped to the row range.
+        private static int SalvoStep()
+        {
+            var e = Event.current;
+            if (e != null && e.shift)   return 10;
+            if (e != null && e.control) return 5;
+            return 1;
         }
 
         private void DrawMissileRow(ObjectBase ship, Row r)
@@ -93,9 +108,9 @@ namespace AutoTOT
             GUI.color = Color.white;
             
             GUILayout.FlexibleSpace();
-            if (GUILayout.Button("–", _btn, GUILayout.Width(30))) _salvo[key] = Mathf.Max(1, _salvo[key] - 1);
+            if (GUILayout.Button("–", _btn, GUILayout.Width(30))) _salvo[key] = Mathf.Max(1, _salvo[key] - SalvoStep());
             GUILayout.Label($"{_salvo[key]}", _row, GUILayout.Width(28));
-            if (GUILayout.Button("+", _btn, GUILayout.Width(30))) _salvo[key] = Mathf.Min(r.Count, _salvo[key] + 1);
+            if (GUILayout.Button("+", _btn, GUILayout.Width(30))) _salvo[key] = Mathf.Min(r.Count, _salvo[key] + SalvoStep());
             GUI.enabled = true;
             GUILayout.EndHorizontal();
 
@@ -204,6 +219,20 @@ namespace AutoTOT
             if (GUILayout.Button(displayText, _menuItem, GUILayout.Height(RowHeight)))
                 value = !value;
             return value;
+        }
+
+        // On-panel size control: –/+ buttons adjusting the UI scale multiplier in 0.1 steps.
+        // Persists to config via Bootstrap so it survives restarts and stays in sync with the .cfg.
+        private void DrawScaleControl()
+        {
+            GUI.color = TextDim;
+            GUILayout.Label("Scale", _hdr, GUILayout.Height(RowHeight));
+            GUI.color = Color.white;
+            if (GUILayout.Button("–", _btn, GUILayout.Width(30)))
+                Bootstrap.SetUiScaleMultiplier(Bootstrap.UiScaleMultiplier - 0.1f);
+            GUILayout.Label($"{Bootstrap.UiScaleMultiplier:0.0}×", _row, GUILayout.Width(36));
+            if (GUILayout.Button("+", _btn, GUILayout.Width(30)))
+                Bootstrap.SetUiScaleMultiplier(Bootstrap.UiScaleMultiplier + 0.1f);
         }
 
         private void DrawDivider()

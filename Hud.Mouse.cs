@@ -20,7 +20,8 @@ namespace AutoTOT
         {
             if (!_open) { _resizing = false; return; }
 
-            Vector2 m = new Vector2(Input.mousePosition.x, Screen.height - Input.mousePosition.y);
+            float s = EffectiveScale();
+            Vector2 m = new Vector2(Input.mousePosition.x / s, (Screen.height - Input.mousePosition.y) / s);
             Rect grip = new Rect(_win.x + _win.width - ResizeGripSize, _win.y + _win.height - ResizeGripSize,
                                  ResizeGripSize, ResizeGripSize);
 
@@ -40,7 +41,8 @@ namespace AutoTOT
         // Latch through a held drag so fast window moves never briefly unblock the camera.
         private void UpdateMouseCapture()
         {
-            Vector2 m = new Vector2(Input.mousePosition.x, Screen.height - Input.mousePosition.y);
+            float s = EffectiveScale();
+            Vector2 m = new Vector2(Input.mousePosition.x / s, (Screen.height - Input.mousePosition.y) / s);
             bool overNow = _win.Contains(m);
 
             // Latch is button-agnostic: BOTH left and right drags rotate/pan the camera

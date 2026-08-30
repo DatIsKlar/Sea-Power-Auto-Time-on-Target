@@ -524,7 +524,10 @@ The panel shows:
 - **Selection header**: TARGET row (fogged label or "click an enemy contact to set target"),
   SHOOTERS row (anchor name or "click one of your ships"), "whole formation" checkbox.
 - **Missile rows**: per ship, per ammo: checkbox, ammo name, count, ETA, range, salvo
-  stepper (–/+), reload warning if `WillNeedReload`.
+  stepper (–/+), reload warning if `WillNeedReload`. The stepper's increment comes from
+  `SalvoStep()` (Hud.Render.cs), which reads `Event.current` modifiers — Shift → ±10,
+  Ctrl → ±5, else ±1 — and the result is clamped `Mathf.Max(1, …)` / `Mathf.Min(r.Count, …)`
+  so it lands on the launcher cell count. A dim hint line above the list advertises it.
 - **ENGAGEMENTS section**: per target: fogged label, status (`"{Queued} queued"`,
   `"{InFlight} in flight"`, `"anchoring {AnchorLaunched}/{AnchorTotal}"`), arrival
   countdown (multi-wave or single-wave with ± spread).
@@ -546,6 +549,23 @@ via reflection to avoid the setter's per-frame `FindObjectsByType` (Hud.Mouse.cs
 The latch logic honors prior-frame hover and covers same-frame arrival with no hover frame.
 Resize is driven by raw `Input` rather than IMGUI drag events, because IMGUI drag stops
 being delivered once a fast cursor outruns the window rect (Hud.Mouse.cs:16-18).
+
+#### DPI scaling
+
+IMGUI draws in raw screen pixels and does not adapt to DPI, so the panel looked tiny at
+4K. `EffectiveScale()` (Hud.cs) is the single source of truth: `Bootstrap.UiScale`
+(config `[Interface] UIScale`, `0` = auto) resolves auto to `Screen.height / 1280`, then
+multiplies by `Bootstrap.UiScaleMultiplier` (config `UIScaleMultiplier`, the footer
+Scale –/+ control writes this via `Bootstrap.SetUiScaleMultiplier`), clamped 0.5–4×.
+`OnGUI` wraps `GUI.Window` in `GUI.matrix = Matrix4x4.TRS(…scale…)` and does its clamps /
+first-paint placement in scaled GUI space (`Screen.width/s`, `Screen.height/s`). On a
+scale change the window's x/y are re-anchored by `_lastScale / s` so its top-left stays
+put instead of drifting. **Gotcha:** the two Update-path handlers in Hud.Mouse.cs read
+raw `Input.mousePosition` but compare against `_win` (scaled GUI space), so both divide
+the converted point by `s` or hover/resize hit-testing is offset.
+
+Alt+G toggles `_visible` (full hide, distinct from `_open`'s collapse-to-tab); while
+hidden `OnGUI` early-outs and Update releases the over-UI capture (`SetOverUi(false)`).
 
 #### Style policy
 
