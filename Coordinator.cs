@@ -46,6 +46,9 @@ namespace AutoTOT
         private static int _accFlightCalls, _accGroupDelayCalls;
         private static float _accFlightEstimateHitMs, _accFlightEstimateMissMs;
         private static int _accFlightEstimateHits, _accFlightEstimateMisses;
+        private static int _accFlightDeferred;   // proximity-gate reuses (not yet due for refresh)
+        private static int _accFlightBudgetSkipped; // refresh due but deferred by the per-frame cap
+        private static int _flightEstimatesThisFrame; // fresh sims run this frame (reset each ReleaseDueLaunches)
 
         // Timing constants for scheduling and observation anchoring.
         private const float LookaheadFraction = 0.5f;      // release lookahead, as a fraction of one sim step
@@ -55,6 +58,10 @@ namespace AutoTOT
         internal const int PlannerTaskPriority = 1000;     // task priority for planner-issued orders
         private const float NegligibleLeadSeconds = 0.1f;  // release leads below this aren't worth logging
         private const float SlackWarnSeconds = 5f;         // overshoot beyond this at release => WARN (stagger-loss guard)
+        private const float FlightRefreshSim = 2f;         // max sim-time staleness of a reused far-from-release flight estimate
+        private const float FlightRefreshNearSim = 0.3f;   // faster refresh cadence once an item is near its release gate
+        private const float FlightGateMargin = 3f;         // within this much slack of release => treat as near-release
+        private const int MaxFlightEstimatesPerFrame = 12; // per-frame ceiling on fresh kinematic sims (bounds worst-frame cost)
 
         /// <summary>
         /// One player missile order held for coordinated release. Orders stay WHOLE — each is
@@ -115,6 +122,12 @@ namespace AutoTOT
             public readonly List<float> LaunchTimes = new List<float>(); // observed launch times (sim s)
             public int LastLoggedLaunches = -1;
             public float FiredAtSim = -1f;
+            // Per-item flight-estimate cache (proximity gate): far-from-release items reuse a
+            // prior FlightTime.Estimate on a sim-time cadence instead of re-running the kinematic
+            // sim every frame. Refreshed when stale or near release. Always a real Estimate output,
+            // so it never diverges from the commit path.
+            public float LastFlightEst = -1f;
+            public float LastFlightEstSim = float.NegativeInfinity;
         }
 
         /// <summary>The batch's anchor and held items (fired anchors stay in until their ripple finalizes).</summary>
@@ -247,6 +260,8 @@ namespace AutoTOT
                         $"       hits: {_accFlightEstimateHits / _frameCount:F1}/frame @ {avgHitMs:F3}ms avg ({_accFlightEstimateHitMs * inv:F2}ms total)\n" +
                         $"       misses: {_accFlightEstimateMisses / _frameCount:F1}/frame @ {avgMissMs:F3}ms avg ({_accFlightEstimateMissMs * inv:F2}ms total)\n" +
                         $"       unaccounted: {unaccountedMs * inv:F2}ms/frame\n" +
+                        $"       deferred (proximity gate): {_accFlightDeferred / _frameCount:F1}/frame\n" +
+                        $"       budget-skipped: {_accFlightBudgetSkipped / _frameCount:F1}/frame\n" +
                         $"    -> GroupDelay: {_accGroupDelayMs * inv:F2}ms ({_accGroupDelayCalls / _frameCount:F1} calls/frame)\n" +
                         $"    -> PredictAnchorImpact: FlightEst {_accPredictFlightMs * inv:F2}ms ({_accPredictFlightCalls / _frameCount:F1} calls) | GroupDelay {_accPredictGroupDelayMs * inv:F2}ms ({_accPredictGroupDelayCalls / _frameCount:F1} calls)\n" +
                         $"  Cache {hitRate:F0}% hit ({totalHits}/{total}) [ToT {FlightTime.TofHits}/{FlightTime.TofMisses} h/m, sz {FlightTime.TofCacheSize}, evTtl {FlightTime.TofEvictionsTtl}, evCap {FlightTime.TofEvictionsCapacity}] [Profile {FlightTime.ProfileHits}/{FlightTime.ProfileMisses} h/m, sz {FlightTime.ProfileCacheSize}] [Facts {LauncherFactsSource.CacheHits}/{LauncherFactsSource.CacheMisses} h/m, sz {LauncherFactsSource.CacheSize}]");
@@ -275,6 +290,8 @@ namespace AutoTOT
             _accPredictFlightCalls = _accPredictGroupDelayCalls = 0;
             _accFlightEstimateHitMs = _accFlightEstimateMissMs = 0f;
             _accFlightEstimateHits = _accFlightEstimateMisses = 0;
+            _accFlightDeferred = 0;
+            _accFlightBudgetSkipped = 0;
             FlightTime.ResetStats();
             LauncherFactsSource.ResetStats();
         }
@@ -619,6 +636,7 @@ namespace AutoTOT
             float simStep = (_lastReleaseSimNow >= 0f) ? Mathf.Max(0f, simNow - _lastReleaseSimNow) : 0f;
             float lookahead = LookaheadFraction * simStep;
             _lastReleaseSimNow = simNow;
+            _flightEstimatesThisFrame = 0; // reset the per-frame fresh-estimate budget
 
             for (int i = _scheduled.Count - 1; i >= 0; i--)
             {
@@ -640,31 +658,8 @@ namespace AutoTOT
 
                 float timeLeft = s.ImpactAtSim - simNow;
 
-                // Release must use the SAME estimator the commit path (EnrouteWithLead) scheduled
-                // the impact against, so positive slack exists and the per-item launch stagger
-                // engages. FlightTime.Estimate carries its own real-0.5 s TTL cache shared with the
-                // commit path. (An earlier optimization added a separate sim-time cache + a
-                // straight-line "out of max range" pre-filter here; the pre-filter substituted
-                // distance/maxVelocity and overestimated slow long-range shots by ~120 s vs the
-                // kinematic sim, driving slack negative so whole batches dumped on one tick.)
-                _stageSw.Restart();
-                float flightNow = FlightTime.Estimate(it.Unit, it.AmmoId, it.Target);
-                _stageSw.Stop();
-                float callMs = (float)_stageSw.Elapsed.TotalMilliseconds;
-                _accFlightEstimateMs += callMs;
-                _accFlightCalls++;
-                if (FlightTime.WasLastCallCacheHit)
-                {
-                    _accFlightEstimateHits++;
-                    _accFlightEstimateHitMs += callMs;
-                }
-                else
-                {
-                    _accFlightEstimateMisses++;
-                    _accFlightEstimateMissMs += callMs;
-                }
-
-                // Use cached GroupDelay if available
+                // Use cached GroupDelay if available (independent of the flight estimate; the
+                // proximity gate below needs it, so resolve it first).
                 float groupDelay;
                 if (!_groupDelayCache.TryGetValue(s, out groupDelay))
                 {
@@ -675,6 +670,67 @@ namespace AutoTOT
                     _groupDelayCache[s] = groupDelay;
                 }
                 _accGroupDelayCalls++;
+
+                // Release must use the SAME estimator the commit path (EnrouteWithLead) scheduled
+                // the impact against, so positive slack exists and the per-item launch stagger
+                // engages. FlightTime.Estimate carries its own real-0.5 s TTL cache shared with the
+                // commit path. (An earlier optimization added a separate sim-time cache + a
+                // straight-line "out of max range" pre-filter here; the pre-filter substituted
+                // distance/maxVelocity and overestimated slow long-range shots by ~120 s vs the
+                // kinematic sim, driving slack negative so whole batches dumped on one tick.)
+                //
+                // Proximity gate: most scheduled items are minutes from release, yet re-running the
+                // kinematic sim for all of them every frame dominated the tick (~536ms/435 items).
+                // Reuse a prior Estimate for far items on a sim-time cadence; always recompute fresh
+                // near release, so the launch decision uses a current value. The reused value is
+                // always a real FlightTime.Estimate output, so it cannot diverge from the commit
+                // path the way the removed pre-filter did. Using sim-time staleness (not real time)
+                // also breaks the feedback loop where slow ticks expired FlightTime's real-0.5 s TTL
+                // every frame and forced a full recompute.
+                // Near-release items refresh on a short sim cadence (FlightRefreshNearSim); far
+                // items on a long one (FlightRefreshSim). Time-on-target bunches many items into
+                // the near-release window at once, so recomputing each every frame was still the
+                // bulk of the cost — the estimate creeps slowly vs a multi-minute flight, so a
+                // sub-second cadence is plenty accurate for a launch decision.
+                float releaseGate = it.ReleaseLead + it.StartupLead + groupDelay + lookahead;
+                bool nearRelease = s.LastFlightEst >= 0f &&
+                                   timeLeft <= s.LastFlightEst + releaseGate + FlightGateMargin;
+                float refreshCadence = nearRelease ? FlightRefreshNearSim : FlightRefreshSim;
+                bool due = s.LastFlightEst < 0f || simNow - s.LastFlightEstSim >= refreshCadence;
+                // Per-frame ceiling on fresh kinematic sims: a synchronized wave can bunch many
+                // due refreshes into one frame. Cap them; an item that already has a value just
+                // reuses it a frame longer. An item with NO estimate always computes (correctness
+                // before budget) — those are first-sight only and rare.
+                bool budgeted = s.LastFlightEst < 0f || _flightEstimatesThisFrame < MaxFlightEstimatesPerFrame;
+                float flightNow;
+                if (due && budgeted)
+                {
+                    _flightEstimatesThisFrame++;
+                    _stageSw.Restart();
+                    flightNow = FlightTime.Estimate(it.Unit, it.AmmoId, it.Target);
+                    _stageSw.Stop();
+                    float callMs = (float)_stageSw.Elapsed.TotalMilliseconds;
+                    _accFlightEstimateMs += callMs;
+                    _accFlightCalls++;
+                    if (FlightTime.WasLastCallCacheHit)
+                    {
+                        _accFlightEstimateHits++;
+                        _accFlightEstimateHitMs += callMs;
+                    }
+                    else
+                    {
+                        _accFlightEstimateMisses++;
+                        _accFlightEstimateMissMs += callMs;
+                    }
+                    s.LastFlightEst = flightNow;
+                    s.LastFlightEstSim = simNow;
+                }
+                else
+                {
+                    flightNow = s.LastFlightEst;
+                    if (due) _accFlightBudgetSkipped++; // due but deferred by the per-frame cap
+                    else _accFlightDeferred++;          // not yet due (cadence)
+                }
                 // Release early by: the ripple lead (centers the salvo on the coordinated impact),
                 // the fixed startup offset (PreLaunchDelay + expected reaction) the engage cycle burns
                 // before round 1 leaves the rail, PLUS the group-drag delay (a grouped salvo flies

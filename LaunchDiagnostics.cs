@@ -34,6 +34,11 @@ namespace AutoTOT
             public float PredictedImpact;  // stamped from EngagementBoard, so the residual survives
                                            // the target dying (the board row is pruned on death). -1 = none.
             public float LastTelemetrySim; // throttle for the periodic `track` telemetry line.
+            // ---- sim-vs-actual gap characterization (grounded flight-model investigation) ----
+            public float KinEstAtLaunch;   // FlightTime.Estimate captured at first sighting (game's own
+                                           // single-shot sim InterceptTime). -1 = unavailable.
+            public float PeakAltU;         // max altitude (Unity units) seen in flight — loft-arc height.
+            public float LastSpeedKn;      // most-recent speed (kn) — approx terminal/impact speed.
         }
 
         private const float TelemetryIntervalSim = 15f; // sim seconds between per-missile telemetry samples
@@ -102,10 +107,19 @@ namespace AutoTOT
                 if (tgt == null || tgt.IsDestroyed) continue;
 
                 float distM = GameUnits.MetersBetween(w, tgt);
+                // Trajectory characterization (peak alt / terminal speed) only feeds the verbose
+                // `gap`/`sim-traj` lines — skip the work entirely in normal play.
+                bool verbose = Coordinator.VerboseLog;
                 if (_flightTracker.TryGetValue(w, out FlightSample existing))
                 {
                     existing.LastDistM = distM;
                     existing.LastSeenTime = simNow;
+                    if (verbose)
+                    {
+                        float altU = w.transform != null ? w.transform.position.y : 0f;
+                        if (altU > existing.PeakAltU) existing.PeakAltU = altU;
+                        existing.LastSpeedKn = w._velocityInKnots;
+                    }
                     // Refresh the stamped prediction while the board row still lives, so it picks up
                     // the anchor-finalized impact; keep the last non-negative value once it's gone.
                     if (EngagementBoard.TryGetPredictedImpact(tgt, out float livePred))
@@ -116,6 +130,13 @@ namespace AutoTOT
                 else
                 {
                     EngagementBoard.TryGetPredictedImpact(tgt, out float pred0);
+                    // Game's own single-shot sim InterceptTime for this shot, stamped so the impact
+                    // line can print the sim-vs-actual gap. Cached (0.5s TTL) — LogTrackInit reuses it.
+                    // Verbose-only: it feeds the verbose `gap` line, and a kinematic sim per new missile
+                    // would be wasted work (and a spike under big salvos) in normal play.
+                    float est = -1f;
+                    if (verbose && w._launchPlatform != null && w._ap != null)
+                        est = FlightTime.Estimate(w._launchPlatform, w._ap._ammunitionFileName, tgt);
                     var fresh = new FlightSample
                     {
                         LaunchTime = w._launchTime,
@@ -126,12 +147,15 @@ namespace AutoTOT
                         Target = tgt,
                         PredictedImpact = pred0,   // -1 if this target isn't (yet) coordinated
                         LastTelemetrySim = -1f,
+                        KinEstAtLaunch = est,
+                        PeakAltU = verbose && w.transform != null ? w.transform.position.y : 0f,
+                        LastSpeedKn = verbose ? w._velocityInKnots : 0f,
                     };
                     // First sighting of this missile => it just left the rail. Credit it to the
                     // matching pending order (this branch fires exactly once per WeaponBase, so no
                     // double count).
                     CreditLaunch(w, tgt);
-                    LogTrackInit(w);
+                    LogTrackInit(w, est);
                     fresh = MaybeLogTelemetry(w, tgt, fresh, distM, simNow);
                     _flightTracker[w] = fresh;
                 }
@@ -179,6 +203,16 @@ namespace AutoTOT
                         Bootstrap.Log.LogInfo(
                             $"[AutoTOT] impact {s.AmmoName} -> {s.TargetName}: {outcome} at sim {s.LastSeenTime:0.0} " +
                             $"(flight {flightTime:0.0}s, final range {s.LastDistM:0} m){residual}");
+                        // Grounded flight-model signal: the game's own single-shot sim InterceptTime
+                        // (captured at launch) vs the ACTUAL flown time. gap = actual − sim (positive =>
+                        // sim UNDER-predicts, missile flies slower/longer than modelled). Peak altitude
+                        // and terminal speed characterize WHERE the gap comes from (loft arc / terminal
+                        // decel). Only meaningful for rounds that actually reached the target (HIT).
+                        if (s.KinEstAtLaunch > 0f && outcome == "HIT")
+                            Bootstrap.Log.LogInfo(
+                                $"[AutoTOT] gap {s.AmmoName} -> {s.TargetName}: simEst {s.KinEstAtLaunch:0.0}s, " +
+                                $"actual {flightTime:0.0}s, gap {flightTime - s.KinEstAtLaunch:+0.0;-0.0}s, " +
+                                $"peakAlt {s.PeakAltU:0}u, termSpd {s.LastSpeedKn:0}kn");
                     }
                 }
                 _flightTracker.Remove(w);
@@ -333,19 +367,29 @@ namespace AutoTOT
 
         // One-time per-missile line at first sighting: nominal speeds + our kinematic estimate, so a
         // late group can be read against what the game's own solo sim predicted. VerboseLog only.
-        private static void LogTrackInit(WeaponBase w)
+        private static void LogTrackInit(WeaponBase w, float est)
         {
             if (!Coordinator.VerboseLog) return;
             AmmunitionParameters ap = w?._ap;
             if (ap == null) return;
             bool grouped = ap._maxGroupSize > 1;
-            float est = -1f;
-            if (w._launchPlatform != null && w.CurrentIntendedTargetObject != null)
-                est = FlightTime.Estimate(w._launchPlatform, ap._ammunitionFileName, w.CurrentIntendedTargetObject);
             Bootstrap.Log.LogInfo(
                 $"[AutoTOT] track-init {ap._ammunitionFileName}#{w.GetInstanceID()}: " +
                 $"nominal cruise {ap._maxVelocityInKnots:0}/loft {ap._maxLoftVelocityInKnots:0}/" +
                 $"term {ap._terminalVelocityInKnots:0} kn, kinEst {est:0.0}s, grouped {grouped}");
+
+            // Sim's OWN modeled trajectory, to compare against the actual peakAlt/termSpd in the `gap`
+            // line — pins whether the flight-time gap is loft-arc or speed-profile mismodeling.
+            if (w._launchPlatform != null && w.CurrentIntendedTargetObject != null &&
+                FlightTime.TryTrajectoryDiag(w._launchPlatform, ap._ammunitionFileName,
+                    w.CurrentIntendedTargetObject, out float simT, out float simPeakAlt,
+                    out float vL, out float vM, out float vT))
+            {
+                Bootstrap.Log.LogInfo(
+                    $"[AutoTOT] sim-traj {ap._ammunitionFileName}#{w.GetInstanceID()}: " +
+                    $"simInterceptTime {simT:0.0}s, simPeakAlt {simPeakAlt:0}u, " +
+                    $"simSpd launch {vL:0}/mid {vM:0}/term {vT:0}kn");
+            }
         }
 
         // Throttled per-missile telemetry: actual vs nominal speed, group/leader state, in-group

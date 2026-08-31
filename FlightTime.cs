@@ -153,7 +153,7 @@ namespace AutoTOT
         // and earlier span points (214km ×10 span34 -> ~+3s; ×20 span73 -> ~+16s). See the group-tau
         // log line in Coordinator and memory: autotot-grouped-flight-underestimate.
 
-        private struct SpeedProfile { public float[] Times; public float[] Speeds; }
+        private struct SpeedProfile { public float[] Times; public float[] Speeds; public Vector3[] Positions; }
         private static readonly TtlCache<TofKey, SpeedProfile> _profileCache =
             new TtlCache<TofKey, SpeedProfile>(CacheTtlSeconds);
 
@@ -169,6 +169,40 @@ namespace AutoTOT
         {
             return GroupFormingTauDiag(unit, ammoId, target, launchSpan, out _, out _, out float delay)
                 ? delay : 0f;
+        }
+
+        /// <summary>
+        /// Diagnostic: the game's OWN modeled shot trajectory for this (shooter, ammo, target), so the
+        /// sim's predicted path can be compared against the missile's ACTUAL flown path to explain the
+        /// sim-vs-actual flight-time gap. Returns, from the same <see cref="SimulateShotLinear"/> profile
+        /// used for grouping (cached): the sim intercept time, the modeled peak altitude (max
+        /// <c>Positions[i].y</c> — same Unity-y space as a live <c>transform.position.y</c>), and the
+        /// speed (kn) at launch, mid-flight, and intercept. False if the profile is unavailable.
+        /// </summary>
+        internal static bool TryTrajectoryDiag(ObjectBase unit, string ammoId, ObjectBase target,
+            out float simInterceptTime, out float simPeakAltU, out float vLaunch, out float vMid, out float vTerm)
+        {
+            simInterceptTime = -1f; simPeakAltU = 0f; vLaunch = 0f; vMid = 0f; vTerm = 0f;
+            if (unit == null || target == null) return false;
+            AmmunitionParameters ap = unit.getAmmunitionByName(ammoId)?._ap;
+            if (ap == null) return false;
+
+            SpeedProfile prof = GetSpeedProfile(unit, ap, target);
+            float[] t = prof.Times, v = prof.Speeds;
+            if (t == null || v == null || v.Length < 2) return false;
+
+            simInterceptTime = t[t.Length - 1];
+            vLaunch = v[0];
+            vMid = v[v.Length / 2];
+            vTerm = v[v.Length - 1];
+            if (prof.Positions != null)
+            {
+                float peak = float.NegativeInfinity;
+                for (int i = 0; i < prof.Positions.Length; i++)
+                    if (prof.Positions[i].y > peak) peak = prof.Positions[i].y;
+                simPeakAltU = peak;
+            }
+            return true;
         }
 
         /// <summary>
@@ -270,6 +304,7 @@ namespace AutoTOT
 
                 var speeds = new List<float>();
                 var times = new List<float>();
+                var traj = new List<Vector3>();
                 Vector3 launchPos = unit.transform.position;
                 Vector3 targetPos = target.transform.position;
                 Vector3 targetVel = target._velocityVecInUnity;
@@ -278,10 +313,15 @@ namespace AutoTOT
                 _simulateShotMethod.Invoke(null, new object[]
                 {
                     ap, launchPos, unit._velocityInKnots, targetVel, targetPos, unit.IsAirUnit,
-                    -1f, 2f, -1f, null, speeds, times, -1f, evasive
+                    -1f, 2f, -1f, traj, speeds, times, -1f, evasive
                 });
                 if (speeds.Count < 2 || times.Count != speeds.Count) return default;
-                return new SpeedProfile { Times = times.ToArray(), Speeds = speeds.ToArray() };
+                return new SpeedProfile
+                {
+                    Times = times.ToArray(),
+                    Speeds = speeds.ToArray(),
+                    Positions = traj.Count == speeds.Count ? traj.ToArray() : null,
+                };
             }
             catch (Exception e)
             {
