@@ -27,6 +27,8 @@ namespace AutoTOT
         private readonly int _capacity;
         private long _hits;
         private long _misses;
+        private long _evictionsTtl;
+        private long _evictionsCapacity;
 
         public TtlCache(float ttlSeconds, int capacity = 512)
         {
@@ -57,8 +59,14 @@ namespace AutoTOT
                 _evictScratch.Clear();
                 foreach (KeyValuePair<TKey, Entry> kv in _map)
                     if ((now - kv.Value.StampUnscaled) >= _ttlSeconds) _evictScratch.Add(kv.Key);
+                int ttlEvicted = _evictScratch.Count;
                 for (int i = 0; i < _evictScratch.Count; i++) _map.Remove(_evictScratch[i]);
-                if (_map.Count > _capacity) _map.Clear();
+                _evictionsTtl += ttlEvicted;
+                if (_map.Count > _capacity)
+                {
+                    _evictionsCapacity += _map.Count;
+                    _map.Clear();
+                }
             }
             _map[key] = new Entry { StampUnscaled = now, Value = value };
         }
@@ -66,7 +74,9 @@ namespace AutoTOT
         public long HitCount => _hits;
         public long MissCount => _misses;
         public int Count => _map.Count;
-        public void ResetStats() { _hits = 0; _misses = 0; }
-        public void Clear() { _map.Clear(); _hits = 0; _misses = 0; }
+        public long EvictionsTtl => _evictionsTtl;
+        public long EvictionsCapacity => _evictionsCapacity;
+        public void ResetStats() { _hits = 0; _misses = 0; _evictionsTtl = 0; _evictionsCapacity = 0; }
+        public void Clear() { _map.Clear(); _hits = 0; _misses = 0; _evictionsTtl = 0; _evictionsCapacity = 0; }
     }
 }

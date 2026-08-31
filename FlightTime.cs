@@ -55,6 +55,9 @@ namespace AutoTOT
 
         private static readonly TtlCache<TofKey, float> _cache = new TtlCache<TofKey, float>(CacheTtlSeconds);
 
+        private static bool _lastCallWasHit;
+        internal static bool WasLastCallCacheHit => _lastCallWasHit;
+
         /// <summary>
         /// Best available flight-time estimate (seconds) from <paramref name="unit"/> to
         /// <paramref name="target"/> with <paramref name="ammoId"/>: kinematic sim if it
@@ -73,6 +76,7 @@ namespace AutoTOT
             float kinematic = Kinematic(unit, ap, target);
             if (kinematic > MinValidSeconds) return kinematic;
 
+            _lastCallWasHit = false;
             // Fallback only if the simulator declined (out of range / no kinematics): straight
             // line at max speed, better than holding a launch forever.
             float speedMs = ap._maxVelocityInKnots * GameUnits.KnotsToMs;
@@ -84,6 +88,7 @@ namespace AutoTOT
         /// Flight time (s) from the game's own kinematic shot simulator, or -1 if unavailable
         /// (reflection miss, sim declined, or threw). Cached for
         /// <see cref="CacheTtlSeconds"/> real seconds per shooter/ammo/target.
+        /// Sets <see cref="WasLastCallCacheHit"/> to indicate whether the result came from cache.
         /// </summary>
         internal static float Kinematic(ObjectBase unit, AmmunitionParameters ap, ObjectBase target)
         {
@@ -93,8 +98,13 @@ namespace AutoTOT
                 AmmoFile = ap._ammunitionFileName,
                 TargetId = target.GetInstanceID(),
             };
-            if (_cache.TryGet(key, out float hit)) return hit;
+            if (_cache.TryGet(key, out float hit))
+            {
+                _lastCallWasHit = true;
+                return hit;
+            }
 
+            _lastCallWasHit = false;
             float value = KinematicRaw(unit, ap, target);
             _cache.Set(key, value);
             return value;
@@ -108,6 +118,10 @@ namespace AutoTOT
         internal static long ProfileMisses => _profileCache.MissCount;
         internal static int TofCacheSize => _cache.Count;
         internal static int ProfileCacheSize => _profileCache.Count;
+        internal static long TofEvictionsTtl => _cache.EvictionsTtl;
+        internal static long TofEvictionsCapacity => _cache.EvictionsCapacity;
+        internal static long ProfileEvictionsTtl => _profileCache.EvictionsTtl;
+        internal static long ProfileEvictionsCapacity => _profileCache.EvictionsCapacity;
         internal static void ResetStats() { _cache.ResetStats(); _profileCache.ResetStats(); }
 
         // ---- Grouped-salvo forming delay (group-drag correction), range-aware tau_form model ----
