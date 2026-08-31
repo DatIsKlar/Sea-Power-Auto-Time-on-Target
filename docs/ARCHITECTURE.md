@@ -356,11 +356,16 @@ unavailable.
 
 ### Speed profile simulation
 
-`ComputeSpeedProfile` (FlightTime.cs:233-269) calls the static method
-`Missile.SimulateShotLinear` with 14 arguments (FlightTime.cs:240-245). The key argument
-is `stepsPerMile = 2f`, matching `AmmunitionParameters.MaxRangePrecise`'s own call
-(FlightTime.cs:255). The sim fills out-lists `speeds` and `times`. Validity gate:
-`speeds.Count < 2 || times.Count != speeds.Count` → default (empty profile).
+`ComputeSpeedProfile` calls the game's static shot simulator, resolving whichever branch is
+loaded (same version-drift philosophy as the result type above). Stable: `Missile.SimulateShotLinear`
+(step-by-step), 14 args with `stepsPerMile = 2f` matching `AmmunitionParameters.MaxRangePrecise`'s own
+call. If that method is absent (beta), it resolves `MissileSimulator.EstimateShot` by name via
+`typeof(Missile).Assembly.GetType("SeaPower.MissileSimulator")` — no compile-time reference — whose
+signature differs (drops `stepsPerMile`, reorders the loft/evasive args, adds `arrivalMargin`, and uses
+a Chebyshev approximation). `_simIsBeta` selects the matching argument array at invoke time. Both branches
+fill the same out-lists (`traj`, `speeds`, `times`) and the return object is ignored, so the result-type
+rename is irrelevant here. Validity gate: `speeds.Count < 2 || times.Count != speeds.Count` → default
+(empty profile). When neither method resolves, the profile is empty and group-drag/`sim-traj` no-op.
 
 `CumulativeDistance` (FlightTime.cs:205-218) integrates P(t) via trapezoidal rule from
 t=0 to tEnd. Units are knot·seconds. The knots→unity factor cancels in the 2.5 ratio

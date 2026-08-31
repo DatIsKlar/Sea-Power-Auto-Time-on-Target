@@ -159,6 +159,7 @@ namespace AutoTOT
 
         private static MethodInfo _simulateShotMethod;
         private static bool _simulateLookedUp;
+        private static bool _simIsBeta; // resolved method is MissileSimulator.EstimateShot (beta branch)
 
         /// <summary>
         /// Extra arrival delay (seconds) for a GROUPED salvo of this ammo whose launcher ripples the
@@ -293,12 +294,29 @@ namespace AutoTOT
                 if (!_simulateLookedUp)
                 {
                     _simulateLookedUp = true;
+                    // Stable branch: Missile.SimulateShotLinear (step-by-step sim).
                     _simulateShotMethod = typeof(Missile).GetMethod("SimulateShotLinear", new Type[]
                     {
                         typeof(AmmunitionParameters), typeof(Vector3), typeof(float), typeof(Vector3), typeof(Vector3),
                         typeof(bool), typeof(float), typeof(float), typeof(float),
                         typeof(List<Vector3>), typeof(List<float>), typeof(List<float>), typeof(float), typeof(bool)
                     });
+                    _simIsBeta = false;
+                    if (_simulateShotMethod == null)
+                    {
+                        // Beta branch: the sim moved to MissileSimulator.EstimateShot with a different
+                        // signature (drops stepsPerMile, reorders loft/evasive, adds arrivalMargin;
+                        // Chebyshev algorithm). Resolve the type by name — no compile-time reference —
+                        // exactly like the KinematicRangeResult version-drift absorption. Same out-lists.
+                        Type ms = typeof(Missile).Assembly.GetType("SeaPower.MissileSimulator");
+                        _simulateShotMethod = ms?.GetMethod("EstimateShot", new Type[]
+                        {
+                            typeof(AmmunitionParameters), typeof(Vector3), typeof(float), typeof(Vector3), typeof(Vector3),
+                            typeof(bool), typeof(float), typeof(float), typeof(float), typeof(bool),
+                            typeof(List<Vector3>), typeof(List<float>), typeof(List<float>), typeof(bool)
+                        });
+                        _simIsBeta = _simulateShotMethod != null;
+                    }
                 }
                 if (_simulateShotMethod == null) return default;
 
@@ -309,12 +327,19 @@ namespace AutoTOT
                 Vector3 targetPos = target.transform.position;
                 Vector3 targetVel = target._velocityVecInUnity;
                 bool evasive = ap.AssumeEvasiveTarget(target);
-                // stepsPerMile 2f matches AmmunitionParameters.MaxRangePrecise's own call.
-                _simulateShotMethod.Invoke(null, new object[]
-                {
-                    ap, launchPos, unit._velocityInKnots, targetVel, targetPos, unit.IsAirUnit,
-                    -1f, 2f, -1f, traj, speeds, times, -1f, evasive
-                });
+                // stepsPerMile 2f matches AmmunitionParameters.MaxRangePrecise's own call (stable only).
+                object[] args = _simIsBeta
+                    ? new object[]
+                    {
+                        ap, launchPos, unit._velocityInKnots, targetVel, targetPos, unit.IsAirUnit,
+                        -1f, -1f, -1f, evasive, traj, speeds, times, true
+                    }
+                    : new object[]
+                    {
+                        ap, launchPos, unit._velocityInKnots, targetVel, targetPos, unit.IsAirUnit,
+                        -1f, 2f, -1f, traj, speeds, times, -1f, evasive
+                    };
+                _simulateShotMethod.Invoke(null, args);
                 if (speeds.Count < 2 || times.Count != speeds.Count) return default;
                 return new SpeedProfile
                 {

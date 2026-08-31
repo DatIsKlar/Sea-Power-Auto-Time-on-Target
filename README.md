@@ -20,7 +20,7 @@ appears in the in-game **Mods** menu like any other mod.
 
 | Requirement | Notes |
 |---|---|
-| Sea Power | Public and beta branches are supported by the same DLL (tested up to the Unity 6 build) |
+| Sea Power | Public and beta branches are supported by the same DLL (tested up to the Unity 6 build). Time-on-target accuracy is best on **public**; on beta the game's kinematic estimator (`EstimateShot`) is coarser, so arrivals converge less tightly — see `docs/plans/FUTURE-flight-time-gap.md` |
 | BepInEx 5.x | Installed in the game folder (provides logging, config, Harmony) |
 | Anchor Chain (Steam Workshop item `3380210757`) | The chainloader that loads this mod; it also installs its preloader into `BepInEx/plugins/`. Enable it in the Mods menu too |
 | Seapower Multiplayer *(optional)* | Not needed, but AutoTOT ships a shield for that mod's multiplayer world-re-init crash (see [How it works](#how-it-works)) |
