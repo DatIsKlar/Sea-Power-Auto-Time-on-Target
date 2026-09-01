@@ -140,7 +140,7 @@ namespace AutoTOT
                 return;
             }
 
-            float now = GameTime.time;
+            float now = GameClock.SimNow();
             foreach (EngagementBoard.SalvoLine e in _salvos)
             {
                 GUILayout.BeginHorizontal();

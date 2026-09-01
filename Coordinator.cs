@@ -213,7 +213,7 @@ namespace AutoTOT
                 _tickSw.Restart();
 
                 _stageSw.Restart();
-                LaunchDiagnostics.Tick(GameTime.time);
+                LaunchDiagnostics.Tick(GameClock.SimNow());
                 _stageSw.Stop();
                 _accDiagMs += (float)_stageSw.Elapsed.TotalMilliseconds;
                 _accScanLoopMs += LaunchDiagnostics.LastScanLoopMs;
@@ -271,7 +271,7 @@ namespace AutoTOT
             }
             else
             {
-                LaunchDiagnostics.Tick(GameTime.time);
+                LaunchDiagnostics.Tick(GameClock.SimNow());
                 CommitReadyBatches();
                 UpdateAnchorTracking();
                 ReleaseDueLaunches();
@@ -334,10 +334,25 @@ namespace AutoTOT
             Intent anchor = null;
             for (int i = 0; i < b.Items.Count; i++)
             {
-                float needed = EnrouteWithLead(b.Items[i]);
-                if (needed > maxEnroute) { maxEnroute = needed; anchor = b.Items[i]; }
+                Intent it = b.Items[i];
+                // Components of EnrouteWithLead, kept separate so the commit line below can show the
+                // firing-decision flight estimate (FlightTime.Estimate is 0.5s-TTL cached — this is a
+                // hit; GroupDelay is computed once per commit here regardless).
+                float flightEst = FlightTime.Estimate(it.Unit, it.AmmoId, it.Target);
+                float groupDelay = GroupDelay(it, it.ReleaseLead);
+                float needed = flightEst + it.ReleaseLead + it.StartupLead + groupDelay;
+                if (needed > maxEnroute) { maxEnroute = needed; anchor = it; }
+                // One line per shot at the moment its firing timing is locked in: the estimate that
+                // DROVE the decision. Pairs with the `gap` line at impact (simEst vs actual) so the
+                // firing-sim's accuracy is verifiable without the per-frame planning spam.
+                if (VerboseLog)
+                    Bootstrap.Log.LogInfo(
+                        $"[AutoTOT] commit {it.AmmoId} from {it.Unit.getUIDAndName()} -> " +
+                        $"{b.Target?.getUIDAndName()}: flightEst {flightEst:0.0}s, " +
+                        $"releaseLead {it.ReleaseLead:0.0}s, startupLead {it.StartupLead:0.0}s, " +
+                        $"groupDelay {groupDelay:0.0}s, enroute {needed:0.0}s");
             }
-            Schedule(b.Items, GameTime.time + maxEnroute, anchor);
+            Schedule(b.Items, GameClock.SimNow() + maxEnroute, anchor);
 
             if (VerboseLog || b.Items.Count > 1)
             {
@@ -532,7 +547,7 @@ namespace AutoTOT
         private static void UpdateAnchorTracking()
         {
             if (_scheduled.Count == 0) return;
-            float simNow = GameTime.time;
+            float simNow = GameClock.SimNow();
 
             for (int i = _scheduled.Count - 1; i >= 0; i--)
             {
@@ -624,9 +639,9 @@ namespace AutoTOT
 
         private static void ReleaseDueLaunches()
         {
-            if (_scheduled.Count == 0) { _lastReleaseSimNow = GameTime.time; return; }
+            if (_scheduled.Count == 0) { _lastReleaseSimNow = GameClock.SimNow(); return; }
 
-            float simNow = GameTime.time;
+            float simNow = GameClock.SimNow();
 
             // Half-a-frame lookahead: releases evaluate "time left <= flight time" with a flight
             // time estimated THIS frame, but the missile actually launches a fraction of a sim
@@ -850,11 +865,23 @@ namespace AutoTOT
             Intent anchor = null;
             for (int i = 0; i < items.Count; i++)
             {
-                float needed = EnrouteWithLead(items[i]);
-                if (needed > maxEnroute) { maxEnroute = needed; anchor = items[i]; }
+                Intent it = items[i];
+                // Decompose EnrouteWithLead so the commit line can show the firing-DECISION flight
+                // estimate (FlightTime.Estimate is 0.5s-TTL cached — this is a hit). Pairs with the
+                // `gap` line at impact (simEst vs actual) = firing-sim accuracy without planning spam.
+                float flightEst = FlightTime.Estimate(it.Unit, it.AmmoId, it.Target);
+                float groupDelay = GroupDelay(it, it.ReleaseLead);
+                float needed = flightEst + it.ReleaseLead + it.StartupLead + groupDelay;
+                if (needed > maxEnroute) { maxEnroute = needed; anchor = it; }
+                if (VerboseLog)
+                    Bootstrap.Log.LogInfo(
+                        $"[AutoTOT] commit {it.AmmoId} from {it.Unit.getUIDAndName()} -> " +
+                        $"{target.getUIDAndName()}: flightEst {flightEst:0.0}s, " +
+                        $"releaseLead {it.ReleaseLead:0.0}s, startupLead {it.StartupLead:0.0}s, " +
+                        $"groupDelay {groupDelay:0.0}s, enroute {needed:0.0}s");
             }
 
-            Schedule(items, GameTime.time + maxEnroute, anchor);
+            Schedule(items, GameClock.SimNow() + maxEnroute, anchor);
 
             Bootstrap.Log.LogInfo(
                 $"[AutoTOT] planner firing {items.Count} order(s) at {target.getUIDAndName()}: " +

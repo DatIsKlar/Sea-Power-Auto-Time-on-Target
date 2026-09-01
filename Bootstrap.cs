@@ -321,15 +321,40 @@ namespace AutoTOT
         /// <summary>Drives the coordinator once per frame. Detects mission transitions for state reset.</summary>
         private sealed class Pump : MonoBehaviour
         {
+            // A menu-open/pause briefly nulls _mainGameViewModel while the SAME mission keeps running.
+            // We must NOT Reset() on that transient — it wipes EngagementBoard + the flight tracker,
+            // discarding still-in-flight missiles. Only reset once the mission has been absent for a
+            // short debounce (a real exit stays absent; a menu/pause recovers next frame).
+            private const float ExitDebounceSeconds = 0.5f;
+
             private bool _wasInMission;
+            private bool _resetPending;   // mission absent, debounce not yet elapsed, reset not yet done
+            private float _absentSince;   // Time.unscaledTime when the mission first went absent
+
             private string _lastErrorMsg;
 
             private void Update()
             {
                 bool inMission = Globals._mainGameViewModel != null;
 
-                if (_wasInMission && !inMission)
-                    Coordinator.Reset();
+                if (inMission)
+                {
+                    _resetPending = false;   // mission (re)appeared — cancel any pending exit reset
+                }
+                else
+                {
+                    // Just went absent: start the debounce. Reset only after it elapses, exactly once.
+                    if (_wasInMission)
+                    {
+                        _resetPending = true;
+                        _absentSince = Time.unscaledTime;
+                    }
+                    if (_resetPending && (Time.unscaledTime - _absentSince) >= ExitDebounceSeconds)
+                    {
+                        Coordinator.Reset();
+                        _resetPending = false;
+                    }
+                }
                 _wasInMission = inMission;
 
                 if (!inMission) return;

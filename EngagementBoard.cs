@@ -22,7 +22,7 @@ namespace AutoTOT
         /// <summary>One target's engagement state. Rows only ever exist for coordinated targets.</summary>
         private sealed class Engagement
         {
-            public float FiredAtSim = -1f;  // GameTime.time of last release at this target; -1 = held only
+            public float FiredAtSim = -1f;  // sim time of last release at this target; -1 = held only
             public float ImpactSim = -1f;   // scheduled (or anchor-tracked live) impact time; -1 = none
             public float ImpactSpread;      // ± arrival spread (s); independent salvos only, 0 for grouped
             public int Waves = 1;           // reload-separated waves
@@ -77,10 +77,16 @@ namespace AutoTOT
 
         /// <summary>Called when a held shot is actually released at the target.</summary>
         internal static void MarkFired(ObjectBase target)
-            => GetOrCreate(target).FiredAtSim = GameTime.time;
+            => GetOrCreate(target).FiredAtSim = GameClock.SimNow();
 
         internal static bool HasFired(ObjectBase target)
             => _byTarget.TryGetValue(target, out Engagement e) && e.FiredAtSim >= 0f;
+
+        /// <summary>True if AutoTOT is coordinating this target (a row exists) — i.e. a missile at
+        /// it is one we fired, not an auto-fired defensive SAM. Scopes verbose per-missile
+        /// diagnostics to our own shots.</summary>
+        internal static bool IsCoordinated(ObjectBase target)
+            => target != null && _byTarget.ContainsKey(target);
 
         /// <summary>
         /// The target's last predicted (anchor-finalized) impact time, for residual logging.
@@ -121,7 +127,7 @@ namespace AutoTOT
         {
             outList.Clear();
             _salvoMap.Clear();
-            float now = GameTime.time;
+            float now = GameClock.SimNow();
 
             // Held (scheduled) shots and anchor-ripple progress.
             foreach (Coordinator.Scheduled s in Coordinator.ScheduledItems)

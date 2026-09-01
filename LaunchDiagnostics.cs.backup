@@ -35,20 +35,13 @@ namespace AutoTOT
                                            // the target dying (the board row is pruned on death). -1 = none.
             public float LastTelemetrySim; // throttle for the periodic `track` telemetry line.
             // ---- sim-vs-actual gap characterization (grounded flight-model investigation) ----
-            public float KinEstAtLaunch;   // FlightTime.Estimate captured at first sighting (active
-                                           // estimator; the grounded integrator on beta). -1 = unavailable.
-            public float LegacyEstAtLaunch; // Game's own EstimateShot InterceptTime at launch, logged
-                                           // beside KinEstAtLaunch to compare accuracy. -1 = unavailable.
-            public float PeakSpeedKn;      // Highest speed the LIVE missile reached in flight (kn).
-                                           // Ground truth for the integrator's stage-speed schedule.
+            public float KinEstAtLaunch;   // FlightTime.Estimate captured at first sighting (game's own
+                                           // single-shot sim InterceptTime). -1 = unavailable.
             public float PeakAltU;         // max altitude (Unity units) seen in flight — loft-arc height.
             public float LastSpeedKn;      // most-recent speed (kn) — approx terminal/impact speed.
-            public bool Coordinated;       // captured at first sighting: is this a missile AutoTOT
-                                           // fired (target has an EngagementBoard row)? Scopes all
-                                           // verbose diagnostics to our own shots (not defensive SAMs).
-            // ---- Part H: terminal-decel attribution (drag-break lines) ----
-            public float PrevSampleSpeedKn;       // speed (kn) at the previous telemetry sample; -1 = none
-            public float PrevSamplePitch;         // pitch (deg, game convention) at the previous sample
+            public string EstimatorMethod;   // which estimator was used (BuildFlyout, Analytical, MaxRangePrecise, straight-line)
+            public float AnalyticalEstAtLaunch; // CalculateMissileInterceptTimeAnalytical result for comparison. -1 = unavailable.
+            public float StepByStepEstAtLaunch; // CalculateMissileInterceptTime result for comparison. -1 = unavailable.
         }
 
         private const float TelemetryIntervalSim = 15f; // sim seconds between per-missile telemetry samples
@@ -76,7 +69,7 @@ namespace AutoTOT
             public ObjectBase Target;
             public int Requested;
             public int Launched;
-            public float DeadlineSim;  // sim time by which the salvo should have fully rippled
+            public float DeadlineSim;  // GameTime.time by which the salvo should have fully rippled
             public Coordinator.Scheduled Linked;   // scheduled entry when this order is a batch anchor
             public float IniInterval;  // a-priori per-round interval (adaptive-deadline fallback)
             public float WaveTailSim;  // expected span+gaps of reload waves after wave 1
@@ -129,39 +122,35 @@ namespace AutoTOT
                         float altU = w.transform != null ? w.transform.position.y : 0f;
                         if (altU > existing.PeakAltU) existing.PeakAltU = altU;
                         existing.LastSpeedKn = w._velocityInKnots;
-                        if (w._velocityInKnots > existing.PeakSpeedKn) existing.PeakSpeedKn = w._velocityInKnots;
                     }
                     // Refresh the stamped prediction while the board row still lives, so it picks up
                     // the anchor-finalized impact; keep the last non-negative value once it's gone.
                     if (EngagementBoard.TryGetPredictedImpact(tgt, out float livePred))
                         existing.PredictedImpact = livePred;
-                    if (existing.Coordinated)
-                        existing = MaybeLogTelemetry(w, tgt, existing, distM, simNow);
+                    existing = MaybeLogTelemetry(w, tgt, existing, distM, simNow);
                     _flightTracker[w] = existing;
                 }
                 else
                 {
                     EngagementBoard.TryGetPredictedImpact(tgt, out float pred0);
-                    // Only missiles AutoTOT fired (target has a coordination row) get verbose
-                    // per-missile diagnostics — defensive SAMs the escorts auto-fire target incoming
-                    // threats, which never get a row, so we skip their sim work and logging entirely.
-                    bool coordinated = EngagementBoard.IsCoordinated(tgt);
                     // Game's own single-shot sim InterceptTime for this shot, stamped so the impact
                     // line can print the sim-vs-actual gap. Cached (0.5s TTL) — LogTrackInit reuses it.
                     // Verbose-only: it feeds the verbose `gap` line, and a kinematic sim per new missile
                     // would be wasted work (and a spike under big salvos) in normal play.
                     float est = -1f;
-                    float legacyEst = -1f;
-                    if (verbose && coordinated && w._launchPlatform != null && w._ap != null)
-                    {
+                    if (verbose && w._launchPlatform != null && w._ap != null)
                         est = FlightTime.Estimate(w._launchPlatform, w._ap._ammunitionFileName, tgt);
-                        // The game's own EstimateShot InterceptTime, for side-by-side accuracy
-                        // comparison against the (now primary) grounded integrator. See gap line.
-                        legacyEst = FlightTime.MaxRangePreciseEndTime(w._launchPlatform, w._ap, tgt);
+                    float analyticalEst = -1f, stepByStepEst = -1f;
+                    if (verbose && w._launchPlatform != null && w._ap != null)
+                    {
+                        FlightTime.EstimateBothForDiag(w._launchPlatform, w._ap._ammunitionFileName, tgt);
+                        analyticalEst = FlightTime.LastAnalyticalResult;
+                        stepByStepEst = FlightTime.LastStepByStepResult;
                     }
+                    string estMethod = FlightTime.LastEstimatorMethod;
                     var fresh = new FlightSample
                     {
-                        LaunchTime = GameClock.LaunchStamp(w),
+                        LaunchTime = w._launchTime,
                         AmmoName = (w._ap != null ? w._ap._ammunitionFileName : "?"),
                         TargetName = tgt.getUIDAndName(),
                         LastDistM = distM,
@@ -170,22 +159,18 @@ namespace AutoTOT
                         PredictedImpact = pred0,   // -1 if this target isn't (yet) coordinated
                         LastTelemetrySim = -1f,
                         KinEstAtLaunch = est,
-                        LegacyEstAtLaunch = legacyEst,
                         PeakAltU = verbose && w.transform != null ? w.transform.position.y : 0f,
                         LastSpeedKn = verbose ? w._velocityInKnots : 0f,
-                        PeakSpeedKn = verbose ? w._velocityInKnots : 0f,
-                        Coordinated = coordinated,
-                        PrevSampleSpeedKn = -1f,
+                        EstimatorMethod = estMethod,
+                        AnalyticalEstAtLaunch = analyticalEst,
+                        StepByStepEstAtLaunch = stepByStepEst,
                     };
                     // First sighting of this missile => it just left the rail. Credit it to the
                     // matching pending order (this branch fires exactly once per WeaponBase, so no
-                    // double count). Credited regardless of coordination (a no-op if nothing matches).
+                    // double count).
                     CreditLaunch(w, tgt);
-                    if (coordinated)
-                    {
-                        LogTrackInit(w, est);
-                        fresh = MaybeLogTelemetry(w, tgt, fresh, distM, simNow);
-                    }
+                    LogTrackInit(w, est);
+                    fresh = MaybeLogTelemetry(w, tgt, fresh, distM, simNow);
                     _flightTracker[w] = fresh;
                 }
             }
@@ -219,7 +204,7 @@ namespace AutoTOT
                 if (_flightTracker.TryGetValue(w, out FlightSample s))
                 {
                     float flightTime = s.LastSeenTime - s.LaunchTime;
-                    if (Coordinator.VerboseLog && s.Coordinated)
+                    if (Coordinator.VerboseLog)
                     {
                         string outcome = (s.LastDistM <= HitRangeM) ? "HIT" : "ended";
                         // Residual = observed impact − our predicted (anchor-finalized) impact, so the
@@ -239,13 +224,16 @@ namespace AutoTOT
                         // decel). Only meaningful for rounds that actually reached the target (HIT).
                         if (s.KinEstAtLaunch > 0f && outcome == "HIT")
                         {
-                            string legacy = s.LegacyEstAtLaunch > 0f
-                                ? $", legacyEst {s.LegacyEstAtLaunch:0.0}s (gap {flightTime - s.LegacyEstAtLaunch:+0.0;-0.0}s)"
+                            string analyticalDiag = s.AnalyticalEstAtLaunch > 0f
+                                ? $", analytical {s.AnalyticalEstAtLaunch:0.0}s (gap {flightTime - s.AnalyticalEstAtLaunch:+0.0;-0.0}s)"
+                                : "";
+                            string stepByStepDiag = s.StepByStepEstAtLaunch > 0f
+                                ? $", stepByStep {s.StepByStepEstAtLaunch:0.0}s (gap {flightTime - s.StepByStepEstAtLaunch:+0.0;-0.0}s)"
                                 : "";
                             Bootstrap.Log.LogInfo(
-                                $"[AutoTOT] gap {s.AmmoName} -> {s.TargetName}: simEst {s.KinEstAtLaunch:0.0}s, " +
+                                $"[AutoTOT] gap {s.AmmoName} -> {s.TargetName}: simEst {s.KinEstAtLaunch:0.0}s ({s.EstimatorMethod}), " +
                                 $"actual {flightTime:0.0}s, gap {flightTime - s.KinEstAtLaunch:+0.0;-0.0}s, " +
-                                $"peakAlt {s.PeakAltU:0}u, realPeakSpd {s.PeakSpeedKn:0}kn, termSpd {s.LastSpeedKn:0}kn{legacy}");
+                                $"peakAlt {s.PeakAltU:0}u, termSpd {s.LastSpeedKn:0}kn{analyticalDiag}{stepByStepDiag}");
                         }
                     }
                 }
@@ -301,7 +289,7 @@ namespace AutoTOT
                 Target = it.Target,
                 Requested = shots,
                 Launched = 0,
-                DeadlineSim = GameClock.SimNow() + ripple + waveTail + ExpectationMarginSim,
+                DeadlineSim = GameTime.time + ripple + waveTail + ExpectationMarginSim,
                 Linked = isAnchor ? sched : null,
                 IniInterval = interval,
                 WaveTailSim = waveTail,
@@ -323,10 +311,10 @@ namespace AutoTOT
                 if (e.Launched < e.Requested && e.Unit == platform && e.Target == tgt && e.AmmoFile == ammoFile)
                 {
                     e.Launched++;
-                    e.LastLaunchSim = GameClock.LaunchStamp(w);
+                    e.LastLaunchSim = w._launchTime;
                     // Feed the batch anchor's live impact prediction (observation anchoring).
                     if (e.Linked != null && e.Linked.IsAnchor && !e.Linked.RippleDone)
-                        e.Linked.LaunchTimes.Add(GameClock.LaunchStamp(w));
+                        e.Linked.LaunchTimes.Add(w._launchTime);
                     return;
                 }
             }
@@ -424,22 +412,6 @@ namespace AutoTOT
                     $"simInterceptTime {simT:0.0}s, simPeakAlt {simPeakAlt:0}u, " +
                     $"simSpd launch {vL:0}/mid {vM:0}/term {vT:0}kn");
             }
-
-            // Grounded-integrator per-phase breakdown — pins WHICH loft phase (climb/cruise/descent)
-            // the model gets wrong when its intercept time disagrees with the actual flown time.
-            // peakAlt vs loftAlt = climb-height error; a slow VTerm + long DescentTime = descent error.
-            if (w._launchPlatform != null && w.CurrentIntendedTargetObject != null &&
-                FlightTime.TryIntegratedPhaseDiag(w._launchPlatform, ap._ammunitionFileName,
-                    w.CurrentIntendedTargetObject, out float intT, out FlightTime.IntegratedPhases ph))
-            {
-                Bootstrap.Log.LogInfo(
-                    $"[AutoTOT] int-phases {ap._ammunitionFileName}#{w.GetInstanceID()}: " +
-                    $"intercept {intT:0.0}s, lofting {ph.Lofting}, loftAlt {ph.LoftAltTarget:0}u, " +
-                    $"peakAlt {ph.PeakAltU:0}u, climb {ph.ClimbTime:0.0}s/cruise {ph.CruiseTime:0.0}s/" +
-                    $"descent {ph.DescentTime:0.0}s, spd start {ph.VStart:0}/climbExit {ph.VClimbExit:0}/" +
-                    $"cruiseExit {ph.VCruiseExit:0}/term {ph.VTerm:0}kn, " +
-                    $"finalDist {ph.FinalDistU:0}u/termDist {ph.TermDistU:0}u");
-            }
         }
 
         // Throttled per-missile telemetry: actual vs nominal speed, group/leader state, in-group
@@ -449,7 +421,6 @@ namespace AutoTOT
         {
             if (!Coordinator.VerboseLog) return s;
             if (s.LastTelemetrySim >= 0f && (simNow - s.LastTelemetrySim) < TelemetryIntervalSim) return s;
-            float prevSampleSim = s.LastTelemetrySim;
             s.LastTelemetrySim = simNow;
 
             AmmunitionParameters ap = w._ap;
@@ -464,46 +435,6 @@ namespace AutoTOT
                 $"[AutoTOT] track {(ap != null ? ap._ammunitionFileName : "?")}#{w.GetInstanceID()} -> {SafeName(tgt)}: " +
                 $"t+{simNow - s.LaunchTime:0}s spd {w._velocityInKnots:0}/{nominal:0}kn {grp} " +
                 $"vGrp {vGrp:0} stage {stage} alt {altU:0.0} dist {distM / 1000f:0.0}km");
-
-            // Part H: attribute the live missile's speed change to the game's own CalculateDrag
-            // COMPONENTS (aero / lift-induced / gravity-along-path). Kinematic ammo only — that's
-            // where the mover's speed update is thrust-drag and the terminal-decel mystery lives.
-            // calc total vs observed Δspeed/Δt: if the game's helper can't account for the observed
-            // braking, the brake lives OUTSIDE CalculateDrag (next hunt: other _velocityInKnots
-            // writers). Pitch here is the LIVE mover's convention (wrapped localEulerAngles.x,
-            // positive = descending) — NOT our integrator's — so no sign flip.
-            if (ap != null && ap.Kinematics != AmmunitionParameters.KinematicsLevel.None &&
-                w.transform != null && tgt != null)
-            {
-                float pitchGame = w.transform.localEulerAngles.x;
-                if (pitchGame > 180f) pitchGame -= 360f; // Utils.WrapAngle
-                float sampleDt = prevSampleSim >= 0f ? simNow - prevSampleSim : -1f;
-                float pitchRate = sampleDt > 0.5f ? (pitchGame - s.PrevSamplePitch) / sampleDt : 0f;
-                float dt = GameClock.FixedDt();
-                if (dt > 0f && FlightTime.TryDragBreakdown(w, tgt, simNow - s.LaunchTime,
-                    pitchGame, pitchRate, dt,
-                    out float total, out float aero, out float induced, out float grav,
-                    out bool burning, out bool lockHeld, out float tgtAltUsed))
-                {
-                    string observed = (sampleDt > 0.5f && s.PrevSampleSpeedKn >= 0f)
-                        ? $"{(s.PrevSampleSpeedKn - w._velocityInKnots) / sampleDt:+0.0;-0.0}kn/s"
-                        : "n/a";
-                    // lock = seeker CurrentTarget state (Missile.cs:3171). While HELD the mover feeds
-                    // the target's altitude to CalculateDrag (dense → tiny lift drag); once DROPPED it
-                    // feeds the missile's own altitude (vacuum → inflated `ind` = the ~113kn/s brake).
-                    // `ind` here is that term; `tgtAlt` is the altitude actually fed (own when dropped).
-                    Bootstrap.Log.LogInfo(
-                        $"[AutoTOT] drag-break {ap._ammunitionFileName}#{w.GetInstanceID()}: " +
-                        $"t+{simNow - s.LaunchTime:0}s spd {w._velocityInKnots:0}kn alt {altU:0.0} " +
-                        $"pitch {pitchGame:0}° motor {burning} lock {(lockHeld ? "HELD" : "DROPPED")} " +
-                        $"tgtAlt {tgtAltUsed:0.0}" +
-                        $": calc {total:+0.0;-0.0}kn/s (aero {aero:+0.0;-0.0} ind {induced:+0.0;-0.0} " +
-                        $"grav {grav:+0.0;-0.0}) vs observed {observed} " +
-                        $"dragFactor {ap.GetDragFactor(w._launchPlatform != null && w._launchPlatform.IsAirUnit):0.0}");
-                }
-                s.PrevSampleSpeedKn = w._velocityInKnots;
-                s.PrevSamplePitch = pitchGame;
-            }
             return s;
         }
 
