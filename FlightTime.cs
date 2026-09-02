@@ -591,6 +591,12 @@ namespace AutoTOT
 
                 const float KU = 0.0076554087f;  // knots -> Unity units/s (game constant)
                 const float dt = 0.1f;           // fixed step (game runs ~0.02s; 0.1 trades cost for a 1-shot calc)
+                // Zero-density altitude (Unity units): the game's atmosphere is
+                // Utils.CalculateAirDensity(alt) = (1 - 0.00163*alt)^4.256, which reaches ZERO at
+                // 1/0.00163 ≈ 613.5u. Above this line there is no aero drag, and CalculateDrag's
+                // induced-lift divisor floors at 0.001 → the ~800x terminal "vacuum brake". Derived
+                // from the game coefficient (not a fitted literal) so it tracks any modded atmosphere.
+                const float ZeroDensityAltU = 1f / 0.00163f;
                 Vector3 launchPos = unit.transform.position;
                 Vector3 targetPos = target.transform.position;
                 Vector3 targetVel = target._velocityVecInUnity;
@@ -630,6 +636,20 @@ namespace AutoTOT
                         loftAlt = cap;
                 }
                 bool lofting = loftAlt > Mathf.Max(launchPos.y, 0f) + 0.5f;
+
+                // --- Missile-class taxonomy (A2). Computed ONCE; every downstream branch reads these
+                // named locals instead of re-deriving ad-hoc conditions, so the taxonomy lives in one
+                // place. All grounded in ini/derived values, no per-missile constants.
+                //  - isNonKinematic (== nonKin): ApplyKinematics unset -> stage-speed seek, no drag
+                //    (ss-n-19/ss-n-12/yj-18a). Kinematic ammo use thrust + CalculateDrag.
+                //  - isTerminalLoft: ini TerminalLoft -> concave hold-then-descend; altitude driven by
+                //    the game's BuildAltitudeNodes curve (hhq-9b).
+                //  - isHighBallisticLofter: a kinematic missile whose loft tops ABOVE the zero-density
+                //    line -> it zoom-climbs into vacuum and needs the steep dive pitch + the terminal
+                //    vacuum brake (yj-20). Below the line there is drag the whole way, so no brake.
+                bool isTerminalLoft = ap._terminalLoft;
+                bool isHighBallisticLofter = !nonKin && lofting && loftAlt > ZeroDensityAltU;
+
                 float climbDeg = ap._maxLoftAngle > 0.5f ? ap._maxLoftAngle : 20f;
                 // Ascent climb angle. KINEMATIC lofters (ApplyKinematics=True: yj-20/hhq-9b) climb
                 // NEAR-VERTICAL during boost, not at MaxLoftAngle: the game's loft waypoint sets
@@ -737,7 +757,7 @@ namespace AutoTOT
                 // short lookahead aim. Falls back to the geometric aim-at-target glide if the handle misses.
                 Vector2[] altNodes = null;
                 float flatDistTotal = new Vector2(targetPos.x - launchPos.x, targetPos.z - launchPos.z).magnitude;
-                if (ap._terminalLoft && _altNodesMethod != null && flatDistTotal > 1f)
+                if (isTerminalLoft && _altNodesMethod != null && flatDistTotal > 1f)
                 {
                     try
                     {
@@ -832,7 +852,7 @@ namespace AutoTOT
                         // line), dive at descentOnsetDeg (the steeper Max(finalPhase, seaSkim) already used for
                         // the geometric onset) instead of descentDeg. Grounded (both are real ini caps, no
                         // fitted constant); scoped by loftAlt so low/sea-skim ammo keep descentDeg unchanged.
-                        float diveDeg = (loftAlt > 613f) ? descentOnsetDeg : descentDeg;
+                        float diveDeg = isHighBallisticLofter ? descentOnsetDeg : descentDeg;
                         if (altErr > 0.5f) targetPitch = boostClimbDeg;   // near-vertical for kinematic lofters
                         else if (altErr < -0.5f) targetPitch = -diveDeg;
 
@@ -845,7 +865,7 @@ namespace AutoTOT
                         // descentDeg. Purely geometric — no fitted constant. Latch once apex is reached so a
                         // sinking altitude doesn't read as "climb again". Gated on _terminalLoft: yj-20 (not
                         // TerminalLoft) and every other ammo keep the region model / vacuum brake untouched.
-                        if (ap._terminalLoft && lofting)
+                        if (isTerminalLoft && lofting)
                         {
                             if (altNodes != null)
                             {
@@ -948,16 +968,23 @@ namespace AutoTOT
                         // dragFactor/liftFactor/pitch are per-ini; NO fitted constant, general to any high
                         // lofter. hhq-9b (loft 386u, never > 613) never triggers → unchanged. nonKin skips this
                         // branch. See plan Step 2 + STEP 1 RESULT.
-                        // Step 3: the gate ALSO requires a steep nose-over (pitchDeg < -40°, our
-                        // climb-positive convention). Step 2 (phase2 && >613 only) fired the brake at
-                        // dive ONSET while still near-level (pitch −4°): cos≈1 → num9 MAXIMAL, and sin≈0
-                        // → the missile barely descended → braked in place at ~1129u → runaway crater →
-                        // fallback. The real lock drops only MID-nose-over at ~59° (drag-break t+105),
-                        // where the missile is already diving fast+steep and clears the >613u band in a
-                        // few seconds → brief ~10s transient. Requiring a >40° dive mirrors that: brake
-                        // holds off until steeply nosed over, then self-terminates as altitude drops.
-                        // 40° = "steeply diving" (past the ini descent caps), not a yj-20 fit.
-                        bool inVacuumDive = phase == 2 && pos.y > 613f && pitchDeg < -40f;
+                        // Step 3: the third condition is a steep nose-over (pitchDeg < -40°, our
+                        // climb-positive convention) — the proxy for the seeker LOCK-DROP that makes the
+                        // mover feed own-altitude. Step 2 (phase2 && >613 only) fired the brake at dive
+                        // ONSET while still near-level (pitch −4°): cos≈1 → num9 MAXIMAL, sin≈0 → braked in
+                        // place → runaway crater → fallback. The real lock drops only mid-nose-over at ~59°.
+                        // A4/A4b (REVERTED): grounding this in the seeker cone geometry
+                        // (Vector3.Angle(velocity, dirToTarget) > _seekerFOV/2 or _seekerGimbalFOV/2,
+                        // SeekerBase.isInGimbalFOV) was tried TWICE and FALSIFIED by the real telemetry:
+                        // the real yj-20 HELD lock at t+90 (near-level, ~39° look angle) and DROPPED it at
+                        // t+105 (steep 59° dive, ~20° look angle) — it dropped when the look angle was
+                        // SMALLER, so the real lock-drop tracks the steep terminal DIVE, not look-angle
+                        // geometry (a look-angle gate on our smoothed/shallower pitch fires at the wrong
+                        // moment — while near-level at apex). So `-40°` is kept as the faithful, general
+                        // "steeply-diving" descriptor of the terminal lock-drop; it fires within phase 2 on
+                        // our own dive pitch, is not a yj-20 fit (any high lofter noses over past 40°), and
+                        // delivers yj-20 −5. See plan A4/A4b RESULT.
+                        bool inVacuumDive = phase == 2 && pos.y > ZeroDensityAltU && pitchDeg < -40f;
                         dragArgs[6] = inVacuumDive ? pos.y : predTgt.y;
                         dragArgs[7] = ap.LiftFactor; dragArgs[8] = ap.MinVelocity; dragArgs[9] = -pitchRate;
                         dragThisStep = (float)_dragMethod.Invoke(null, dragArgs);
