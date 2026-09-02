@@ -62,6 +62,7 @@ namespace AutoTOT
         private const float FlightRefreshNearSim = 0.3f;   // faster refresh cadence once an item is near its release gate
         private const float FlightGateMargin = 3f;         // within this much slack of release => treat as near-release
         private const int MaxFlightEstimatesPerFrame = 12; // per-frame ceiling on fresh kinematic sims (bounds worst-frame cost)
+        private const int ProfilingReportIntervalFrames = 60;
 
         /// <summary>
         /// One player missile order held for coordinated release. Orders stay WHOLE — each is
@@ -118,7 +119,6 @@ namespace AutoTOT
             public int AnchorShots;     // launches anchoring keys on (first wave)
             public float IniInterval;   // a-priori per-round interval (seed until 2+ launches observed)
             public float PredictedImpact;
-            public Scheduled AnchorOf;  // this item's batch anchor (null if this IS the anchor)
             public readonly List<float> LaunchTimes = new List<float>(); // observed launch times (sim s)
             public int LastLoggedLaunches = -1;
             public float FiredAtSim = -1f;
@@ -137,9 +137,27 @@ namespace AutoTOT
         private static readonly Dictionary<ObjectBase, Batch> _openBatches = new Dictionary<ObjectBase, Batch>();
         private static readonly List<Scheduled> _scheduled = new List<Scheduled>();
 
-        // Cache for PredictAnchorImpact to avoid recomputing every frame
-        private static readonly Dictionary<Scheduled, float> _predictCache = new Dictionary<Scheduled, float>();
-        private static readonly Dictionary<Scheduled, int> _predictCacheKey = new Dictionary<Scheduled, int>();
+        // Cache for PredictAnchorImpact to avoid recomputing every frame. Keyed on the ripple
+        // state (observed launches k, measured cadence) with a sim-time TTL on top: while the
+        // ripple state holds, the prediction is reused until the TTL expires, then re-run so the
+        // live flight estimate picks up shooter/target motion between launches.
+        private struct PredictKey : IEquatable<PredictKey>
+        {
+            public int Launches;        // observed launch count k
+            public int IntervalMilli;   // measured cadence (milliseconds)
+            public bool Equals(PredictKey o) => Launches == o.Launches && IntervalMilli == o.IntervalMilli;
+            public override bool Equals(object obj) => obj is PredictKey k && Equals(k);
+            public override int GetHashCode() { unchecked { return (Launches * 397) ^ IntervalMilli; } }
+        }
+
+        private struct PredictCacheEntry
+        {
+            public PredictKey Key;
+            public float StampSim;
+            public float Value;
+        }
+
+        private static readonly Dictionary<Scheduled, PredictCacheEntry> _predictCache = new Dictionary<Scheduled, PredictCacheEntry>();
         private static readonly Dictionary<Scheduled, float> _groupDelayCache = new Dictionary<Scheduled, float>();
         private const float PredictCacheTtlSim = 0.5f;
 
@@ -193,7 +211,6 @@ namespace AutoTOT
             _openBatches.Clear();
             _scheduled.Clear();
             _predictCache.Clear();
-            _predictCacheKey.Clear();
             _groupDelayCache.Clear();
             _anchorFollowers.Clear();
             FlightTime.ClearCache();
@@ -208,12 +225,13 @@ namespace AutoTOT
         /// <summary>Pumped every frame from Bootstrap.Pump (only inside a mission).</summary>
         internal static void Tick()
         {
+            float simNow = GameClock.SimNow();
             if (ProfilingEnabled)
             {
                 _tickSw.Restart();
 
                 _stageSw.Restart();
-                LaunchDiagnostics.Tick(GameClock.SimNow());
+                LaunchDiagnostics.Tick(simNow);
                 _stageSw.Stop();
                 _accDiagMs += (float)_stageSw.Elapsed.TotalMilliseconds;
                 _accScanLoopMs += LaunchDiagnostics.LastScanLoopMs;
@@ -226,12 +244,12 @@ namespace AutoTOT
                 _accCommitMs += (float)_stageSw.Elapsed.TotalMilliseconds;
 
                 _stageSw.Restart();
-                UpdateAnchorTracking();
+                UpdateAnchorTracking(simNow);
                 _stageSw.Stop();
                 _accAnchorMs += (float)_stageSw.Elapsed.TotalMilliseconds;
 
                 _stageSw.Restart();
-                ReleaseDueLaunches();
+                ReleaseDueLaunches(simNow);
                 _stageSw.Stop();
                 _accReleaseMs += (float)_stageSw.Elapsed.TotalMilliseconds;
 
@@ -240,7 +258,7 @@ namespace AutoTOT
                 _accScheduled += _scheduled.Count;
                 _frameCount++;
 
-                if (_frameCount >= 60)
+                if (_frameCount >= ProfilingReportIntervalFrames)
                 {
                     float inv = 1f / _frameCount;
                     long totalHits = FlightTime.TofHits + FlightTime.ProfileHits + LauncherFactsSource.CacheHits;
@@ -264,17 +282,17 @@ namespace AutoTOT
                         $"       budget-skipped: {_accFlightBudgetSkipped / _frameCount:F1}/frame\n" +
                         $"    -> GroupDelay: {_accGroupDelayMs * inv:F2}ms ({_accGroupDelayCalls / _frameCount:F1} calls/frame)\n" +
                         $"    -> PredictAnchorImpact: FlightEst {_accPredictFlightMs * inv:F2}ms ({_accPredictFlightCalls / _frameCount:F1} calls) | GroupDelay {_accPredictGroupDelayMs * inv:F2}ms ({_accPredictGroupDelayCalls / _frameCount:F1} calls)\n" +
-                        $"  Cache {hitRate:F0}% hit ({totalHits}/{total}) [ToT {FlightTime.TofHits}/{FlightTime.TofMisses} h/m, sz {FlightTime.TofCacheSize}, evTtl {FlightTime.TofEvictionsTtl}, evCap {FlightTime.TofEvictionsCapacity}] [Profile {FlightTime.ProfileHits}/{FlightTime.ProfileMisses} h/m, sz {FlightTime.ProfileCacheSize}] [Facts {LauncherFactsSource.CacheHits}/{LauncherFactsSource.CacheMisses} h/m, sz {LauncherFactsSource.CacheSize}]");
+                        $"  Cache {hitRate:F0}% hit ({totalHits}/{total}) [ToT {FlightTime.TofHits}/{FlightTime.TofMisses} h/m, sz {FlightTime.TofCacheSize}, evTtl {FlightTime.TofEvictionsTtl}, evCap {FlightTime.TofEvictionsCapacity}] [Profile {FlightTime.ProfileHits}/{FlightTime.ProfileMisses} h/m, sz {FlightTime.ProfileCacheSize}, evTtl {FlightTime.ProfileEvictionsTtl}, evCap {FlightTime.ProfileEvictionsCapacity}] [Facts {LauncherFactsSource.CacheHits}/{LauncherFactsSource.CacheMisses} h/m, sz {LauncherFactsSource.CacheSize}]");
 
                     ResetProfiling();
                 }
             }
             else
             {
-                LaunchDiagnostics.Tick(GameClock.SimNow());
+                LaunchDiagnostics.Tick(simNow);
                 CommitReadyBatches();
-                UpdateAnchorTracking();
-                ReleaseDueLaunches();
+                UpdateAnchorTracking(simNow);
+                ReleaseDueLaunches(simNow);
             }
         }
 
@@ -322,19 +340,20 @@ namespace AutoTOT
             }
         }
 
-        private static void CommitBatch(Batch b)
+        /// <summary>
+        /// Commit-time anchor pick: the anchor is the item that needs the most time (lone flight
+        /// + its launch-span lead + startup + group drag). It releases first; observation
+        /// anchoring then keys the batch's shared impact off the anchor's ACTUAL launches. Also
+        /// emits the per-shot verbose "commit" line with the estimate that drove the decision.
+        /// Shared by the batch-commit and planner-fire paths.
+        /// </summary>
+        private static Intent PickAnchor(List<Intent> items, ObjectBase target, out float maxEnroute)
         {
-            foreach (Intent it in b.Items)
-                PrepareIntent(it);
-
-            // The ANCHOR is the item that needs the most time: lone flight + its launch-span lead.
-            // It releases first; observation anchoring then keys the batch's shared impact off the
-            // anchor's ACTUAL launches.
-            float maxEnroute = 0f;
+            maxEnroute = 0f;
             Intent anchor = null;
-            for (int i = 0; i < b.Items.Count; i++)
+            for (int i = 0; i < items.Count; i++)
             {
-                Intent it = b.Items[i];
+                Intent it = items[i];
                 // Components of EnrouteWithLead, kept separate so the commit line below can show the
                 // firing-decision flight estimate (FlightTime.Estimate is 0.5s-TTL cached — this is a
                 // hit; GroupDelay is computed once per commit here regardless).
@@ -348,10 +367,19 @@ namespace AutoTOT
                 if (VerboseLog)
                     Bootstrap.Log.LogInfo(
                         $"[AutoTOT] commit {it.AmmoId} from {it.Unit.getUIDAndName()} -> " +
-                        $"{b.Target?.getUIDAndName()}: flightEst {flightEst:0.0}s, " +
+                        $"{target?.getUIDAndName()}: flightEst {flightEst:0.0}s, " +
                         $"releaseLead {it.ReleaseLead:0.0}s, startupLead {it.StartupLead:0.0}s, " +
                         $"groupDelay {groupDelay:0.0}s, enroute {needed:0.0}s");
             }
+            return anchor;
+        }
+
+        private static void CommitBatch(Batch b)
+        {
+            foreach (Intent it in b.Items)
+                PrepareIntent(it);
+
+            Intent anchor = PickAnchor(b.Items, b.Target, out float maxEnroute);
             Schedule(b.Items, GameClock.SimNow() + maxEnroute, anchor);
 
             if (VerboseLog || b.Items.Count > 1)
@@ -361,10 +389,6 @@ namespace AutoTOT
                     $"longest enroute {maxEnroute:0.0}s, anchor {anchor?.AmmoId}, impacts synced.");
             }
         }
-
-        private static float EnrouteWithLead(Intent it)
-            => FlightTime.Estimate(it.Unit, it.AmmoId, it.Target) + it.ReleaseLead + it.StartupLead
-               + GroupDelay(it, it.ReleaseLead);
 
         /// <summary>
         /// Group-drag arrival delay for a grouped salvo: the leader throttles to 0.6x speed to let
@@ -468,10 +492,7 @@ namespace AutoTOT
                 foreach (Scheduled s in added)
                 {
                     if (!s.IsAnchor)
-                    {
-                        s.AnchorOf = anchorSched;
                         followers.Add(s);
-                    }
                 }
                 _anchorFollowers[anchorSched] = followers;
             }
@@ -495,11 +516,10 @@ namespace AutoTOT
         /// </summary>
         private static float PredictAnchorImpact(Scheduled a, Intent it, int k, int n, float interval)
         {
-            _stageSw.Restart();
-            float est = FlightTime.Estimate(it.Unit, it.AmmoId, it.Target);
-            _stageSw.Stop();
-            _accPredictFlightMs += (float)_stageSw.Elapsed.TotalMilliseconds;
-            _accPredictFlightCalls++;
+            float est;
+            if (ProfilingEnabled) { _stageSw.Restart(); est = FlightTime.Estimate(it.Unit, it.AmmoId, it.Target); _stageSw.Stop();
+                _accPredictFlightMs += (float)_stageSw.Elapsed.TotalMilliseconds; _accPredictFlightCalls++; }
+            else est = FlightTime.Estimate(it.Unit, it.AmmoId, it.Target);
             
             if (k <= 0 || est <= FlightTime.MinValidSeconds) return a.ImpactAtSim;
 
@@ -507,11 +527,10 @@ namespace AutoTOT
             float lastRoundLaunch = (k >= n) ? lastLaunch : lastLaunch + interval * (n - k);
             float span = lastRoundLaunch - a.LaunchTimes[0];
             
-            _stageSw.Restart();
-            float groupDelay = GroupDelay(it, span);
-            _stageSw.Stop();
-            _accPredictGroupDelayMs += (float)_stageSw.Elapsed.TotalMilliseconds;
-            _accPredictGroupDelayCalls++;
+            float groupDelay;
+            if (ProfilingEnabled) { _stageSw.Restart(); groupDelay = GroupDelay(it, span); _stageSw.Stop();
+                _accPredictGroupDelayMs += (float)_stageSw.Elapsed.TotalMilliseconds; _accPredictGroupDelayCalls++; }
+            else groupDelay = GroupDelay(it, span);
             
             return lastRoundLaunch + est - (it.Grouped ? 0f : it.ReleaseLead) + groupDelay;
         }
@@ -544,10 +563,9 @@ namespace AutoTOT
         /// Finalizes when the first wave has fully launched (k >= n), or when launches stall
         /// (shortfall / gating) — held orders keep whatever prediction was last written.
         /// </summary>
-        private static void UpdateAnchorTracking()
+        private static void UpdateAnchorTracking(float simNow)
         {
             if (_scheduled.Count == 0) return;
-            float simNow = GameClock.SimNow();
 
             for (int i = _scheduled.Count - 1; i >= 0; i--)
             {
@@ -566,21 +584,24 @@ namespace AutoTOT
                 if (k >= 2) interval = (a.LaunchTimes[k - 1] - a.LaunchTimes[0]) / (k - 1);
                 if (interval <= 0f) interval = a.IniInterval > 0f ? a.IniInterval : LauncherFactsSource.FallbackShotInterval;
 
-                // Use cached prediction if available and inputs haven't changed
-                int cacheKey = k * 1000 + (int)(interval * 100);
+                // Prediction cache: reuse while the ripple state (k, interval) is unchanged AND
+                // the entry is fresh within the sim TTL. An expired entry re-runs
+                // PredictAnchorImpact so the live flight estimate tracks shooter/target motion
+                // between launches. (An earlier int-mixed key collided once cadence >= 10 s and
+                // had no TTL at all, freezing the prediction between launches.)
+                PredictKey cacheKey = new PredictKey { Launches = k, IntervalMilli = Mathf.RoundToInt(interval * 1000f) };
                 float pred;
-                if (_predictCache.TryGetValue(a, out pred) && _predictCacheKey.TryGetValue(a, out int cachedKey) && cachedKey == cacheKey)
+                if (_predictCache.TryGetValue(a, out PredictCacheEntry cached) &&
+                    cached.Key.Equals(cacheKey) && (simNow - cached.StampSim) < PredictCacheTtlSim)
                 {
-                    // Cache hit - use cached value
+                    pred = cached.Value;
                 }
                 else
                 {
-                    _stageSw.Restart();
-                    pred = PredictAnchorImpact(a, it, k, n, interval);
-                    _stageSw.Stop();
-                    _accAnchorPredictMs += (float)_stageSw.Elapsed.TotalMilliseconds;
-                    _predictCache[a] = pred;
-                    _predictCacheKey[a] = cacheKey;
+                    if (ProfilingEnabled) { _stageSw.Restart(); pred = PredictAnchorImpact(a, it, k, n, interval); _stageSw.Stop();
+                        _accAnchorPredictMs += (float)_stageSw.Elapsed.TotalMilliseconds; }
+                    else pred = PredictAnchorImpact(a, it, k, n, interval);
+                    _predictCache[a] = new PredictCacheEntry { Key = cacheKey, StampSim = simNow, Value = pred };
                 }
                 a.PredictedImpact = pred;
 
@@ -603,8 +624,8 @@ namespace AutoTOT
                 {
                     a.RippleDone = true;
                     _predictCache.Remove(a);
-                    _predictCacheKey.Remove(a);
                     _anchorFollowers.Remove(a);
+                    _groupDelayCache.Remove(a);
                     _scheduled.RemoveAt(i);
                     float span = (k > 1) ? a.LaunchTimes[k - 1] - a.LaunchTimes[0] : 0f;
                     Bootstrap.Log.LogInfo(
@@ -637,11 +658,9 @@ namespace AutoTOT
 
         private static float _lastReleaseSimNow = -1f;
 
-        private static void ReleaseDueLaunches()
+        private static void ReleaseDueLaunches(float simNow)
         {
-            if (_scheduled.Count == 0) { _lastReleaseSimNow = GameClock.SimNow(); return; }
-
-            float simNow = GameClock.SimNow();
+            if (_scheduled.Count == 0) { _lastReleaseSimNow = simNow; return; }
 
             // Half-a-frame lookahead: releases evaluate "time left <= flight time" with a flight
             // time estimated THIS frame, but the missile actually launches a fraction of a sim
@@ -661,6 +680,8 @@ namespace AutoTOT
                 if (it.Unit == null || it.Unit.IsDestroyed || it.Target == null || it.Target.IsDestroyed)
                 {
                     _groupDelayCache.Remove(s);
+                    _predictCache.Remove(s);          // fired-anchor ripple entries, if any
+                    _anchorFollowers.Remove(s);
                     _scheduled.RemoveAt(i);
                     // This item never fires, so its target may never get a fired row — which is
                     // what the engagement board's prune loop keys off. Drop the board row now if
@@ -678,13 +699,12 @@ namespace AutoTOT
                 float groupDelay;
                 if (!_groupDelayCache.TryGetValue(s, out groupDelay))
                 {
-                    _stageSw.Restart();
-                    groupDelay = GroupDelay(it, it.ReleaseLead);
-                    _stageSw.Stop();
-                    _accGroupDelayMs += (float)_stageSw.Elapsed.TotalMilliseconds;
+                    if (ProfilingEnabled) { _stageSw.Restart(); groupDelay = GroupDelay(it, it.ReleaseLead); _stageSw.Stop();
+                        _accGroupDelayMs += (float)_stageSw.Elapsed.TotalMilliseconds; }
+                    else groupDelay = GroupDelay(it, it.ReleaseLead);
                     _groupDelayCache[s] = groupDelay;
                 }
-                _accGroupDelayCalls++;
+                if (ProfilingEnabled) _accGroupDelayCalls++;
 
                 // Release must use the SAME estimator the commit path (EnrouteWithLead) scheduled
                 // the impact against, so positive slack exists and the per-item launch stagger
@@ -721,30 +741,37 @@ namespace AutoTOT
                 if (due && budgeted)
                 {
                     _flightEstimatesThisFrame++;
-                    _stageSw.Restart();
-                    flightNow = FlightTime.Estimate(it.Unit, it.AmmoId, it.Target);
-                    _stageSw.Stop();
-                    float callMs = (float)_stageSw.Elapsed.TotalMilliseconds;
-                    _accFlightEstimateMs += callMs;
-                    _accFlightCalls++;
-                    if (FlightTime.WasLastCallCacheHit)
+                    if (ProfilingEnabled)
                     {
-                        _accFlightEstimateHits++;
-                        _accFlightEstimateHitMs += callMs;
+                        _stageSw.Restart();
+                        flightNow = FlightTime.Estimate(it.Unit, it.AmmoId, it.Target);
+                        _stageSw.Stop();
+                        float callMs = (float)_stageSw.Elapsed.TotalMilliseconds;
+                        _accFlightEstimateMs += callMs;
+                        _accFlightCalls++;
+                        if (FlightTime.WasLastCallCacheHit)
+                        {
+                            _accFlightEstimateHits++;
+                            _accFlightEstimateHitMs += callMs;
+                        }
+                        else
+                        {
+                            _accFlightEstimateMisses++;
+                            _accFlightEstimateMissMs += callMs;
+                        }
                     }
-                    else
-                    {
-                        _accFlightEstimateMisses++;
-                        _accFlightEstimateMissMs += callMs;
-                    }
+                    else flightNow = FlightTime.Estimate(it.Unit, it.AmmoId, it.Target);
                     s.LastFlightEst = flightNow;
                     s.LastFlightEstSim = simNow;
                 }
                 else
                 {
                     flightNow = s.LastFlightEst;
-                    if (due) _accFlightBudgetSkipped++; // due but deferred by the per-frame cap
-                    else _accFlightDeferred++;          // not yet due (cadence)
+                    if (ProfilingEnabled)
+                    {
+                        if (due) _accFlightBudgetSkipped++;
+                        else _accFlightDeferred++;
+                    }
                 }
                 // Release early by: the ripple lead (centers the salvo on the coordinated impact),
                 // the fixed startup offset (PreLaunchDelay + expected reaction) the engage cycle burns
@@ -861,25 +888,7 @@ namespace AutoTOT
                 items.Add(it);
             }
 
-            float maxEnroute = 0f;
-            Intent anchor = null;
-            for (int i = 0; i < items.Count; i++)
-            {
-                Intent it = items[i];
-                // Decompose EnrouteWithLead so the commit line can show the firing-DECISION flight
-                // estimate (FlightTime.Estimate is 0.5s-TTL cached — this is a hit). Pairs with the
-                // `gap` line at impact (simEst vs actual) = firing-sim accuracy without planning spam.
-                float flightEst = FlightTime.Estimate(it.Unit, it.AmmoId, it.Target);
-                float groupDelay = GroupDelay(it, it.ReleaseLead);
-                float needed = flightEst + it.ReleaseLead + it.StartupLead + groupDelay;
-                if (needed > maxEnroute) { maxEnroute = needed; anchor = it; }
-                if (VerboseLog)
-                    Bootstrap.Log.LogInfo(
-                        $"[AutoTOT] commit {it.AmmoId} from {it.Unit.getUIDAndName()} -> " +
-                        $"{target.getUIDAndName()}: flightEst {flightEst:0.0}s, " +
-                        $"releaseLead {it.ReleaseLead:0.0}s, startupLead {it.StartupLead:0.0}s, " +
-                        $"groupDelay {groupDelay:0.0}s, enroute {needed:0.0}s");
-            }
+            Intent anchor = PickAnchor(items, target, out float maxEnroute);
 
             Schedule(items, GameClock.SimNow() + maxEnroute, anchor);
 

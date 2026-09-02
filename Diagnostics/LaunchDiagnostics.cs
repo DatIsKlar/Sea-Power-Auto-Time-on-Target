@@ -48,9 +48,6 @@ namespace AutoTOT
             public bool Coordinated;       // captured at first sighting: is this a missile AutoTOT
                                            // fired (target has an EngagementBoard row)? Scopes all
                                            // verbose diagnostics to our own shots (not defensive SAMs).
-            // ---- Part H: terminal-decel attribution (drag-break lines) ----
-            public float PrevSampleSpeedKn;       // speed (kn) at the previous telemetry sample; -1 = none
-            public float PrevSamplePitch;         // pitch (deg, game convention) at the previous sample
         }
 
         private const float TelemetryIntervalSim = 15f; // sim seconds between per-missile telemetry samples
@@ -104,12 +101,12 @@ namespace AutoTOT
         internal static void Tick(float simNow)
         {
             if (!Singleton<ObjectsManager>.InstanceExists()) return;
-            _tickSw.Restart();
+            if (Coordinator.ProfilingEnabled) _tickSw.Restart();
 
             List<WeaponBase> weapons = Singleton<ObjectsManager>.Instance._listOfAllWeapons;
             LastWeaponCount = weapons.Count;
             
-            _subSw.Restart();
+            if (Coordinator.ProfilingEnabled) _subSw.Restart();
             for (int i = 0; i < weapons.Count; i++)
             {
                 WeaponBase w = weapons[i];
@@ -184,7 +181,6 @@ namespace AutoTOT
                         LastSpeedKn = verbose ? w._velocityInKnots : 0f,
                         PeakSpeedKn = verbose ? w._velocityInKnots : 0f,
                         Coordinated = coordinated,
-                        PrevSampleSpeedKn = -1f,
                     };
                     // First sighting of this missile => it just left the rail. Credit it to the
                     // matching pending order (this branch fires exactly once per WeaponBase, so no
@@ -198,17 +194,15 @@ namespace AutoTOT
                     _flightTracker[w] = fresh;
                 }
             }
-            _subSw.Stop();
-            LastScanLoopMs = (float)(_subSw.Elapsed.TotalMilliseconds);
+            if (Coordinator.ProfilingEnabled) { _subSw.Stop(); LastScanLoopMs = (float)(_subSw.Elapsed.TotalMilliseconds); }
 
             LastTrackedMissiles = _flightTracker.Count;
             
-            _subSw.Restart();
+            if (Coordinator.ProfilingEnabled) _subSw.Restart();
             FinalizeExpectations(simNow);
-            _subSw.Stop();
-            LastFinalizeMs = (float)(_subSw.Elapsed.TotalMilliseconds);
+            if (Coordinator.ProfilingEnabled) { _subSw.Stop(); LastFinalizeMs = (float)(_subSw.Elapsed.TotalMilliseconds); }
 
-            _subSw.Restart();
+            if (Coordinator.ProfilingEnabled) _subSw.Restart();
             _trackerScratch.Clear();
             foreach (KeyValuePair<WeaponBase, FlightSample> kv in _flightTracker)
             {
@@ -216,11 +210,9 @@ namespace AutoTOT
                 if (w == null || w.IsDestroyed || w._type != ObjectBase.ObjectType.Missile)
                     _trackerScratch.Add(w);
             }
-            _subSw.Stop();
-            LastCleanupMs = (float)(_subSw.Elapsed.TotalMilliseconds);
+            if (Coordinator.ProfilingEnabled) { _subSw.Stop(); LastCleanupMs = (float)(_subSw.Elapsed.TotalMilliseconds); }
 
-            _tickSw.Stop();
-            LastTickMs = (float)(_tickSw.Elapsed.TotalMilliseconds);
+            if (Coordinator.ProfilingEnabled) { _tickSw.Stop(); LastTickMs = (float)(_tickSw.Elapsed.TotalMilliseconds); }
 
             for (int i = 0; i < _trackerScratch.Count; i++)
             {
@@ -334,11 +326,12 @@ namespace AutoTOT
                 LaunchExpectation e = _launchExpectations[i];
                 if (e.Launched < e.Requested && e.Unit == platform && e.Target == tgt && e.AmmoFile == ammoFile)
                 {
+                    float launchStamp = GameClock.LaunchStamp(w);   // one reflection read, reused
                     e.Launched++;
-                    e.LastLaunchSim = GameClock.LaunchStamp(w);
+                    e.LastLaunchSim = launchStamp;
                     // Feed the batch anchor's live impact prediction (observation anchoring).
                     if (e.Linked != null && e.Linked.IsAnchor && !e.Linked.RippleDone)
-                        e.Linked.LaunchTimes.Add(GameClock.LaunchStamp(w));
+                        e.Linked.LaunchTimes.Add(launchStamp);
                     return;
                 }
             }
@@ -424,19 +417,6 @@ namespace AutoTOT
                 $"nominal cruise {ap._maxVelocityInKnots:0}/loft {ap._maxLoftVelocityInKnots:0}/" +
                 $"term {ap._terminalVelocityInKnots:0} kn, kinEst {est:0.0}s, grouped {grouped}");
 
-            // Sim's OWN modeled trajectory, to compare against the actual peakAlt/termSpd in the `gap`
-            // line — pins whether the flight-time gap is loft-arc or speed-profile mismodeling.
-            if (w._launchPlatform != null && w.CurrentIntendedTargetObject != null &&
-                FlightTime.TryTrajectoryDiag(w._launchPlatform, ap._ammunitionFileName,
-                    w.CurrentIntendedTargetObject, out float simT, out float simPeakAlt,
-                    out float vL, out float vM, out float vT))
-            {
-                Bootstrap.Log.LogInfo(
-                    $"[AutoTOT] sim-traj {ap._ammunitionFileName}#{w.GetInstanceID()}: " +
-                    $"simInterceptTime {simT:0.0}s, simPeakAlt {simPeakAlt:0}u, " +
-                    $"simSpd launch {vL:0}/mid {vM:0}/term {vT:0}kn");
-            }
-
             // Grounded-integrator per-phase breakdown — pins WHICH loft phase (climb/cruise/descent)
             // the model gets wrong when its intercept time disagrees with the actual flown time.
             // peakAlt vs loftAlt = climb-height error; a slow VTerm + long DescentTime = descent error.
@@ -453,11 +433,6 @@ namespace AutoTOT
                     $"finalDist {ph.FinalDistU:0}u/termDist {ph.TermDistU:0}u");
             }
 
-            // Phase 1 spike (docs/plans/WAYPOINT-SIM-PORT.md): log the game waypoint plan's commanded
-            // loft altitude vs the real track — does KappaLoft overshoot MaxLoftAlt natively? No-op
-            // unless the waypoint reflection surface resolved (WaypointSim.Ready) and VerboseLog is on.
-            if (w._launchPlatform != null && w.CurrentIntendedTargetObject != null)
-                WaypointSim.TryLogWaypointCommand(w._launchPlatform, ap, w.CurrentIntendedTargetObject);
         }
 
         // Throttled per-missile telemetry: actual vs nominal speed, group/leader state, in-group
@@ -483,45 +458,6 @@ namespace AutoTOT
                 $"t+{simNow - s.LaunchTime:0}s spd {w._velocityInKnots:0}/{nominal:0}kn {grp} " +
                 $"vGrp {vGrp:0} stage {stage} alt {altU:0.0} dist {distM / 1000f:0.0}km");
 
-            // Part H: attribute the live missile's speed change to the game's own CalculateDrag
-            // COMPONENTS (aero / lift-induced / gravity-along-path). Kinematic ammo only — that's
-            // where the mover's speed update is thrust-drag and the terminal-decel mystery lives.
-            // calc total vs observed Δspeed/Δt: if the game's helper can't account for the observed
-            // braking, the brake lives OUTSIDE CalculateDrag (next hunt: other _velocityInKnots
-            // writers). Pitch here is the LIVE mover's convention (wrapped localEulerAngles.x,
-            // positive = descending) — NOT our integrator's — so no sign flip.
-            if (ap != null && ap.Kinematics != AmmunitionParameters.KinematicsLevel.None &&
-                w.transform != null && tgt != null)
-            {
-                float pitchGame = w.transform.localEulerAngles.x;
-                if (pitchGame > 180f) pitchGame -= 360f; // Utils.WrapAngle
-                float sampleDt = prevSampleSim >= 0f ? simNow - prevSampleSim : -1f;
-                float pitchRate = sampleDt > 0.5f ? (pitchGame - s.PrevSamplePitch) / sampleDt : 0f;
-                float dt = GameClock.FixedDt();
-                if (dt > 0f && FlightTime.TryDragBreakdown(w, tgt, simNow - s.LaunchTime,
-                    pitchGame, pitchRate, dt,
-                    out float total, out float aero, out float induced, out float grav,
-                    out bool burning, out bool lockHeld, out float tgtAltUsed))
-                {
-                    string observed = (sampleDt > 0.5f && s.PrevSampleSpeedKn >= 0f)
-                        ? $"{(s.PrevSampleSpeedKn - w._velocityInKnots) / sampleDt:+0.0;-0.0}kn/s"
-                        : "n/a";
-                    // lock = seeker CurrentTarget state (Missile.cs:3171). While HELD the mover feeds
-                    // the target's altitude to CalculateDrag (dense → tiny lift drag); once DROPPED it
-                    // feeds the missile's own altitude (vacuum → inflated `ind` = the ~113kn/s brake).
-                    // `ind` here is that term; `tgtAlt` is the altitude actually fed (own when dropped).
-                    Bootstrap.Log.LogInfo(
-                        $"[AutoTOT] drag-break {ap._ammunitionFileName}#{w.GetInstanceID()}: " +
-                        $"t+{simNow - s.LaunchTime:0}s spd {w._velocityInKnots:0}kn alt {altU:0.0} " +
-                        $"pitch {pitchGame:0}° motor {burning} lock {(lockHeld ? "HELD" : "DROPPED")} " +
-                        $"tgtAlt {tgtAltUsed:0.0}" +
-                        $": calc {total:+0.0;-0.0}kn/s (aero {aero:+0.0;-0.0} ind {induced:+0.0;-0.0} " +
-                        $"grav {grav:+0.0;-0.0}) vs observed {observed} " +
-                        $"dragFactor {ap.GetDragFactor(w._launchPlatform != null && w._launchPlatform.IsAirUnit):0.0}");
-                }
-                s.PrevSampleSpeedKn = w._velocityInKnots;
-                s.PrevSamplePitch = pitchGame;
-            }
             return s;
         }
 

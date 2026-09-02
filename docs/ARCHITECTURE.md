@@ -46,7 +46,7 @@ Two entry paths feed the same pipeline:
 
 ### Interceptability gates
 
-`Coordinator.TryIntercept` (Coordinator.cs:112-150) is called from the Harmony
+`Coordinator.TryIntercept` (Coordinator.cs) is called from the Harmony
 prefix on every `InsertEngageTask`. It returns `true` (order deferred into a
 batch) only when all of these hold:
 
@@ -59,12 +59,12 @@ batch) only when all of these hold:
 | 5 | `DoesAmmoMatchTarget` | Weapon can engage this target class |
 
 Any gate failing returns `false` and the original method runs unmodified. The
-order is appended to `_openBatches[target]` (Coordinator.cs:131-145), keyed by
+order is appended to `_openBatches[target]` (Coordinator.cs), keyed by
 the target object reference.
 
 ### Re-validation at fire time
 
-`Fire` (Coordinator.cs:638-666) re-checks that the unit and target are still
+`Fire` (Coordinator.cs) re-checks that the unit and target are still
 alive before issuing the deferred launch. If either is null or destroyed, the
 order is silently dropped. This handles the case where a held order's shooter
 or target dies during the stagger.
@@ -74,32 +74,34 @@ or target dies during the stagger.
 ### Collection window
 
 Orders accumulate in `_openBatches` until one of two conditions triggers commit
-(Coordinator.cs:183-188):
+(Coordinator.cs):
 
 - **Debounce**: `(now - LastRealTime) >= DebounceSeconds` (0.75 s)
 - **Hard cap**: `(now - FirstRealTime) >= MaxWindowSeconds` (6.0 s)
 
 Both use `Time.unscaledTime` (Unity unscaled real time), so the collection
 window advances during game pause and is unaffected by time compression. The
-config keys are `GroupWindowSeconds` and `MaxCollectSeconds` (Bootstrap.cs:213,
-217), wired into the fields at Bootstrap.cs:250-251.
+config keys are `GroupWindowSeconds` and `MaxCollectSeconds` (Bootstrap.cs,
+217), wired into the fields at Bootstrap.cs.
 
 ### Anchor selection
 
-`CommitBatch` (Coordinator.cs:200-223) calls `PrepareIntent` for every item in
-the batch, then selects the anchor. The anchor is the item with the strictly
-greatest `EnrouteWithLead` value (Coordinator.cs:208-214):
+`CommitBatch` (Coordinator.cs) calls `PrepareIntent` for every item in
+the batch, then `PickAnchor` selects the anchor (the planner path,
+`FireCoordinated`, calls the same helper). The anchor is the item with the
+strictly greatest enroute-with-lead total, computed inline in `PickAnchor`
+(Coordinator.cs):
 
 ```
-EnrouteWithLead = FlightTime.Estimate(unit, ammoId, target)
-                + ReleaseLead
-                + StartupLead
-                + GroupDelay(unit, ammoId, target, ReleaseLead)
+enroute = FlightTime.Estimate(unit, ammoId, target)
+        + ReleaseLead
+        + StartupLead
+        + GroupDelay(unit, ammoId, target, ReleaseLead)
 ```
 
 On a tie, the first item in `b.Items` order wins (the first maximum encountered
-is kept). The base impact time is fixed at commit: `GameTime.time + maxEnroute`
-(Coordinator.cs:215).
+is kept). The base impact time is fixed at commit: `GameClock.SimNow() + maxEnroute`
+(Coordinator.cs).
 
 ## Time model
 
@@ -109,20 +111,20 @@ of subtle bugs.
 | Time base | Source | Where used |
 |---|---|---|
 | Unscaled real time | `Time.unscaledTime` | Batch collection windows, TTL caches, mod-menu gate deadline |
-| Simulation time | `GameTime.time` | Everything after commit: impact times, stalls, releases, LaunchTimes, board grace, expectation deadlines |
+| Simulation time | `GameClock.SimNow()` (beta: `GameTime.missionElapsedTime`, fallback old `GameTime.time`) | Everything after commit: impact times, stalls, releases, LaunchTimes, board grace, expectation deadlines |
 | Frame count | `Time.frameCount` | HUD row cache invalidation |
 
 ### Pause and time compression
 
-**Pause**: `GameTime.time` stops advancing, so `timeLeft` never shrinks and no
+**Pause**: sim time stops advancing, so `timeLeft` never shrinks and no
 releases fire while paused. The `½·simStep` lookahead contributes zero because
 `simStep = 0`. Meanwhile the collection debounce and cap keep running on
 unscaled time, so batches can still lock in during pause (they cannot
 release until sim time resumes).
 
-**Time compression**: `GameTime.time` advances faster than frames. The
-`½·simStep` lookahead (Coordinator.cs:470-474) compensates the late-bias of
-evaluating flight time a fraction of a (sim) step before the missile actually
+**Time compression**: sim time advances faster than frames. The
+`½·simStep` lookahead (Coordinator.cs) compensates the late-bias of
+evaluating flight time a fraction of a (sim) step before the missile
 launches. `Mathf.Max(0f, ...)` guards against negative deltas.
 
 ## Why open-loop scheduling
@@ -179,7 +181,7 @@ LEADING edge), so the full-span trailing-edge assumption over-predicts and the s
 
 ## Release formula
 
-`ReleaseDueLaunches` (Coordinator.cs:496-503) evaluates every scheduled item every tick.
+`ReleaseDueLaunches` (Coordinator.cs) evaluates every scheduled item every tick.
 The release condition is:
 
 ```
@@ -198,25 +200,25 @@ Terms:
 - **`it.ReleaseLead`**: ripple-centering lead (half-span for independent, full-span for
   grouped).
 - **`it.StartupLead`**: fixed offset paid once before round 1, computed as
-  `PreLaunchDelay + ½·MaxReactiontime` (LauncherFacts.cs:127-135). `PreLaunchDelay` is
+  `PreLaunchDelay + ½·MaxReactiontime` (LauncherFacts.cs). `PreLaunchDelay` is
   the fixed wait after hatch opens (INI field, default 0). `MaxReactiontime` is the
   random reaction delay re-rolled per engage as uniform `[0, MaxReactiontime]`; only its
   expected value (half) can be taken.
 - **`groupDelay`**: the group-drag term above (0 for independent salvos).
 - **`lookahead`**: `0.5 * simStep`, where `simStep = simNow - _lastReleaseSimNow`
-  (Coordinator.cs:475). `simStep` is measured in sim time, so pause adds no lookahead.
-  `_lastReleaseSimNow` is reset to `-1f` on `Reset()` (Coordinator.cs:161), so the first
+  (Coordinator.cs). `simStep` is measured in sim time, so pause adds no lookahead.
+  `_lastReleaseSimNow` is reset to `-1f` on `Reset()` (Coordinator.cs), so the first
   post-reset tick computes no lookahead.
 
 ## Launcher facts deep-dive
 
-`LauncherFacts.Compute` (LauncherFacts.cs:73-182) derives the cadence, ready rounds,
+`LauncherFacts.Compute` (LauncherFacts.cs) derives the cadence, ready rounds,
 reserve, and reload timing for a given ship/ammo pair. It is the source of truth for
 `ShotInterval`, `StartupDelay`, `ReloadGap`, `ReadyRounds`, `Reserve`, and `PerContainer`.
 
 ### ShotInterval derivation
 
-The derivation chain (LauncherFacts.cs:91-125) has four stages:
+The derivation chain (LauncherFacts.cs) has four stages:
 
 1. **Base interval**: if `_salvoFireAmount > 1`, use `_salvoFireTime` (within-salvo ripple
    spacing). Else `60 / _fireRatePerMinute` if `_fireRatePerMinute > 0`, else 0.
@@ -232,26 +234,26 @@ The derivation chain (LauncherFacts.cs:91-125) has four stages:
    the duration lives in the animation asset, not a numeric field.
 4. **Guard**: NaN/Infinity/negative → 0.
 
-`MaxHatchOpenSeconds` (LauncherFacts.cs:165-182) walks the field chain:
+`MaxHatchOpenSeconds` (LauncherFacts.cs) walks the field chain:
 `WeaponSystem._containers` → `WeaponContainer._openAnimation` → `ObjectCodeAnimation._sequences`
 → each sequence's `_sequenceData` → last keyframe's `_time`. Takes the max across all
 containers and sequences.
 
 ### StartupDelay
 
-`StartupDelay = PreLaunchDelay + ½·MaxReactiontime` (LauncherFacts.cs:127-135). Paid ONCE
+`StartupDelay = PreLaunchDelay + ½·MaxReactiontime` (LauncherFacts.cs). Paid ONCE
 before round 1, not between rounds. Belongs in release lead as a fixed offset, not in
 `ShotInterval`.
 
 ### ReloadGap
 
-`ReloadGap = PerContainer ? 0 : _magazineReloadTime` (LauncherFacts.cs:137-140).
+`ReloadGap = PerContainer ? 0 : _magazineReloadTime` (LauncherFacts.cs).
 Per-container/VLS cells reload in parallel, so no whole-launcher gap. Otherwise the
 magazine reload time field.
 
 ### Ready rounds vs reserve
 
-Summed across ALL launchers serving the ammo (LauncherFacts.cs:142-154):
+Summed across ALL launchers serving the ammo (LauncherFacts.cs):
 
 - **`ReadyRounds`**: `getLoadedAmmoCount(ammoId)`, the game's LOGICAL seated tally
   (includes SpawnWhenNeeded launchers that keep spawned missile objects near 0 even when
@@ -310,6 +312,13 @@ launcher facts deep-dive above for the full derivation.
 Held orders track the running prediction: their `ImpactAtSim` is overwritten every
 tick until the ripple finalizes, so their unchanged release formula tracks reality.
 
+**Prediction cache.** `PredictAnchorImpact` is cached per anchor and reused while the
+ripple state (observed launches `k`, measured cadence) is unchanged, on a **0.5 s
+sim-time TTL** (`PredictCacheTtlSim`): an expired entry re-runs the prediction so the
+live flight estimate keeps tracking shooter/target motion between launches. The cache
+key is a `(k, interval)` struct. An earlier integer-mixed key collided once cadence
+reached 10 s and had no TTL at all, which froze the prediction between launches.
+
 ## Reload waves
 
 An order larger than the launcher's ready rounds fires in reload-separated waves
@@ -318,81 +327,37 @@ stay one wave). The first wave carries the anchoring; later waves arrive
 `waveGap = readyRounds·interval + reloadGap` apart each, shown split out in the
 ENGAGEMENTS overview.
 
-## Flight-time estimates deep-dive
+## Flight-time estimates
 
-> **Current model (beta, 2026-09-02).** `FlightTime.Estimate` → `KinematicRaw` now runs a
-> **three-tier chain**: a grounded forward-Euler **step integrator** (`IntegratedEndTime`, primary —
-> the full model is documented in `docs/plans/INTEGRATOR-ARCHITECTURE.md`), then the ported public
-> waypoint sim (`WaypointSim.EndTime`, middle fallback — see `docs/plans/WAYPOINT-SIM-PORT.md`), then
-> the legacy `EstimateShot`/`MaxRangePrecise` result (last resort). On the **public** branch the
-> integrator gates itself off (`_simIsBeta`), so the legacy path below is what runs there. The rest of
-> this section describes that legacy tier + the reflection/version-drift plumbing all three share; the
-> line numbers predate the integrator and are indicative.
+Full model documentation lives in [`FLIGHT-TIME-MODEL.md`](FLIGHT-TIME-MODEL.md).
+This section only summarizes what the scheduling pipeline consumes.
 
-`FlightTime.Estimate` asks the game's own kinematic simulator and falls back to straight-line max speed
-only if every tier declines.
+`FlightTime.Estimate` runs a tiered chain and returns the first valid result:
 
-### Reflection chain (legacy tier)
+| Tier | Estimator | Where it runs |
+|---|---|---|
+| 1 | Grounded step integrator (`FlightTime.IntegratedEndTime`): forward-Euler sim over the game's own thrust/drag helpers; models the trajectory shape itself | beta only, primary |
+| 2 | Ported waypoint sim (`WaypointSim.EndTime`): reflection port of the public branch's `SimulateShotLinear` | beta only, middle fallback |
+| 3 | Game estimator (`AmmunitionParameters.MaxRangePrecise`, `iterations=0`, reflection) | both branches; primary on public, last resort on beta |
+| 4 | Straight-line max speed | both branches, last-resort bound |
 
-`KinematicRaw` uses reflection to call
-`AmmunitionParameters.MaxRangePrecise(ObjectBase shooter, Vector3 targetPos, Vector3 targetVel, int iterations, bool evasive)`.
-The method is looked up once via `GetMethod` with the exact signature.
-`iterations = 0` means single-pass estimate. The game itself uses 8;
-the iterative version is ~8-9× the sim work and only nudged fast kinematic missiles by ~3 s,
-and does nothing for low-kinematics cruise missiles (whose real routing adds distance the
-linear sim can't capture).
+On the **beta** branch the built-in `EstimateShot` measured ~30 s off on lofting
+missiles, which is why the integrator is primary there. On the **public** branch
+the integrator gates itself off (`_simIsBeta`) and the game's own
+`SimulateShotLinear` drives timing. Each tier declines with −1 (missing
+reflection handle, stalled missile, out of range) and the chain asks the next
+one. `0` means unknown, never arrives-instantly; callers treat values at or
+below `MinValidSeconds` (0.01 s) as unavailable.
 
-### Version drift absorption
+Estimates are cached 0.5 s real time per `(UnitId, AmmoFile, TargetId)` key,
+declined results included. The straight-line fallback lives in a separate cache
+so it is never misreported as a kinematic result. `FlightTime.ClearCache()`,
+called from `Coordinator.Reset()`, clears all of them.
 
-The return type of `MaxRangePrecise` is not exposed publicly by the game assembly
-(FlightTime.cs:271-273). The code never names the return type. `_interceptTimeField` is
-bound lazily off the *runtime type of the first returned object*:
-`krObj.GetType().GetField("InterceptTime")` (FlightTime.cs:297-298). The
-`KinematicRangeResult` → `MissileSimulator` rename between game branches is absorbed
-because only the field name `InterceptTime` matters, resolved dynamically per loaded
-assembly. Field miss → `-1f`.
-
-### Straight-line fallback
-
-If the kinematic sim declines (returns ≤ `MinValidSeconds = 0.01f`), the fallback is
-straight-line max speed: `speed = _maxVelocityInKnots * KnotsToMs`; `result = MetersBetween(unit, target) / speedMs`
-(FlightTime.cs:78-80). `MinSpeedMs = 0.1f` guards against division by zero.
-
-### Return contract
-
-`0f` means "unknown", never "arrives instantly". Callers treat `≤ MinValidSeconds` as
-unavailable.
-
-### Speed profile simulation
-
-`ComputeSpeedProfile` calls the game's static shot simulator, resolving whichever branch is
-loaded (same version-drift philosophy as the result type above). Stable: `Missile.SimulateShotLinear`
-(step-by-step), 14 args with `stepsPerMile = 2f` matching `AmmunitionParameters.MaxRangePrecise`'s own
-call. If that method is absent (beta), it resolves `MissileSimulator.EstimateShot` by name via
-`typeof(Missile).Assembly.GetType("SeaPower.MissileSimulator")` — no compile-time reference — whose
-signature differs (drops `stepsPerMile`, reorders the loft/evasive args, adds `arrivalMargin`, and uses
-a Chebyshev approximation). `_simIsBeta` selects the matching argument array at invoke time. Both branches
-fill the same out-lists (`traj`, `speeds`, `times`) and the return object is ignored, so the result-type
-rename is irrelevant here. Validity gate: `speeds.Count < 2 || times.Count != speeds.Count` → default
-(empty profile). When neither method resolves, the profile is empty and group-drag/`sim-traj` no-op.
-
-`CumulativeDistance` (FlightTime.cs:205-218) integrates P(t) via trapezoidal rule from
-t=0 to tEnd. Units are knot·seconds. The knots→unity factor cancels in the 2.5 ratio
-(FlightTime.cs:159), so no unit conversion appears.
-
-`GroupFormingTauDiag` (FlightTime.cs:162-202) solves for τ_form: `targetDist = 2.5 * pSpan`;
-walk the profile segments; when `cum + seg >= targetDist`, interpolate
-`tauForm = t[i-1] + dt * Clamp01(need / seg)`. Cap: if the sim ends first, τ_form = total
-flight time. Delay: `candidateDelay = Max(0, 0.4 * tauForm - span)`.
-
-### Caching
-
-Both the kinematic estimate and the speed profile are cached with the same key shape:
-`TofKey { int UnitId; string AmmoFile; int TargetId }` (FlightTime.cs:41-54). TTL is
-0.5 s real time (`CacheTtlSeconds = 0.5f`, FlightTime.cs:30). Capacity is 512 (TtlCache
-default, TtlCache.cs:29). Negative/degenerate results are also cached for the TTL window
-(FlightTime.cs:96-100). Cache invalidation: `FlightTime.ClearCache()` (FlightTime.cs:103),
-called from `Coordinator.Reset()` (Coordinator.cs:157).
+The **speed profile** behind the group-drag correction (§Release lead) uses the
+same plumbing: `ComputeSpeedProfile` invokes the branch's shot simulator and
+records `(time, speed)` samples. When neither sim method resolves, the profile
+is empty and `groupDelay` no-ops.
 
 ## Launch observation and shortfall detection
 
@@ -401,32 +366,32 @@ tracker and launch expectations.
 
 ### Airborne missile discovery
 
-`Tick(simNow)` (LaunchDiagnostics.cs:78) is called every frame from `Coordinator.Tick`
-(Coordinator.cs:168). It polls `Singleton<ObjectsManager>.Instance._listOfAllWeapons`
-(LaunchDiagnostics.cs:82), the game's master weapon list. Filters per entry: skip
+`Tick(simNow)` (LaunchDiagnostics.cs) is called every frame from `Coordinator.Tick`
+(Coordinator.cs). It polls `Singleton<ObjectsManager>.Instance._listOfAllWeapons`
+(LaunchDiagnostics.cs), the game's master weapon list. Filters per entry: skip
 null/destroyed; require `w._type == ObjectBase.ObjectType.Missile` AND `w.IsPlayerObject`;
 require `w.CurrentIntendedTargetObject` non-null and not destroyed.
 
 ### Launch crediting
 
 First sighting of a friendly missile object in `_listOfAllWeapons` is the detection event
-(LaunchDiagnostics.cs:117-120). The timestamp attributed to the launch is the game's own
-`WeaponBase._launchTime` (LaunchDiagnostics.cs:108), not the mod's observation time.
+(LaunchDiagnostics.cs). The timestamp attributed to the launch is the game's own
+`WeaponBase._launchTime` (LaunchDiagnostics.cs), not the mod's observation time.
 
-`CreditLaunch` (LaunchDiagnostics.cs:218-238) matches the launched missile to an open
+`CreditLaunch` (LaunchDiagnostics.cs) matches the launched missile to an open
 expectation: linear scan for the first expectation with `Launched < Requested`, matching
 `Unit`, `Target`, and `AmmoFile` (the resolved `_ammunitionFileName`). On match:
 `Launched++`, `LastLaunchSim = w._launchTime`. If the expectation is linked to an anchor
 (`Linked != null && Linked.IsAnchor && !Linked.RippleDone`), append `w._launchTime` to
-`Linked.LaunchTimes` (LaunchDiagnostics.cs:233-234). This is the only writer of the
+`Linked.LaunchTimes` (LaunchDiagnostics.cs). This is the only writer of the
 anchor's `LaunchTimes` list.
 
 ### Impact reporting
 
 Detection is disappearance-based: after the scan, the tracker is walked; any key where
-`w == null || w.IsDestroyed || w._type != Missile` is collected (LaunchDiagnostics.cs:129-135).
+`w == null || w.IsDestroyed || w._type != Missile` is collected (LaunchDiagnostics.cs).
 For each vanished missile: `flightTime = LastSeenTime - LaunchTime`; outcome is `"HIT"` if
-`LastDistM <= HitRangeM` (500 m), else `"ended"` (LaunchDiagnostics.cs:144). Residual is
+`LastDistM <= HitRangeM` (500 m), else `"ended"` (LaunchDiagnostics.cs). Residual is
 printed only if `PredictedImpact >= 0f`: `residual = LastSeenTime - PredictedImpact`
 (observed impact − anchor-finalized predicted impact). The predicted impact is stamped
 from `EngagementBoard.TryGetPredictedImpact` at sample creation and survives target death
@@ -434,21 +399,21 @@ because the board row is pruned on death.
 
 ### Expectation registration
 
-`RegisterExpectation` (LaunchDiagnostics.cs:181-214) is called from `Coordinator.Fire`
-after the order is issued (Coordinator.cs:662). It computes:
+`RegisterExpectation` (LaunchDiagnostics.cs) is called from `Coordinator.Fire`
+after the order is issued (Coordinator.cs). It computes:
 
 ```
 ripple    = (shots - 1) * interval + Max(0, Waves - 1) * reload
 waveTail  = (Waves - 1) * (AnchorShots * interval + reload)   when Waves > 1, else 0
-DeadlineSim = GameTime.time + ripple + waveTail + ExpectationMarginSim (10 s)
+DeadlineSim = GameClock.SimNow() + ripple + waveTail + ExpectationMarginSim (10 s)
 ```
 
-`Linked` is set to the anchor's `Scheduled` entry only for anchors (LaunchDiagnostics.cs:210).
+`Linked` is set to the anchor's `Scheduled` entry only for anchors (LaunchDiagnostics.cs).
 
 ### Adaptive deadline
 
-`FinalizeExpectations` (LaunchDiagnostics.cs:242-305) is called every tick. The deadline
-is adaptive once launches begin (LaunchDiagnostics.cs:249-265): if `Launched > 0 && Launched < Requested`,
+`FinalizeExpectations` (LaunchDiagnostics.cs) is called every tick. The deadline
+is adaptive once launches begin (LaunchDiagnostics.cs): if `Launched > 0 && Launched < Requested`,
 the measured cadence is `(last − first) / (count − 1)` from the anchor's `LaunchTimes`
 (once count ≥ 2). The adaptive deadline is `LastLaunchSim + Max(4 * interval, 30 s) + WaveTailSim`.
 The deadline only ever extends. Rationale: realized cadence is often far slower than INI
@@ -456,7 +421,7 @@ pace; fixed deadlines caused false SHORTFALLs.
 
 ### Shortfall detection
 
-Close-out (LaunchDiagnostics.cs:267-303): `done = Launched >= Requested`. If not done and
+Close-out (LaunchDiagnostics.cs): `done = Launched >= Requested`. If not done and
 `simNow < DeadlineSim`, keep waiting. Otherwise: if `Launched >= Requested`, log "order
 complete" (VerboseLog only). Else compute `targetGone` / `shooterGone`. If the shooter is
 alive, gather `ready`/`reserve`/`inventory`. Severity split: if `targetGone || shooterGone`,
@@ -473,40 +438,40 @@ a single prune path.
 
 #### Row model
 
-`Engagement` class (EngagementBoard.cs:23-30) has fields: `FiredAtSim` (float, init −1;
-`GameTime.time` of last release at this target; −1 = held only), `ImpactSim` (float, init −1;
+`Engagement` class (EngagementBoard.cs) has fields: `FiredAtSim` (float, init −1;
+sim time of last release at this target, `GameClock.SimNow()`; −1 = held only), `ImpactSim` (float, init −1;
 scheduled or anchor-tracked live impact time; −1 = none), `ImpactSpread` (float; ± arrival
 spread in seconds; independent salvos only, 0 for grouped), `Waves` (int, init 1;
 reload-separated waves), `WaveGap` (float; sim seconds between successive wave impacts).
 
-Storage: `_byTarget` `Dictionary<ObjectBase, Engagement>` (EngagementBoard.cs:32-33),
-created lazily by `GetOrCreate` (EngagementBoard.cs:54-62).
+Storage: `_byTarget` `Dictionary<ObjectBase, Engagement>` (EngagementBoard.cs),
+created lazily by `GetOrCreate` (EngagementBoard.cs).
 
 #### Snapshot model
 
-`SalvoLine` struct (EngagementBoard.cs:41-52) is one HUD row: `Target`, `Queued` (shots
+`SalvoLine` struct (EngagementBoard.cs) is one HUD row: `Target`, `Queued` (shots
 still held), `InFlight` (friendly missiles in flight at target), `ImpactSim` (−1 if unknown),
 `ImpactSpread` (± s), `Waves` (1 = single wave), `WaveGap`, `AnchorLaunched` (launches
 observed so far), `AnchorTotal` (>0 while a batch anchor's ripple is tracked).
 
 Snapshot scratch buffers are reused every call to avoid per-frame allocation: `_salvoMap`
 (`Dictionary<ObjectBase, SalvoLine>`) and `_pruneScratch` (`List<ObjectBase>`)
-(EngagementBoard.cs:35-38).
+(EngagementBoard.cs).
 
 #### Write API
 
-- `RecordScheduled(target, impactSim, impactSpread, waves, waveGap)` (EngagementBoard.cs:65-72):
-  creates or overwrites the row. Called when a batch is scheduled (Coordinator.cs:331).
-- `UpdateImpact(target, impactSim)` (EngagementBoard.cs:75-76): rewrites `ImpactSim` only.
-  Called every coordinator tick while an anchor ripple is live (Coordinator.cs:421).
-- `MarkFired(target)` (EngagementBoard.cs:79-80): stamps `FiredAtSim = GameTime.time`.
-  Called from `Coordinator.Fire` (Coordinator.cs:661).
-- `Drop(target)` (EngagementBoard.cs:102-105): removes the row only if the target never
-  fired (`!HasFired`). Called from `Coordinator.DropImpactDataIfUnscheduled` (Coordinator.cs:564).
+- `RecordScheduled(target, impactSim, impactSpread, waves, waveGap)` (EngagementBoard.cs):
+  creates or overwrites the row. Called when a batch is scheduled (Coordinator.cs).
+- `UpdateImpact(target, impactSim)` (EngagementBoard.cs): rewrites `ImpactSim` only.
+  Called every coordinator tick while an anchor ripple is live (Coordinator.cs).
+- `MarkFired(target)` (EngagementBoard.cs): stamps `FiredAtSim = GameClock.SimNow()`.
+  Called from `Coordinator.Fire` (Coordinator.cs).
+- `Drop(target)` (EngagementBoard.cs): removes the row only if the target never
+  fired (`!HasFired`). Called from `Coordinator.DropImpactDataIfUnscheduled` (Coordinator.cs).
 
 #### Consolidation and prune
 
-`CollectSalvos` (EngagementBoard.cs:120-188) builds the snapshot in three passes:
+`CollectSalvos` (EngagementBoard.cs) builds the snapshot in three passes:
 
 1. **Held/anchor pass** over `Coordinator.ScheduledItems`: accumulate `Queued` for
    non-fired entries; for fired anchors with `!RippleDone`, set `AnchorLaunched` and
@@ -523,12 +488,12 @@ Snapshot scratch buffers are reused every call to avoid per-frame allocation: `_
 
 `Hud` (Hud.cs + partials Hud.Render.cs, Hud.Mouse.cs, Hud.Styles.cs) is an IMGUI planner
 panel. It is a `MonoBehaviour` added to the same `DontDestroyOnLoad` GameObject as `Pump`
-(Bootstrap.cs:152-155).
+(Bootstrap.cs).
 
 #### Data flow
 
-`DrawWindowInner` (Hud.cs:183-274) calls `EngagementBoard.CollectSalvos(_salvos)` at the
-top (Hud.cs:185), including while collapsed. The snapshot rebuild and the board's prune
+`DrawWindowInner` (Hud.cs) calls `EngagementBoard.CollectSalvos(_salvos)` at the
+top (Hud.cs), including while collapsed. The snapshot rebuild and the board's prune
 pass run every HUD draw frame.
 
 The panel shows:
@@ -539,8 +504,8 @@ The panel shows:
   SHOOTERS row (anchor name or "click one of your ships"), "whole formation" checkbox.
 - **Missile rows**: per ship, per ammo: checkbox, ammo name, count, ETA, range, salvo
   stepper (–/+), reload warning if `WillNeedReload`. The stepper's increment comes from
-  `SalvoStep()` (Hud.Render.cs), which reads `Event.current` modifiers — Shift → ±10,
-  Ctrl → ±5, else ±1 — and the result is clamped `Mathf.Max(1, …)` / `Mathf.Min(r.Count, …)`
+  `SalvoStep()` (Hud.Render.cs), which reads `Event.current` modifiers: Shift → ±10,
+  Ctrl → ±5, else ±1. The result is clamped `Mathf.Max(1, …)` / `Mathf.Min(r.Count, …)`
   so it lands on the launcher cell count. A dim hint line above the list advertises it.
 - **ENGAGEMENTS section**: per target: fogged label, status (`"{Queued} queued"`,
   `"{InFlight} in flight"`, `"anchoring {AnchorLaunched}/{AnchorTotal}"`), arrival
@@ -550,7 +515,7 @@ The panel shows:
 
 #### Fog-of-war-correct labels
 
-`FoggedLabel` (Hud.cs:410-432) uses the same source the game uses for contact display.
+`FoggedLabel` (Hud.cs) uses the same source the game uses for contact display.
 Enemy contacts are looked up via `Globals._playerTaskforce?.PlottingTable?.VehicleForObject(o)`.
 If not on the player's plot, "Unknown contact" (reveal nothing). If classified
 (`v.Class.HasValue`), real name. If unclassified, `"Contact {v.Id}"` plus `" — " + v.IncomingSignalInfo()`
@@ -558,11 +523,11 @@ when `v.HasSignalInfo()`.
 
 #### Mouse capture
 
-`UpdateMouseCapture` (Hud.Mouse.cs:41-87) pins `MouseControlState._isMouseOverUIWindow`
-via reflection to avoid the setter's per-frame `FindObjectsByType` (Hud.Mouse.cs:89-96).
+`UpdateMouseCapture` (Hud.Mouse.cs) pins `MouseControlState._isMouseOverUIWindow`
+via reflection to avoid the setter's per-frame `FindObjectsByType` (Hud.Mouse.cs).
 The latch logic honors prior-frame hover and covers same-frame arrival with no hover frame.
 Resize is driven by raw `Input` rather than IMGUI drag events, because IMGUI drag stops
-being delivered once a fast cursor outruns the window rect (Hud.Mouse.cs:16-18).
+being delivered once a fast cursor outruns the window rect (Hud.Mouse.cs).
 
 #### DPI scaling
 
@@ -585,8 +550,8 @@ hidden `OnGUI` early-outs and Update releases the over-UI capture (`SetOverUi(fa
 
 Scrollbar styles are applied only around the panel's own scroll view and restored, never
 written to the process-global `GUI.skin` shared with the BepInEx console and other IMGUI
-mods (Hud.Styles.cs:145-148, 177-179). The palette is sampled directly from the game's
-own panels (Hud.Styles.cs:11-12).
+mods (Hud.Styles.cs, 177-179). The palette is sampled directly from the game's
+own panels (Hud.Styles.cs).
 
 ## Bootstrap and lifecycle
 
@@ -594,22 +559,22 @@ own panels (Hud.Styles.cs:11-12).
 
 `AnchorChainEntry` (AnchorChainEntry.cs) is the `[ACPlugin]` entry point. AnchorChain's
 chainloader discovers the class via `[ACPlugin]` and calls `TriggerEntryPoint` when the
-mod is enabled. The only action is `Bootstrap.InitIfEnabled()` (AnchorChainEntry.cs:22),
+mod is enabled. The only action is `Bootstrap.InitIfEnabled()` (AnchorChainEntry.cs),
 wrapped in try/catch; any exception is logged.
 
 ### Mod-menu gate
 
-`InitIfEnabled` (Bootstrap.cs:49-67) calls `ModMenuEnabled()` (Bootstrap.cs:69-104).
+`InitIfEnabled` (Bootstrap.cs) calls `ModMenuEnabled()` (Bootstrap.cs).
 Three outcomes:
 
 - `false`: logs "AutoTOT is present but not enabled in the Mods menu — standing down."
   and returns.
 - `true`: calls `Init()`.
 - `null` (state not readable yet): creates `GameObject("AutoTOTModGate")`,
-  `DontDestroyOnLoad`, adds `ModMenuGate` component (Bootstrap.cs:63-67).
+  `DontDestroyOnLoad`, adds `ModMenuGate` component (Bootstrap.cs).
 
-`ModMenuGate` (Bootstrap.cs:260-287) polls `ModMenuEnabled()` in `Update`. While `null`
-and before the 120 s deadline (`GateDeadlineSeconds = 120f`, Bootstrap.cs:262-263), it
+`ModMenuGate` (Bootstrap.cs) polls `ModMenuEnabled()` in `Update`. While `null`
+and before the 120 s deadline (`GateDeadlineSeconds = 120f`, Bootstrap.cs), it
 returns. If `false`, logs and destroys itself without Init. If `true`, calls `Init()`.
 If still `null` at deadline, warns "Mod menu state still unreadable at deadline; loading
 anyway." then calls `Init()`.
@@ -621,73 +586,84 @@ run from BepInEx/plugins), returns `true` ("can't tell where we live; don't bloc
 
 ### Init ordering
 
-`Init` (Bootstrap.cs:106-158) runs once, guarded by `_initialized`:
+`Init` (Bootstrap.cs) runs once, guarded by `_initialized`:
 
-1. `LoadConfig()` (Bootstrap.cs:111).
+1. `LoadConfig()` (Bootstrap.cs).
 2. Unity exception forwarding: subscribe to `Application.logMessageReceived`
-   (Bootstrap.cs:116-117). Only `LogType.Exception` is relayed as `Log.LogError`
-   (Bootstrap.cs:241-245).
-3. `Harmony = new Harmony(Guid)` (Bootstrap.cs:119).
+   (Bootstrap.cs). Only `LogType.Exception` is relayed as `Log.LogError`
+   (Bootstrap.cs).
+3. `Harmony = new Harmony(Guid)` (Bootstrap.cs).
 4. Patch-target probe: `AccessTools.Method(typeof(ObjectBase), nameof(ObjectBase.InsertEngageTask))`
-   (Bootstrap.cs:123). Null → error log "patch target ... NOT found — the game version may be incompatible".
-5. `Harmony.PatchAll(typeof(Bootstrap).Assembly)` in try/catch (Bootstrap.cs:129-137).
-6. `DotsScanHardening.Install(Harmony)` after PatchAll (Bootstrap.cs:142). Explicit install
+   (Bootstrap.cs). Null → error log "patch target ... NOT found — the game version may be incompatible".
+5. `Harmony.PatchAll(typeof(Bootstrap).Assembly)` in try/catch (Bootstrap.cs).
+6. `DotsScanHardening.Install(Harmony)` after PatchAll (Bootstrap.cs). Explicit install
    instead of PatchAll because the exact target differs between Entities versions and
    `Unity.Entities.dll` may not be loaded yet.
-7. `LogAssembliesThatFailGetName()` diagnostic sweep (Bootstrap.cs:150).
+7. `LogAssembliesThatFailGetName()` diagnostic sweep (Bootstrap.cs).
 8. Pump GameObject: `new GameObject("AutoTOTPump")`, `DontDestroyOnLoad`,
-   `AddComponent<Pump>()`, `AddComponent<Hud>()` (Bootstrap.cs:152-155).
+   `AddComponent<Pump>()`, `AddComponent<Hud>()` (Bootstrap.cs).
 9. Final log: `"Auto Time-on-Target v{Version} loaded (Enabled={Coordinator.Enabled}, Armed={Coordinator.Active}, Unity={Application.unityVersion})."`
 
 ### Config
 
 Persistence: `path = Path.Combine(Paths.ConfigPath, Guid + ".cfg")` →
-`BepInEx/plugins/.../com.seapowermods.autotot.cfg` (Bootstrap.cs:198-199).
+`BepInEx/plugins/.../com.seapowermods.autotot.cfg` (Bootstrap.cs).
 
 | Section | Key | Type | Default | Range |
 |---|---|---|---|---|
-| General | Enabled | bool | true | — |
-| General | AutoModeOnStart | bool | false | — |
-| Interface | ShowIndicator | bool | true | — |
-| Interface | ToggleModifier | KeyCode | LeftAlt | — |
-| Interface | ToggleKey | KeyCode | T | — |
-| Interface | OpenPanelKey | KeyCode | G | — |
+| General | Enabled | bool | true | - |
+| General | AutoModeOnStart | bool | false | - |
+| Interface | ShowIndicator | bool | true | - |
+| Interface | ToggleModifier | KeyCode | LeftAlt | - |
+| Interface | ToggleKey | KeyCode | T | - |
+| Interface | OpenPanelKey | KeyCode | G | - |
+| Interface | UIScale | float | 0 | 0–4.0; 0 = auto with screen height |
+| Interface | UIScaleMultiplier | float | 1.0 | 0.5–2.0 fine-trim on top of UIScale |
 | Timing | GroupWindowSeconds | float | 0.75 | 0.05–5.0 |
 | Timing | MaxCollectSeconds | float | 6.0 | 0.25–20.0 |
-| Debug | VerboseLogging | bool | false | — |
+| Debug | VerboseLogging | bool | false | - |
+| Debug | Profiling | bool | false | - |
 
-`ApplyConfig` (Bootstrap.cs:247-257) pushes config values into `Coordinator` fields and
-HUD statics. `SettingChanged` handlers are wired on all eight entries (Bootstrap.cs:227-234).
+`ApplyConfig` (Bootstrap.cs) pushes config values into `Coordinator` fields and
+HUD statics. `SettingChanged` handlers are wired on all twelve entries (Bootstrap.cs).
 
 ### Pump mechanism
 
-`Pump` (Bootstrap.cs:290-319) is a `MonoBehaviour` that drives the coordinator once per
+`Pump` (Bootstrap.cs) is a `MonoBehaviour` that drives the coordinator once per
 frame. `Update`:
 
-- `inMission = Globals._mainGameViewModel != null` (Bootstrap.cs:297).
+- `inMission = Globals._mainGameViewModel != null` (Bootstrap.cs).
 - Mission-exit detection: `_wasInMission && !inMission` → `Coordinator.Reset()`
-  (Bootstrap.cs:299-300).
+  (Bootstrap.cs).
 - If not in mission, return.
-- `Coordinator.Tick()` in try/catch (Bootstrap.cs:305-307). On exception, deduped against
+- `Coordinator.Tick()` in try/catch (Bootstrap.cs). On exception, deduped against
   `_lastErrorMsg`, logged as `Log.LogError($"[AutoTOT] coordinator tick error:\n{e}")`
   only when the message changes.
 
 ## File map
 
+Sources live in five folders by concern: `Core/` (pipeline + lifecycle),
+`Simulation/` (flight-time estimation), `UI/` (planner panel), `Diagnostics/`
+(launch observation), `Support/` (shared utilities).
+
 | File | Responsibility |
 |---|---|
-| `AnchorChainEntry.cs` | AnchorChain entry point (`[ACPlugin]`) |
-| `Bootstrap.cs` | Mod-menu gate, config, Harmony patching + DOTS shield install, pump/HUD lifecycle, Unity-exception forwarding |
-| `Patches.cs` | Harmony prefix on `ObjectBase.InsertEngageTask` (ThreadStatic `Bypass` flag) |
-| `DotsScanHardening.cs` | Multiplayer mission-load crash shield for the DOTS assembly scan |
-| `Coordinator.cs` | The pipeline: batching, anchor selection, open-loop scheduling, release, fire |
-| `FlightTime.cs` | Kinematic flight-time estimation + TTL cache |
-| `LauncherFacts.cs` | Launcher cadence / ready rounds / reserve + TTL cache + reload-wave helpers |
-| `LaunchDiagnostics.cs` | Flight tracker (impact reports) + launch expectations (shortfall detection); feeds anchor launch times |
-| `EngagementBoard.cs` | Per-target engagement state for the HUD (consolidated: one row per target) |
-| `Hud.cs` (+ `.Render` `.Mouse` `.Styles` partials) | IMGUI planner panel: layout/data, drawing, pointer capture, styling |
-| `GameUnits.cs` | Shared unit conversions (Unity units ↔ metres/nm/knots) |
-| `TtlCache.cs` | Tiny real-time TTL cache used by FlightTime and LauncherFacts |
+| `Core/AnchorChainEntry.cs` | AnchorChain entry point (`[ACPlugin]`) |
+| `Core/Bootstrap.cs` | Mod-menu gate, config, Harmony patching + DOTS shield install, pump/HUD lifecycle, Unity-exception forwarding |
+| `Core/Patches.cs` | Harmony prefix on `ObjectBase.InsertEngageTask` (ThreadStatic `Bypass` flag) |
+| `Core/Coordinator.cs` | The pipeline: batching, anchor selection, open-loop scheduling, release, fire |
+| `Simulation/FlightTime.cs` | Flight-time API: tier wiring, TTL caches, straight-line fallback, speed profile + group-forming delay |
+| `Simulation/FlightTime.Integrator.cs` | Grounded step integrator (tier 1, beta) + phase diagnostics |
+| `Simulation/FlightTime.Reflection.cs` | Branch detection + reflection resolution for the game's sim internals |
+| `Simulation/WaypointSim.cs` | Reflection port of the public `SimulateShotLinear` (tier 2, beta) |
+| `Support/GameClock.cs` | Version-agnostic sim clock + launch-timestamp access (float/double beta drift) |
+| `Support/GameUnits.cs` | Shared unit conversions (Unity units ↔ metres/nm/knots) |
+| `Support/LauncherFacts.cs` | Launcher cadence / ready rounds / reserve + TTL cache + reload-wave helpers |
+| `Support/TtlCache.cs` | Tiny real-time TTL cache used by FlightTime and LauncherFacts |
+| `Support/DotsScanHardening.cs` | Multiplayer mission-load crash shield for the DOTS assembly scan |
+| `Diagnostics/LaunchDiagnostics.cs` | Flight tracker (impact reports) + launch expectations (shortfall detection); feeds anchor launch times |
+| `Diagnostics/EngagementBoard.cs` | Per-target engagement state for the HUD (consolidated: one row per target) |
+| `UI/Hud.cs` (+ `.Render` `.Mouse` `.Styles` partials) | IMGUI planner panel: layout/data, drawing, pointer capture, styling |
 
 ## Multiplayer crash shield: `DotsScanHardening`
 
@@ -740,21 +716,21 @@ set on the main thread cannot leak to a concurrent call on another thread, and v
 
 | Constant | Value | Location | Meaning |
 |---|---|---|---|
-| `DebounceSeconds` | 0.75 s | Coordinator.cs:31 | Real-time quiet gap before batch locks in |
-| `MaxWindowSeconds` | 6.0 s | Coordinator.cs:32 | Real-time hard cap on open batch |
-| `LookaheadFraction` | 0.5 | Coordinator.cs:36 | Release lookahead as fraction of one sim step |
-| `StallCadenceMultiplier` | 4 | Coordinator.cs:37 | Cadence-interval multiplier for stall detection |
-| `StallMinWindowSim` | 30 s | Coordinator.cs:38 | Floor (sim s) for the stall window |
-| `NoLaunchStallSim` | 120 s | Coordinator.cs:39 | Fired-but-zero-launches stall timeout (sim s) |
-| `PlannerTaskPriority` | 1000 | Coordinator.cs:40 | Task priority for planner-issued orders |
-| `EngageGrace` | 8 s | EngagementBoard.cs:20 | Sim seconds a fired target's row stays listed after going idle |
-| `ExpectationMarginSim` | 10 s | LaunchDiagnostics.cs:62 | Slack added beyond computed ripple time in the expectation deadline |
-| `HitRangeM` | 500 m | LaunchDiagnostics.cs:63 | A missile vanishing closer than this to its target counts as HIT |
-| `CacheTtlSeconds` | 0.5 s | FlightTime.cs:30, LauncherFacts.cs:18 | Kinematic estimate and launcher facts cache TTL (real time) |
-| `TtlCache` default capacity | 512 | TtlCache.cs:29 | Soft cap; expired-first purge, else full wipe |
-| `GateDeadlineSeconds` | 120 s | Bootstrap.cs:263 | Mod-menu read deadline; load anyway on timeout |
-| `MinValidSeconds` | 0.01 s | FlightTime.cs:36 | Below this an estimate is "unavailable" |
-| `FallbackShotInterval` | 1 s | LauncherFacts.cs:22 | Seed cadence when launcher facts are invalid (game's 60 rds/min default) |
+| `DebounceSeconds` | 0.75 s | Coordinator.cs | Real-time quiet gap before batch locks in |
+| `MaxWindowSeconds` | 6.0 s | Coordinator.cs | Real-time hard cap on open batch |
+| `LookaheadFraction` | 0.5 | Coordinator.cs | Release lookahead as fraction of one sim step |
+| `StallCadenceMultiplier` | 4 | Coordinator.cs | Cadence-interval multiplier for stall detection |
+| `StallMinWindowSim` | 30 s | Coordinator.cs | Floor (sim s) for the stall window |
+| `NoLaunchStallSim` | 120 s | Coordinator.cs | Fired-but-zero-launches stall timeout (sim s) |
+| `PlannerTaskPriority` | 1000 | Coordinator.cs | Task priority for planner-issued orders |
+| `EngageGrace` | 8 s | EngagementBoard.cs | Sim seconds a fired target's row stays listed after going idle |
+| `ExpectationMarginSim` | 10 s | LaunchDiagnostics.cs | Slack added beyond computed ripple time in the expectation deadline |
+| `HitRangeM` | 500 m | LaunchDiagnostics.cs | A missile vanishing closer than this to its target counts as HIT |
+| `CacheTtlSeconds` | 0.5 s | FlightTime.cs, LauncherFacts.cs | Kinematic estimate and launcher facts cache TTL (real time) |
+| `TtlCache` default capacity | 512 | TtlCache.cs | Soft cap; expired-first purge, else full wipe |
+| `GateDeadlineSeconds` | 120 s | Bootstrap.cs | Mod-menu read deadline; load anyway on timeout |
+| `MinValidSeconds` | 0.01 s | FlightTime.cs | Below this an estimate is "unavailable" |
+| `FallbackShotInterval` | 1 s | LauncherFacts.cs | Seed cadence when launcher facts are invalid (game's 60 rds/min default) |
 
 ## Grounding principle
 
@@ -763,5 +739,5 @@ sensor track of the target, the weapon's declared performance (INI), and the gam
 own kinematic simulator, plus observation of the PLAYER'S OWN launch timing
 (user-approved ruling). It does NOT: learn per-type speeds at runtime, read own
 missiles' in-flight positions for guidance, use closure-rate feedback, or apply
-fitted constants. See `plans/ISSUE-grouped-salvo-convergence.md` for the history
-that produced this.
+fitted constants. [`FLIGHT-TIME-MODEL.md`](FLIGHT-TIME-MODEL.md) applies the
+same rule to the flight-time model and lists the rejected alternatives.

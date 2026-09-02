@@ -27,8 +27,6 @@ namespace AutoTOT
     {
         private static Func<float> _getter;
         private static bool _resolved;
-        private static Func<float> _fixedDtGetter;
-        private static bool _fixedDtResolved;
         private static System.Reflection.FieldInfo _launchTimeField;
         private static bool _launchTimeResolved;
 
@@ -63,36 +61,6 @@ namespace AutoTOT
             return -1f;
         }
 
-        /// <summary>
-        /// The game's physics timestep in seconds — <c>GameTime.fixedDeltaTime</c> (the mover passes
-        /// it to CalculateDrag, so diagnostics comparing against live drag MUST use the same dt).
-        /// Resolved via reflection (the float→double timing migration drifted its type between
-        /// branches); falls back to Unity's <c>Time.fixedDeltaTime</c>. 0 if nothing resolves.
-        /// </summary>
-        public static float FixedDt()
-        {
-            if (!_fixedDtResolved) ResolveFixedDt();
-            return _fixedDtGetter != null ? _fixedDtGetter() : 0f;
-        }
-
-        private static void ResolveFixedDt()
-        {
-            _fixedDtResolved = true;
-            const BindingFlags F = BindingFlags.Public | BindingFlags.Static;
-            PropertyInfo fdt = typeof(GameTime).GetProperty("fixedDeltaTime", F);
-            if (fdt != null && fdt.GetGetMethod() != null)
-            {
-                MethodInfo get = fdt.GetGetMethod();
-                _fixedDtGetter = get.ReturnType == typeof(double)
-                    ? () => (float)(double)get.Invoke(null, null)
-                    : () => (float)get.Invoke(null, null);
-            }
-            else
-            {
-                _fixedDtGetter = () => UnityEngine.Time.fixedDeltaTime;
-            }
-        }
-
         private static void Resolve()
         {
             _resolved = true;
@@ -106,7 +74,8 @@ namespace AutoTOT
             if (mel != null && mel.GetGetMethod() != null)
             {
                 MethodInfo get = mel.GetGetMethod();
-                _getter = () => (float)(double)get.Invoke(null, null);
+                var d = (Func<double>)Delegate.CreateDelegate(typeof(Func<double>), get);
+                _getter = () => (float)d();
                 resolved = "missionElapsedTime";
             }
             else
@@ -116,7 +85,7 @@ namespace AutoTOT
                 if (old != null && old.GetGetMethod() != null)
                 {
                     MethodInfo get = old.GetGetMethod();
-                    _getter = () => (float)get.Invoke(null, null);
+                    _getter = (Func<float>)Delegate.CreateDelegate(typeof(Func<float>), get);
                     resolved = "time";
                 }
             }

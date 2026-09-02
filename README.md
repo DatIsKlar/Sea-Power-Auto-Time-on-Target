@@ -20,7 +20,7 @@ appears in the in-game **Mods** menu like any other mod.
 
 | Requirement | Notes |
 |---|---|
-| Sea Power | Public and beta branches are supported by the same DLL (tested up to the Unity 6 build). On **beta** the game's own `EstimateShot` is ~30 s off on lofting missiles, so AutoTOT uses a grounded step-integrator instead (all reference shots within a few seconds, incl. exotic Mach-10 lofters) with a ported waypoint-sim + legacy fallback — see `docs/plans/INTEGRATOR-ARCHITECTURE.md` and `docs/plans/WAYPOINT-SIM-PORT.md`. On **public** the integrator gates off and the game's `SimulateShotLinear` drives timing. |
+| Sea Power | Public and beta branches are supported by the same DLL (tested up to the Unity 6 build). On **beta** the game's own `EstimateShot` is ~30 s off on lofting missiles, so AutoTOT uses a grounded step-integrator instead (all reference shots within a few seconds, incl. exotic Mach-10 lofters) with a ported waypoint-sim + legacy fallback; see [`docs/FLIGHT-TIME-MODEL.md`](docs/FLIGHT-TIME-MODEL.md). On **public** the integrator gates off and the game's `SimulateShotLinear` drives timing. |
 | BepInEx 5.x | Installed in the game folder (provides logging, config, Harmony) |
 | Anchor Chain (Steam Workshop item `3380210757`) | The chainloader that loads this mod; it also installs its preloader into `BepInEx/plugins/`. Enable it in the Mods menu too |
 | Seapower Multiplayer *(optional)* | Not needed, but AutoTOT ships a shield for that mod's multiplayer world-re-init crash (see [How it works](#how-it-works)) |
@@ -167,12 +167,15 @@ auto-attacks are never intercepted.
 
 ## How it works
 
-Short version; full detail with formulas in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+Short version; pipeline detail in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md),
+the full flight-time model in [`docs/FLIGHT-TIME-MODEL.md`](docs/FLIGHT-TIME-MODEL.md).
 
-- **Flight times** come from the game's own kinematic shot simulator
-  (`AmmunitionParameters.MaxRangePrecise`, invoked via reflection, `iterations=0`
-  single pass), cached 0.5 real s per shooter/ammo/target; straight-line max speed
-  only as a fallback.
+- **Flight times** come from a tiered estimator chain. On **beta** a grounded
+  step integrator built on the game's own physics helpers is primary, with a
+  ported waypoint sim and the game's built-in estimator as fallbacks. On
+  **public** the integrator gates off and the game's own shot simulator drives
+  timing. Estimates are cached 0.5 real s per shooter/ammo/target; straight-line
+  max speed is the last-resort bound.
 - Scheduling is **open-loop**: the impact time is fixed at FIRE, and each held shot
   releases when its live flight-time estimate reaches the time-to-impact; shooter or
   target motion during the stagger is absorbed by re-evaluating every tick.
@@ -198,21 +201,28 @@ Short version; full detail with formulas in [`docs/ARCHITECTURE.md`](docs/ARCHIT
 
 ## Code organization
 
+Sources live in five folders by concern: `Core/` (pipeline + lifecycle),
+`Simulation/` (flight-time estimation), `UI/` (planner panel), `Diagnostics/`
+(launch observation), `Support/` (shared utilities).
+
 | File | Purpose |
 |---|---|
-| `AnchorChainEntry.cs` | AnchorChain entry point (`[ACPlugin]` + `IAnchorChainMod`) |
-| `Bootstrap.cs` | Mod-menu gate, Harmony patching + DOTS shield install, config, pump/HUD lifecycle, Unity-exception forwarding |
-| `Patches.cs` | Harmony prefix on `ObjectBase.InsertEngageTask` |
-| `Coordinator.cs` | Core pipeline: batching, anchor selection, open-loop scheduling, release, fire |
-| `FlightTime.cs` | Flight-time estimation: grounded step-integrator (beta) → waypoint-sim → legacy fallback, speed profiles, group forming delay + caches |
-| `WaypointSim.cs` | Reflection port of the public `SimulateShotLinear` — fallback estimator + `CreateWaypointConfigs` stage-boundary grounding |
-| `LauncherFacts.cs` | Launcher cadence/ready rounds/reserve + cache, reload-wave helpers |
-| `LaunchDiagnostics.cs` | Impact reports + launch shortfall detection; feeds anchor observations |
-| `EngagementBoard.cs` | Per-target engagement state behind the HUD's ENGAGEMENTS list |
-| `DotsScanHardening.cs` | Multiplayer mission-load crash shield for the DOTS assembly scan (discovery + deferred install) |
-| `Hud.cs` (+`Hud.Render.cs`, `Hud.Mouse.cs`, `Hud.Styles.cs`) | IMGUI planner panel: layout/data, drawing, pointer capture, styling |
-| `GameUnits.cs` | Shared unit conversions (Unity units ↔ metres/nm/knots) |
-| `TtlCache.cs` | Tiny real-time TTL cache used on the per-frame UI paths |
+| `Core/AnchorChainEntry.cs` | AnchorChain entry point (`[ACPlugin]` + `IAnchorChainMod`) |
+| `Core/Bootstrap.cs` | Mod-menu gate, Harmony patching + DOTS shield install, config, pump/HUD lifecycle, Unity-exception forwarding |
+| `Core/Patches.cs` | Harmony prefix on `ObjectBase.InsertEngageTask` |
+| `Core/Coordinator.cs` | Core pipeline: batching, anchor selection, open-loop scheduling, release, fire |
+| `Simulation/FlightTime.cs` | Flight-time API + caches: estimate entry, 3-tier kinematic wiring, speed profiles, group forming delay |
+| `Simulation/FlightTime.Integrator.cs` | Grounded step-integrator (primary tier, beta) + phase diagnostics |
+| `Simulation/FlightTime.Reflection.cs` | Reflection resolution for the game's sim internals (beta/legacy drift) |
+| `Simulation/WaypointSim.cs` | Reflection port of the public `SimulateShotLinear`, the middle-tier fallback estimator |
+| `UI/Hud.cs` (+`Hud.Render.cs`, `Hud.Mouse.cs`, `Hud.Styles.cs`) | IMGUI planner panel: layout/data, drawing, pointer capture, styling |
+| `Diagnostics/LaunchDiagnostics.cs` | Impact reports + launch shortfall detection; feeds anchor observations |
+| `Diagnostics/EngagementBoard.cs` | Per-target engagement state behind the HUD's ENGAGEMENTS list |
+| `Support/GameClock.cs` | Version-agnostic sim clock + launch-timestamp access (float/double beta drift) |
+| `Support/GameUnits.cs` | Shared unit conversions (Unity units ↔ metres/nm/knots) |
+| `Support/LauncherFacts.cs` | Launcher cadence/ready rounds/reserve + cache, reload-wave helpers |
+| `Support/TtlCache.cs` | Tiny real-time TTL cache used on the per-frame UI paths |
+| `Support/DotsScanHardening.cs` | Multiplayer mission-load crash shield for the DOTS assembly scan (discovery + deferred install) |
 
 ## Config
 
@@ -228,9 +238,12 @@ All settings take effect live when edited (BepInEx reloads the file; no restart 
 | Interface | `ToggleModifier` | `LeftAlt` | Modifier held with hotkeys (`None` for single-key). |
 | Interface | `ToggleKey` | `T` | Key (with modifier) to arm/disarm auto-coordination. |
 | Interface | `OpenPanelKey` | `G` | Key (with modifier) to open/close the planner panel. |
+| Interface | `UIScale` | `0` | Panel scale factor; `0` = auto with screen height (4K gets a larger panel), else an explicit multiplier (0–4). |
+| Interface | `UIScaleMultiplier` | `1.0` | Fine-trim on top of `UIScale` (0.5–2.0), so you can shrink the auto scale without giving it up. |
 | Timing | `GroupWindowSeconds` | `0.75` | Quiet gap (real s) after the last order before the batch locks in. |
 | Timing | `MaxCollectSeconds` | `6.0` | Hard cap (real s) on how long one target collects orders. |
 | Debug | `VerboseLogging` | `false` | Log every queued and released launch with timing details. |
+| Debug | `Profiling` | `false` | Log per-frame timing every 60 frames to diagnose performance issues. |
 
 ## Compatibility
 
@@ -245,10 +258,10 @@ All settings take effect live when edited (BepInEx reloads the file; no restart 
 
 ## Known limitations
 
-- The kinematic simulator (`iterations=0`, single pass) slightly underestimates
-  flight time for low-kinematics cruise missiles (e.g. Tomahawk ~a few s off on a
-  ~9.5-min cruise) because their routing adds distance the linear sim doesn't
-  capture. Fast missiles (e.g. SM-6) land within ±1s.
+- Low-kinematics cruise missiles (e.g. Tomahawk) come out a few seconds short
+  on ~9.5-min cruises in every estimator tier: their guidance routes around
+  waypoints and adds distance no straight-line forward sim captures. Fast
+  missiles (e.g. SM-6) land within ±1s.
 - Grouped-salvo group drag (e.g. SS-N-19, once ~20s late) is corrected by the
   `τ_form` term and lands within ~±2s at mid/long range. Remaining: at **close
   range** the terminal seeker trips before the group forms, so grouped salvos land

@@ -202,7 +202,9 @@ namespace AutoTOT
                     string key = Key(ship, r.AmmoId);
                     if (_checked.TryGetValue(key, out bool on) && on)
                     {
-                        int salvo = _salvo.TryGetValue(key, out int sv) ? sv : 1;
+                        // Re-clamp to the CURRENT launcher cap: rounds may have been spent on
+                        // another strike since the +/- buttons last clamped this picker.
+                        int salvo = Mathf.Min(_salvo.TryGetValue(key, out int sv) ? sv : 1, r.Count);
                         shots.Add(new Coordinator.Shot { Unit = ship, AmmoId = r.AmmoId, Salvo = salvo });
                     }
                 }

@@ -36,6 +36,8 @@ namespace AutoTOT
         private static readonly Dictionary<ObjectBase, SalvoLine> _salvoMap =
             new Dictionary<ObjectBase, SalvoLine>();
         private static readonly List<ObjectBase> _pruneScratch = new List<ObjectBase>();
+        // Cached so CollectSalvos (called per frame from the HUD) doesn't allocate a closure.
+        private static readonly System.Action<WeaponBase, ObjectBase> _countInFlight = CountInFlightAt;
 
         /// <summary>One row of the HUD's ENGAGEMENTS overview.</summary>
         internal struct SalvoLine
@@ -49,6 +51,17 @@ namespace AutoTOT
             public float WaveGap;        // sim seconds between successive wave impacts
             public int AnchorLaunched;   // observation anchoring: launches observed so far
             public int AnchorTotal;      // >0 while a batch anchor's ripple is being tracked
+        }
+
+        private static void CountInFlightAt(WeaponBase w, ObjectBase t)
+        {
+            // In-flight rounds count only for targets we actually coordinated (fired) — otherwise
+            // any friendly missile at that contact would inflate the overview.
+            if (!HasFired(t)) return;
+            _salvoMap.TryGetValue(t, out SalvoLine ln);
+            ln.Target = t;
+            ln.InFlight += 1;
+            _salvoMap[t] = ln;
         }
 
         private static Engagement GetOrCreate(ObjectBase target)
@@ -145,16 +158,7 @@ namespace AutoTOT
                 _salvoMap[t] = ln;
             }
 
-            // In-flight rounds count only for targets we actually coordinated (fired) — otherwise
-            // any friendly missile at that contact would inflate the overview.
-            LaunchDiagnostics.ForEachInFlight((w, t) =>
-            {
-                if (!HasFired(t)) return;
-                _salvoMap.TryGetValue(t, out SalvoLine ln);
-                ln.Target = t;
-                ln.InFlight += 1;
-                _salvoMap[t] = ln;
-            });
+            LaunchDiagnostics.ForEachInFlight(_countInFlight);
 
             // Merge the board's impact/spread/wave figures into each line.
             foreach (KeyValuePair<ObjectBase, SalvoLine> kv in _salvoMap)

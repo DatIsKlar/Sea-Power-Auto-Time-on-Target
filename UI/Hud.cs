@@ -60,6 +60,7 @@ namespace AutoTOT
         private const float InitialTopMargin = 40f;                  // first-paint placement
         private const float InitialSideMargin = 8f;
         private const float OffscreenMargin = 60f;                   // px the window always keeps on screen
+        private const float AutoScaleRefHeight = 1280f;
         private const int WindowId = 0xA070F0;                       // "A070F0" ~ "AutoTOT" in leet hex
 
         // Content layout shared with the Render partial.
@@ -88,7 +89,7 @@ namespace AutoTOT
         private static float EffectiveScale()
         {
             float s = Bootstrap.UiScale;
-            if (s <= 0f) s = Mathf.Max(1f, Screen.height / 1280f); // gentler auto: 1x up to 1280p, ~1.13x at 1440p, ~1.69x at 4K
+            if (s <= 0f) s = Mathf.Max(1f, Screen.height / AutoScaleRefHeight); // gentler auto: 1x up to 1280p, ~1.13x at 1440p, ~1.69x at 4K
             s *= Bootstrap.UiScaleMultiplier;
             return Mathf.Clamp(s, 0.5f, 4f);
         }
@@ -232,13 +233,13 @@ namespace AutoTOT
 
         private void DrawWindowInner(int id)
         {
-            EngagementBoard.CollectSalvos(_salvos);   // live engagement snapshot (used by header + list)
-
-            // Reset the per-frame EngageRows cache.
+            // Reset per-frame caches. OnGUI fires 2+ events per frame (Layout, Repaint, ...), so
+            // recompute the engagement snapshot and per-ship EngageRows once per frame only.
             int frame = Time.frameCount;
             if (_rowCacheFrame != frame)
             {
                 _rowCache.Clear();
+                EngagementBoard.CollectSalvos(_salvos);   // live engagement snapshot (header + list)
                 _rowCacheFrame = frame;
             }
 

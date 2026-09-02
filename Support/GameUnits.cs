@@ -22,6 +22,10 @@ namespace AutoTOT
         /// <summary>Unity world units -> nautical miles.</summary>
         public const float UnityToNm = MetersPerUnity / MetersPerNm;
 
+        /// <summary>Knots -> Unity world units per second (the game's velocity scale;
+        /// ~ KnotsToMs / MetersPerUnity). Shared by the flight-time sims.</summary>
+        public const float KnotsToUnityPerSecond = 0.0076554087f;
+
         /// <summary>Distance from <paramref name="from"/> to <paramref name="to"/> in metres.</summary>
         public static float MetersBetween(ObjectBase from, ObjectBase to)
             => (to.transform.position - from.transform.position).magnitude * MetersPerUnity;
