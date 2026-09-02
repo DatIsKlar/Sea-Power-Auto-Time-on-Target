@@ -87,10 +87,11 @@ custom integrator exists.
 
 ## Tier 1: grounded step integrator
 
-Code: `Simulation/FlightTime.Integrator.cs`. A forward-Euler step integrator
-that calls the game's own physics helpers and models only the trajectory shape
-itself. The shape, specifically the loft arc, is where the built-in estimator's
-error lives.
+Code: `Simulation/FlightTime.Integrator.cs`. Full mathematical specification:
+[`INTEGRATOR.md`](INTEGRATOR.md). A forward-Euler step integrator that calls
+the game's own physics helpers and models only the trajectory shape itself. The
+shape, specifically the loft arc, is where the built-in estimator's error
+lives.
 
 The tier declines immediately unless the session is beta and the thrust handle
 (and, for kinematic ammo, the drag handle) resolved.
@@ -202,8 +203,10 @@ num9 = sqrt(|cos pitch|) · dragFactor · liftFactor · 9.81 / max(ρ(targetAlt)
 ```
 
 It is active only post-burnout, independent of speed, and amplified ~800× when
-the supplied target altitude lies in vacuum because the density divisor floors
-at 0.001. The live game feeds the target's altitude while the seeker holds lock
+the supplied target altitude lies in vacuum because the density ratio
+ρ(targetAlt)/1.225 (air density against the sea-level 1.225 kg/m³) floors at
+0.001, the game's density-ratio floor. The live game feeds the target's
+altitude while the seeker holds lock
 and the missile's own altitude once the lock drops. Telemetry attributed the
 YJ-20's terminal deceleration (~164 kn/s at ~700 u altitude, bleeding 7135 to
 5325 kn) to this term firing during the brief lock drop at the steep nose-over.
@@ -245,12 +248,18 @@ zoom-climb the vacuum brake depends on.
 ```
                     ┌─ Kinematics == None ──► NON-KINEMATIC: stage-speed seek, no drag
        ammo ────────┤                          region model (+ nodes if TerminalLoft)
-                    └─ kinematic ─┬─ _terminalLoft ─► TERMINAL-LOFT: node glide,
-                                  │                    thrust+drag, no vacuum brake
-                                  └─ loftAlt > 613.5 u ─► HIGH BALLISTIC LOFTER:
-                                  │                        90° boost, steep dive, vacuum brake
-                                  └─ otherwise ─► GENERIC KINEMATIC: region model, thrust+drag
+                    └─ kinematic ─┬─ _terminalLoft ──► TERMINAL-LOFT: node glide,
+                                  │                     thrust+drag, no vacuum brake
+                                  ├─ lofting ────────► KINEMATIC LOFTER: 90° boost climb,
+                                  │                     region model, thrust+drag
+                                  │    └─ loftAlt > 613.5 u ─► HIGH BALLISTIC LOFTER: adds
+                                  │                             steep dive + vacuum brake
+                                  └─ not lofting ────► GENERIC KINEMATIC: region model, thrust+drag
 ```
+
+The 90° boost climb applies to every kinematic lofter; the 613.5 u class adds
+the steep dive and is the only one that reaches the vacuum brake's altitude
+gate. The full term-by-term math is in [`INTEGRATOR.md`](INTEGRATOR.md).
 
 ### Measured accuracy
 
