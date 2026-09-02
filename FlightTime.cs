@@ -35,6 +35,14 @@ namespace AutoTOT
         /// </summary>
         internal const float MinValidSeconds = 0.01f;
 
+        /// <summary>
+        /// Phase 4 A/B gate. false = region-model stage boundaries stay hand-derived (today's shipped
+        /// behavior). true = the loft-end distance is grounded on the game's own CreateWaypointConfigs
+        /// plan (via WaypointSim.TryStageBoundaries). The `stage-src` diagnostic logs both regardless,
+        /// so parity can be confirmed before flipping. See docs/plans WAYPOINT-SIM-PORT Phase 4.
+        /// </summary>
+        internal const bool UseWaypointBoundaries = false;
+
         /// <summary>Straight-line fallback guard: slower than this and the ammo can't fly.</summary>
         private const float MinSpeedMs = 0.1f;
 
@@ -252,6 +260,10 @@ namespace AutoTOT
                         });
 
                         LogSimInit(ms);
+
+                        // Resolve the waypoint-sim reflection surface (Phase 1 spike / future port).
+                        // Off the same game assembly; fail-soft (a miss just disables the spike).
+                        WaypointSim.EnsureLookup(typeof(Missile).Assembly);
                     }
                 }
             }
@@ -732,6 +744,19 @@ namespace AutoTOT
                 float descentOnsetDeg = Mathf.Max(descentDeg,
                     Mathf.Max(ap._finalFlightPhaseMaxAngle, ap._seaSkimmingMaxDescentAngle));
 
+                // Phase 4: ground the loft-end distance on the game's own CreateWaypointConfigs plan
+                // (the authoritative _loftToSkim-aware boundary — the value our hand-derivation above
+                // has gotten wrong before). The `stage-src` line inside logs generator-vs-hand for
+                // parity. Only the loft-end is grounded for now; finalAlt/termDist/termAlt/speeds stay
+                // hand-derived (they equal the same ini fields). emitDiag-scoped when the flag is off so
+                // planning candidates don't spam. Falls back to the hand `finalDist` if invalid.
+                if (WaypointSim.Ready && (emitDiag || UseWaypointBoundaries) &&
+                    WaypointSim.TryStageBoundaries(ap, Mathf.Max(launchPos.y, 0f), targetAlt0, out var sb))
+                {
+                    if (UseWaypointBoundaries && sb.Valid && sb.FinalDist > 0f)
+                        finalDist = sb.FinalDist;
+                }
+
                 // Per-phase telemetry, updated continuously so it's valid at every early return.
                 phases.Valid = true;
                 phases.Lofting = lofting;
@@ -1113,6 +1138,17 @@ namespace AutoTOT
             // is always the MaxRangePrecise result there.
             float integrated = IntegratedEndTime(unit, ap, target);
             if (integrated > MinValidSeconds) return integrated;
+
+            // Middle-tier fallback: the ported public waypoint sim (docs/plans/WAYPOINT-SIM-PORT.md).
+            // The grounded integrator above stays primary (it owns all reference shots incl. the exotic
+            // yj-20 loft-overshoot, which the game's own SimulateShotLinear does NOT model). But when
+            // the integrator declines (out of envelope / helper miss), the waypoint sim flies the game's
+            // own guidance and is ~±6s on lofters vs the legacy EstimateShot's ±33s — a far better net.
+            if (WaypointSim.Ready && WaypointSim.FullReady)
+            {
+                float wp = WaypointSim.EndTime(unit, ap, target);
+                if (wp > MinValidSeconds) return wp;
+            }
             return MaxRangePreciseEndTime(unit, ap, target);
         }
 

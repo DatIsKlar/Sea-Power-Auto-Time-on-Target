@@ -39,6 +39,8 @@ namespace AutoTOT
                                            // estimator; the grounded integrator on beta). -1 = unavailable.
             public float LegacyEstAtLaunch; // Game's own EstimateShot InterceptTime at launch, logged
                                            // beside KinEstAtLaunch to compare accuracy. -1 = unavailable.
+            public float WpEstAtLaunch;    // Ported waypoint-sim InterceptTime at launch (Phase 2), logged
+                                           // beside KinEstAtLaunch to A/B the port. -1 = unavailable.
             public float PeakSpeedKn;      // Highest speed the LIVE missile reached in flight (kn).
                                            // Ground truth for the integrator's stage-speed schedule.
             public float PeakAltU;         // max altitude (Unity units) seen in flight — loft-arc height.
@@ -159,6 +161,12 @@ namespace AutoTOT
                         // comparison against the (now primary) grounded integrator. See gap line.
                         legacyEst = FlightTime.MaxRangePreciseEndTime(w._launchPlatform, w._ap, tgt);
                     }
+                    // Ported waypoint-sim estimate (Phase 2 A/B) — computed even when UseWaypointSim
+                    // is off, so one fire compares wpEst vs simEst vs actual before it drives timing.
+                    float wpEst = -1f;
+                    if (verbose && coordinated && WaypointSim.Ready && WaypointSim.FullReady &&
+                        w._launchPlatform != null && w._ap != null)
+                        wpEst = WaypointSim.EndTime(w._launchPlatform, w._ap, tgt);
                     var fresh = new FlightSample
                     {
                         LaunchTime = GameClock.LaunchStamp(w),
@@ -171,6 +179,7 @@ namespace AutoTOT
                         LastTelemetrySim = -1f,
                         KinEstAtLaunch = est,
                         LegacyEstAtLaunch = legacyEst,
+                        WpEstAtLaunch = wpEst,
                         PeakAltU = verbose && w.transform != null ? w.transform.position.y : 0f,
                         LastSpeedKn = verbose ? w._velocityInKnots : 0f,
                         PeakSpeedKn = verbose ? w._velocityInKnots : 0f,
@@ -242,10 +251,13 @@ namespace AutoTOT
                             string legacy = s.LegacyEstAtLaunch > 0f
                                 ? $", legacyEst {s.LegacyEstAtLaunch:0.0}s (gap {flightTime - s.LegacyEstAtLaunch:+0.0;-0.0}s)"
                                 : "";
+                            string wp = s.WpEstAtLaunch > 0f
+                                ? $", wpEst {s.WpEstAtLaunch:0.0}s (gap {flightTime - s.WpEstAtLaunch:+0.0;-0.0}s)"
+                                : "";
                             Bootstrap.Log.LogInfo(
                                 $"[AutoTOT] gap {s.AmmoName} -> {s.TargetName}: simEst {s.KinEstAtLaunch:0.0}s, " +
                                 $"actual {flightTime:0.0}s, gap {flightTime - s.KinEstAtLaunch:+0.0;-0.0}s, " +
-                                $"peakAlt {s.PeakAltU:0}u, realPeakSpd {s.PeakSpeedKn:0}kn, termSpd {s.LastSpeedKn:0}kn{legacy}");
+                                $"peakAlt {s.PeakAltU:0}u, realPeakSpd {s.PeakSpeedKn:0}kn, termSpd {s.LastSpeedKn:0}kn{wp}{legacy}");
                         }
                     }
                 }
@@ -440,6 +452,12 @@ namespace AutoTOT
                     $"cruiseExit {ph.VCruiseExit:0}/term {ph.VTerm:0}kn, " +
                     $"finalDist {ph.FinalDistU:0}u/termDist {ph.TermDistU:0}u");
             }
+
+            // Phase 1 spike (docs/plans/WAYPOINT-SIM-PORT.md): log the game waypoint plan's commanded
+            // loft altitude vs the real track — does KappaLoft overshoot MaxLoftAlt natively? No-op
+            // unless the waypoint reflection surface resolved (WaypointSim.Ready) and VerboseLog is on.
+            if (w._launchPlatform != null && w.CurrentIntendedTargetObject != null)
+                WaypointSim.TryLogWaypointCommand(w._launchPlatform, ap, w.CurrentIntendedTargetObject);
         }
 
         // Throttled per-missile telemetry: actual vs nominal speed, group/leader state, in-group

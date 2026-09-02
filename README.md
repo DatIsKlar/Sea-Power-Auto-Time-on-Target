@@ -20,7 +20,7 @@ appears in the in-game **Mods** menu like any other mod.
 
 | Requirement | Notes |
 |---|---|
-| Sea Power | Public and beta branches are supported by the same DLL (tested up to the Unity 6 build). Time-on-target accuracy is best on **public**; on beta the game's kinematic estimator (`EstimateShot`) is coarser, so arrivals converge less tightly — see `docs/plans/FUTURE-flight-time-gap.md` |
+| Sea Power | Public and beta branches are supported by the same DLL (tested up to the Unity 6 build). On **beta** the game's own `EstimateShot` is ~30 s off on lofting missiles, so AutoTOT uses a grounded step-integrator instead (all reference shots within a few seconds, incl. exotic Mach-10 lofters) with a ported waypoint-sim + legacy fallback — see `docs/plans/INTEGRATOR-ARCHITECTURE.md` and `docs/plans/WAYPOINT-SIM-PORT.md`. On **public** the integrator gates off and the game's `SimulateShotLinear` drives timing. |
 | BepInEx 5.x | Installed in the game folder (provides logging, config, Harmony) |
 | Anchor Chain (Steam Workshop item `3380210757`) | The chainloader that loads this mod; it also installs its preloader into `BepInEx/plugins/`. Enable it in the Mods menu too |
 | Seapower Multiplayer *(optional)* | Not needed, but AutoTOT ships a shield for that mod's multiplayer world-re-init crash (see [How it works](#how-it-works)) |
@@ -204,7 +204,8 @@ Short version; full detail with formulas in [`docs/ARCHITECTURE.md`](docs/ARCHIT
 | `Bootstrap.cs` | Mod-menu gate, Harmony patching + DOTS shield install, config, pump/HUD lifecycle, Unity-exception forwarding |
 | `Patches.cs` | Harmony prefix on `ObjectBase.InsertEngageTask` |
 | `Coordinator.cs` | Core pipeline: batching, anchor selection, open-loop scheduling, release, fire |
-| `FlightTime.cs` | Kinematic flight-time estimation, speed profiles, group forming delay + caches |
+| `FlightTime.cs` | Flight-time estimation: grounded step-integrator (beta) → waypoint-sim → legacy fallback, speed profiles, group forming delay + caches |
+| `WaypointSim.cs` | Reflection port of the public `SimulateShotLinear` — fallback estimator + `CreateWaypointConfigs` stage-boundary grounding |
 | `LauncherFacts.cs` | Launcher cadence/ready rounds/reserve + cache, reload-wave helpers |
 | `LaunchDiagnostics.cs` | Impact reports + launch shortfall detection; feeds anchor observations |
 | `EngagementBoard.cs` | Per-target engagement state behind the HUD's ENGAGEMENTS list |

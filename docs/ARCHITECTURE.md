@@ -320,18 +320,27 @@ ENGAGEMENTS overview.
 
 ## Flight-time estimates deep-dive
 
-`FlightTime.Estimate` (FlightTime.cs:65-80) asks the game's own kinematic simulator
-and falls back to straight-line max speed only if the simulator declines.
+> **Current model (beta, 2026-09-02).** `FlightTime.Estimate` → `KinematicRaw` now runs a
+> **three-tier chain**: a grounded forward-Euler **step integrator** (`IntegratedEndTime`, primary —
+> the full model is documented in `docs/plans/INTEGRATOR-ARCHITECTURE.md`), then the ported public
+> waypoint sim (`WaypointSim.EndTime`, middle fallback — see `docs/plans/WAYPOINT-SIM-PORT.md`), then
+> the legacy `EstimateShot`/`MaxRangePrecise` result (last resort). On the **public** branch the
+> integrator gates itself off (`_simIsBeta`), so the legacy path below is what runs there. The rest of
+> this section describes that legacy tier + the reflection/version-drift plumbing all three share; the
+> line numbers predate the integrator and are indicative.
 
-### Reflection chain
+`FlightTime.Estimate` asks the game's own kinematic simulator and falls back to straight-line max speed
+only if every tier declines.
 
-`KinematicRaw` (FlightTime.cs:278-307) uses reflection to call
+### Reflection chain (legacy tier)
+
+`KinematicRaw` uses reflection to call
 `AmmunitionParameters.MaxRangePrecise(ObjectBase shooter, Vector3 targetPos, Vector3 targetVel, int iterations, bool evasive)`.
-The method is looked up once via `GetMethod` with the exact signature
-(FlightTime.cs:292). `iterations = 0` means single-pass estimate. The game itself uses 8;
+The method is looked up once via `GetMethod` with the exact signature.
+`iterations = 0` means single-pass estimate. The game itself uses 8;
 the iterative version is ~8-9× the sim work and only nudged fast kinematic missiles by ~3 s,
 and does nothing for low-kinematics cruise missiles (whose real routing adds distance the
-linear sim can't capture; FlightTime.cs:285-288).
+linear sim can't capture).
 
 ### Version drift absorption
 
