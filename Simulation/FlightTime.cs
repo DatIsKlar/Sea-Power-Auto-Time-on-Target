@@ -94,7 +94,7 @@ namespace AutoTOT
             return value;
         }
 
-        internal static void ClearCache() { _cache.Clear(); _fallbackCache.Clear(); _profileCache.Clear(); }
+        internal static void ClearCache() { _cache.Clear(); _fallbackCache.Clear(); _profileCache.Clear(); ClearRailLog(); }
 
         internal static long TofHits => _cache.HitCount;
         internal static long TofMisses => _cache.MissCount;

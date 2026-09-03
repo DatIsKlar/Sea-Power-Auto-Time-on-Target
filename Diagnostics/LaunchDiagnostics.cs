@@ -48,9 +48,26 @@ namespace AutoTOT
             public bool Coordinated;       // captured at first sighting: is this a missile AutoTOT
                                            // fired (target has an EngagementBoard row)? Scopes all
                                            // verbose diagnostics to our own shots (not defensive SAMs).
+            // Last observed value of the game's own flight-stage machine, so a change can be
+            // detected per tick. The `track` line samples the stage every 15s, which is far too
+            // coarse to localize a transition; `stage-obs` fires on the change itself and is our
+            // only direct ground truth for the region model's phase boundaries.
+            public WeaponBase.FlightStage LastStage;
         }
 
-        private const float TelemetryIntervalSim = 15f; // sim seconds between per-missile telemetry samples
+        // Matches the integrator's own sim-track cadence so the two traces can be compared
+        // sample-for-sample, and deliberately not a round number -- a 15s sampler once aliased a
+        // limit cycle of period exactly 15.0s and reported a 10km oscillation as a constant.
+        private const float TelemetryIntervalSim = 7f; // sim seconds between per-missile telemetry samples
+        // Dense sampling through the launch phase, to match the integrator's sim-track burst: that
+        // window lasts up to ~19s (initial flight phase + ToBearing) and is where the residual fixed
+        // offset is created, so a 7s cadence leaves only one sample inside it.
+        private const float LaunchBurstWindowSim = 20f;
+        private const float LaunchBurstIntervalSim = 1f;
+        // Inner tier matching the integrator's: the launch nose-over completes inside ~2s on a
+        // vertically-launched sea-skimmer, so 1s cadence gives only two samples of it.
+        private const float NoseOverWindowSim = 5f;
+        private const float NoseOverIntervalSim = 0.25f;
         private static readonly Dictionary<WeaponBase, FlightSample> _flightTracker =
             new Dictionary<WeaponBase, FlightSample>();
         private static readonly List<WeaponBase> _trackerScratch = new List<WeaponBase>();
@@ -135,7 +152,11 @@ namespace AutoTOT
                     if (EngagementBoard.TryGetPredictedImpact(tgt, out float livePred))
                         existing.PredictedImpact = livePred;
                     if (existing.Coordinated)
+                    {
+                        // Unthrottled: a stage change is an event, not a sample.
+                        existing = MaybeLogStageChange(w, tgt, existing, simNow);
                         existing = MaybeLogTelemetry(w, tgt, existing, distM, simNow);
+                    }
                     _flightTracker[w] = existing;
                 }
                 else
@@ -163,7 +184,7 @@ namespace AutoTOT
                     float wpEst = -1f;
                     if (verbose && coordinated && WaypointSim.Ready && WaypointSim.FullReady &&
                         w._launchPlatform != null && w._ap != null)
-                        wpEst = WaypointSim.EndTime(w._launchPlatform, w._ap, tgt);
+                        wpEst = WaypointSim.EndTime(w._launchPlatform, w._ap, tgt, emitDiag: true);
                     var fresh = new FlightSample
                     {
                         LaunchTime = GameClock.LaunchStamp(w),
@@ -181,6 +202,7 @@ namespace AutoTOT
                         LastSpeedKn = verbose ? w._velocityInKnots : 0f,
                         PeakSpeedKn = verbose ? w._velocityInKnots : 0f,
                         Coordinated = coordinated,
+                        LastStage = w._flightStage,
                     };
                     // First sighting of this missile => it just left the rail. Credit it to the
                     // matching pending order (this branch fires exactly once per WeaponBase, so no
@@ -431,8 +453,62 @@ namespace AutoTOT
                     $"descent {ph.DescentTime:0.0}s, spd start {ph.VStart:0}/climbExit {ph.VClimbExit:0}/" +
                     $"cruiseExit {ph.VCruiseExit:0}/term {ph.VTerm:0}kn, " +
                     $"finalDist {ph.FinalDistU:0}u/termDist {ph.TermDistU:0}u");
+
+                // The region model's phase boundaries, printed in the same units the `stage-obs`
+                // line reports so the two can be diffed directly. finalDist should line up with the
+                // real MaintainLoftAlt -> Maintain{SeaSkimming,FinalFlightAlt} transition, and
+                // diveStart with the real -> TerminalApproach transition. These boundaries are
+                // hand-derived from ini fields and are the most fragile part of the model (see
+                // docs/plans/done/2026-09-02-waypoint-sim-port.md, the rejected Part L), so this is the evidence
+                // that says whether they are right rather than merely tuned.
+                Bootstrap.Log.LogInfo(
+                    $"[AutoTOT] stage-model {ap._ammunitionFileName}#{w.GetInstanceID()}: " +
+                    $"finalDist {ph.FinalDistU:0}u, termDist {ph.TermDistU:0}u, " +
+                    $"diveStart {(ph.DiveStartU >= 0f ? ph.DiveStartU.ToString("0") + "u" : "never")}, " +
+                    $"loftAlt {ph.LoftAltTarget:0}u, onsetDeg {ph.DescentOnsetDeg:0.0}°");
             }
 
+        }
+
+        // Fires once per transition of the game's OWN flight-stage machine
+        // (Launch -> ToBearing -> MoveToLoftAlt -> MaintainLoftAlt -> ... -> TerminalApproach).
+        //
+        // This is the only direct ground truth we have for the boundaries the region model
+        // hand-derives from ini fields: the distance at which the real missile leaves the loft is
+        // exactly the model's finalDist, and the distance at which it enters TerminalApproach is
+        // exactly the model's diveStart. The `track` line already prints the stage but samples it
+        // every 15s, which on a Mach-10 lofter brackets a transition to a ~43km window -- useless
+        // for the boundaries we actually argue about.
+        //
+        // Distances are reported three ways because the two existing telemetry lines disagree:
+        // `track` logs 3D SLANT while `sim-track` logs flat, and on a missile 80km up those differ
+        // enormously. flat is the one comparable to the model's boundaries.
+        //
+        // Unthrottled but change-gated, so a full flight emits well under a dozen lines.
+        // VerboseLog + Coordinated only. Returns the (stage-updated) sample.
+        private static FlightSample MaybeLogStageChange(WeaponBase w, ObjectBase tgt, FlightSample s, float simNow)
+        {
+            if (!Coordinator.VerboseLog) return s;
+            WeaponBase.FlightStage now = w._flightStage;
+            if (now == s.LastStage) return s;
+            WeaponBase.FlightStage prev = s.LastStage;
+            s.LastStage = now;
+
+            float altU = w.transform != null ? w.transform.position.y : 0f;
+            float slantM = GameUnits.MetersBetween(w, tgt);
+            float slantU = slantM / GameUnits.MetersPerUnity;
+            float altDelta = altU - (tgt.transform != null ? tgt.transform.position.y : 0f);
+            // Flat range from the slant range and the height difference. Clamped: a near-overhead
+            // sample can go slightly negative under the sqrt through float error.
+            float flatU = Mathf.Sqrt(Mathf.Max(slantU * slantU - altDelta * altDelta, 0f));
+
+            Bootstrap.Log.LogInfo(
+                $"[AutoTOT] stage-obs {(w._ap != null ? w._ap._ammunitionFileName : "?")}#{w.GetInstanceID()}: " +
+                $"{prev} -> {now} at t+{simNow - s.LaunchTime:0.0}s, " +
+                $"flat {flatU:0}u ({flatU * GameUnits.MetersPerUnity / 1000f:0.0}km), " +
+                $"slant {slantM / 1000f:0.0}km, alt {altU:0.0}u, spd {w._velocityInKnots:0}kn");
+
+            return s;
         }
 
         // Throttled per-missile telemetry: actual vs nominal speed, group/leader state, in-group
@@ -441,7 +517,11 @@ namespace AutoTOT
         private static FlightSample MaybeLogTelemetry(WeaponBase w, ObjectBase tgt, FlightSample s, float distM, float simNow)
         {
             if (!Coordinator.VerboseLog) return s;
-            if (s.LastTelemetrySim >= 0f && (simNow - s.LastTelemetrySim) < TelemetryIntervalSim) return s;
+            float sinceLaunch = simNow - s.LaunchTime;
+            float interval = (sinceLaunch < NoseOverWindowSim) ? NoseOverIntervalSim
+                           : (sinceLaunch < LaunchBurstWindowSim) ? LaunchBurstIntervalSim
+                           : TelemetryIntervalSim;
+            if (s.LastTelemetrySim >= 0f && (simNow - s.LastTelemetrySim) < interval) return s;
             float prevSampleSim = s.LastTelemetrySim;
             s.LastTelemetrySim = simNow;
 
@@ -455,7 +535,7 @@ namespace AutoTOT
 
             Bootstrap.Log.LogInfo(
                 $"[AutoTOT] track {(ap != null ? ap._ammunitionFileName : "?")}#{w.GetInstanceID()} -> {SafeName(tgt)}: " +
-                $"t+{simNow - s.LaunchTime:0}s spd {w._velocityInKnots:0}/{nominal:0}kn {grp} " +
+                $"t+{simNow - s.LaunchTime:0.0}s spd {w._velocityInKnots:0}/{nominal:0}kn {grp} " +
                 $"vGrp {vGrp:0} stage {stage} alt {altU:0.0} dist {distM / 1000f:0.0}km");
 
             return s;

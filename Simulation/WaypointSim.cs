@@ -9,7 +9,7 @@ namespace AutoTOT
 {
     /// <summary>
     /// Ported waypoint-sim fallback (middle tier). Reconstructs the game's waypoint flight-plan
-    /// via reflection and flies it with PN guidance + drag. See docs/plans/WAYPOINT-SIM-PORT.md.
+    /// via reflection and flies it with PN guidance + drag. See docs/plans/done/2026-09-02-waypoint-sim-port.md.
     /// </summary>
     internal static class WaypointSim
     {
@@ -304,7 +304,16 @@ namespace AutoTOT
         /// non-beta / a handle is missing / the sim never closes / stalls (→ caller falls back).
         /// Variable names track the decompile (simTime = t, velKnots = knots, missilePos = pos, direction = dir).
         /// </summary>
-        internal static float EndTime(ObjectBase unit, AmmunitionParameters ap, ObjectBase target)
+        /// <param name="emitDiag">
+        /// Emit the per-15s <c>wp-track</c> overlay. Defaults to <c>false</c> because the hot call
+        /// site is the <see cref="FlightTime.KinematicRaw"/> fallback tier, which runs for EVERY
+        /// planning candidate — including our own ships' defensive SAM loadouts, whose flights the
+        /// integrator rejects (returns -1) so they always reach this tier. Only the per-shot A/B
+        /// instrument in <c>LaunchDiagnostics</c> (already scoped to missiles AutoTOT actually
+        /// fired) passes true. Mirrors <c>IntegratedEndTimeCore</c>'s emitDiag.
+        /// </param>
+        internal static float EndTime(ObjectBase unit, AmmunitionParameters ap, ObjectBase target,
+            bool emitDiag = false)
         {
             if (!Ready || !FullReady || unit == null || ap == null || target == null) return -1f;
             try
@@ -489,7 +498,7 @@ namespace AutoTOT
                     altDelta = predTargetPos.y - missilePos.y;
                     slantRange = Mathf.Sqrt(flatDistToTarget * flatDistToTarget + altDelta * altDelta);
 
-                    if (Coordinator.VerboseLog && simTime >= nextLog)
+                    if (Coordinator.VerboseLog && emitDiag && simTime >= nextLog)
                     {
                         Bootstrap.Log.LogInfo(
                             $"[AutoTOT] wp-track {ap._ammunitionFileName}#{unit.GetInstanceID()}: t+{simTime:0}s " +
