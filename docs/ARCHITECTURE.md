@@ -329,7 +329,7 @@ ENGAGEMENTS overview.
 
 ## Flight-time estimates
 
-Full model documentation lives in [`FLIGHT-TIME-MODEL.md`](FLIGHT-TIME-MODEL.md).
+Full model documentation lives in [`model/`](model/00-index.md).
 This section only summarizes what the scheduling pipeline consumes.
 
 `FlightTime.Estimate` runs a tiered chain and returns the first valid result:
@@ -739,5 +739,5 @@ sensor track of the target, the weapon's declared performance (INI), and the gam
 own kinematic simulator, plus observation of the PLAYER'S OWN launch timing
 (user-approved ruling). It does NOT: learn per-type speeds at runtime, read own
 missiles' in-flight positions for guidance, use closure-rate feedback, or apply
-fitted constants. [`FLIGHT-TIME-MODEL.md`](FLIGHT-TIME-MODEL.md) applies the
-same rule to the flight-time model and lists the rejected alternatives.
+fitted constants. [`model/`](model/00-index.md) applies the
+same rule to the flight-time model.

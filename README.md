@@ -20,7 +20,7 @@ appears in the in-game **Mods** menu like any other mod.
 
 | Requirement | Notes |
 |---|---|
-| Sea Power | Public and beta branches are supported by the same DLL (tested up to the Unity 6 build). On **beta** the game's own `EstimateShot` is ~30 s off on lofting missiles, so AutoTOT uses a grounded step-integrator instead (all reference shots within a few seconds, incl. exotic Mach-10 lofters) with a ported waypoint-sim + legacy fallback; see [`docs/FLIGHT-TIME-MODEL.md`](docs/FLIGHT-TIME-MODEL.md). On **public** the integrator gates off and the game's `SimulateShotLinear` drives timing. |
+| Sea Power | Public and beta branches are supported by the same DLL (tested up to the Unity 6 build). On **beta** the game's own `EstimateShot` is ~30 s off on lofting missiles, so AutoTOT uses a grounded step-integrator instead (all reference shots within a few seconds, incl. Mach-10 lofters flying through near-vacuum) with a ported waypoint-sim + legacy fallback; see [`docs/model/`](docs/model/00-index.md). On **public** the integrator gates off and the game's `SimulateShotLinear` drives timing. |
 | BepInEx 5.x | Installed in the game folder (provides logging, config, Harmony) |
 | Anchor Chain (Steam Workshop item `3380210757`) | The chainloader that loads this mod; it also installs its preloader into `BepInEx/plugins/`. Enable it in the Mods menu too |
 | Seapower Multiplayer *(optional)* | Not needed, but AutoTOT ships a shield for that mod's multiplayer world-re-init crash (see [How it works](#how-it-works)) |
@@ -168,7 +168,7 @@ auto-attacks are never intercepted.
 ## How it works
 
 Short version; pipeline detail in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md),
-the full flight-time model in [`docs/FLIGHT-TIME-MODEL.md`](docs/FLIGHT-TIME-MODEL.md).
+the full flight-time model in [`docs/model/`](docs/model/00-index.md).
 
 - **Flight times** come from a tiered estimator chain. On **beta** a grounded
   step integrator built on the game's own physics helpers is primary, with a
