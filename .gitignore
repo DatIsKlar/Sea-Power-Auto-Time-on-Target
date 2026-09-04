@@ -4,3 +4,6 @@ obj/
 
 # Local docs (not tracked)
 docs/plans/
+
+# Workshop description: local to this machine
+STEAM_WORKSHOP.txt
