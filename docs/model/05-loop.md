@@ -7,6 +7,12 @@ Euler, fixed `dt = 0.1 s`, returning the intercept time in seconds or −1 to de
 
 ## 5.1 Setup, once per shot
 
+The division in this chapter is also the threading boundary. Setup reads live game state, so it runs
+on the main thread. The per-step loop in 5.2 reads none, so it is written as a pure function of a
+snapshot and can run on a worker. See "Where the integrator runs" in
+[`../ARCHITECTURE.md`](../ARCHITECTURE.md). Anything added below that reads the shooter, the target
+or a field the game rewrites during flight belongs in this section, not the next one.
+
 ```
 EnsureSimLookup()                                   # resolve reflection handles (§2.3)
 if !_simIsBeta or thrust handle missing: return −1   # → next tier

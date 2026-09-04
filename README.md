@@ -302,6 +302,9 @@ Everything interesting lands in `<Sea Power>/BepInEx/LogOutput.log`, prefixed
 | Log line | Meaning |
 |---|---|
 | `Auto Time-on-Target v... loaded` | mod initialized (note the version: with two copies installed it reveals which one AnchorChain loaded) |
+| `estimator: integrator ACTIVE (beta branch, ...)` | the accurate flight model is running. Logged at startup whether or not `VerboseLogging` is on |
+| `estimator: integrator UNAVAILABLE on the public branch ...` | **WARN**: you are on the public branch, where the flight model cannot run. Coordination still works, timing is less accurate |
+| `estimator: ASYNC, N solve worker(s) started` / `running SYNCHRONOUSLY` | whether flight simulation runs on worker threads or the main thread (see `EstimatorThreads`) |
 | `queued A -> B` | an order was intercepted and is being held |
 | `coordinating N missile order(s)` | batch locked in, anchor chosen |
 | `launch ... (anchor)` | a held shot was released; shows est flight vs. impactAt |
