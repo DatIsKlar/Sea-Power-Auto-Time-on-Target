@@ -31,6 +31,14 @@ namespace AutoTOT
             public float LaunchTime; public string AmmoName; public string TargetName;
             public float LastDistM; public float LastSeenTime;
             public ObjectBase Target;      // kept for residual lookup (predicted vs observed impact)
+            // The target the SEEKER is on right now, refreshed every tick. These missiles carry their
+            // own active seeker and, unlike grouped rounds, do not split up: one assigned to a ship
+            // deep in a formation locks onto whatever it detects first and kills a ship in front.
+            // Without this, the impact line reports the ORIGINAL assignment and the gap line compares
+            // the flight to the ship actually struck against the estimate for the ship it was sent to,
+            // which reads as a large negative gap and is not estimator error at all.
+            public ObjectBase CurrentTarget;
+            public string CurrentTargetName;
             public float PredictedImpact;  // stamped from EngagementBoard, so the residual survives
                                            // the target dying (the board row is pruned on death). -1 = none.
             public float LastTelemetrySim; // throttle for the periodic `track` telemetry line.
@@ -97,8 +105,19 @@ namespace AutoTOT
             public float IniInterval;  // a-priori per-round interval (adaptive-deadline fallback)
             public float WaveTailSim;  // expected span+gaps of reload waves after wave 1
             public float LastLaunchSim = -1f; // most recent observed launch (sim s)
+            public float RegisteredSim;       // when the order was issued, the reference point for an
+                                              // order that has not launched anything yet
         }
         private static readonly List<LaunchExpectation> _launchExpectations = new List<LaunchExpectation>();
+        // Last observed launch per (ship, ammo file), updated for EVERY sighting including rounds that
+        // match no open order. A ship working through a queue of engage tasks is not stalled, and an
+        // order sitting behind others in that queue must not be reported short while rounds are still
+        // leaving. Keyed by instance id and ammo file rather than by ObjectBase, so a destroyed
+        // shooter cannot keep the entry alive.
+        private static readonly Dictionary<string, float> _shipLastLaunchSim = new Dictionary<string, float>();
+        // Missiles seen leaving that matched no open order. Non-zero means orders are being credited
+        // to the wrong place, or expectations are being retired too early.
+        internal static int UncreditedLaunches;
         private const float ExpectationMarginSim = 10f; // slack (sim s) beyond the computed ripple time
         private const float HitRangeM = 500f;           // closer than this when a missile vanishes => counted as a HIT
 
@@ -107,6 +126,8 @@ namespace AutoTOT
             _flightTracker.Clear();
             _trackerScratch.Clear();
             _launchExpectations.Clear();
+            _shipLastLaunchSim.Clear();
+            UncreditedLaunches = 0;
         }
 
         /// <summary>
@@ -120,10 +141,33 @@ namespace AutoTOT
             if (!Singleton<ObjectsManager>.InstanceExists()) return;
             if (Coordinator.ProfilingEnabled) _tickSw.Restart();
 
+            if (Coordinator.ProfilingEnabled) _subSw.Restart();
+            ScanTrackedMissiles(simNow);
+            if (Coordinator.ProfilingEnabled) { _subSw.Stop(); LastScanLoopMs = (float)(_subSw.Elapsed.TotalMilliseconds); }
+
+            LastTrackedMissiles = _flightTracker.Count;
+
+            if (Coordinator.ProfilingEnabled) _subSw.Restart();
+            FinalizeExpectations(simNow);
+            if (Coordinator.ProfilingEnabled) { _subSw.Stop(); LastFinalizeMs = (float)(_subSw.Elapsed.TotalMilliseconds); }
+
+            if (Coordinator.ProfilingEnabled) _subSw.Restart();
+            CollectDeadTrackers();
+            if (Coordinator.ProfilingEnabled) { _subSw.Stop(); LastCleanupMs = (float)(_subSw.Elapsed.TotalMilliseconds); }
+
+            if (Coordinator.ProfilingEnabled) { _tickSw.Stop(); LastTickMs = (float)(_tickSw.Elapsed.TotalMilliseconds); }
+
+            RetireDeadTrackers();
+        }
+
+        /// <summary>
+        /// Walk every live player missile with a live target: refresh its tracking sample, or open
+        /// one if this is the first time the round has been seen.
+        /// </summary>
+        private static void ScanTrackedMissiles(float simNow)
+        {
             List<WeaponBase> weapons = Singleton<ObjectsManager>.Instance._listOfAllWeapons;
             LastWeaponCount = weapons.Count;
-            
-            if (Coordinator.ProfilingEnabled) _subSw.Restart();
             for (int i = 0; i < weapons.Count; i++)
             {
                 WeaponBase w = weapons[i];
@@ -140,6 +184,11 @@ namespace AutoTOT
                 {
                     existing.LastDistM = distM;
                     existing.LastSeenTime = simNow;
+                    if (!ReferenceEquals(existing.CurrentTarget, tgt))
+                    {
+                        existing.CurrentTarget = tgt;
+                        existing.CurrentTargetName = tgt.getUIDAndName();   // only on an actual switch
+                    }
                     if (verbose)
                     {
                         float altU = w.transform != null ? w.transform.position.y : 0f;
@@ -174,7 +223,10 @@ namespace AutoTOT
                     float legacyEst = -1f;
                     if (verbose && coordinated && w._launchPlatform != null && w._ap != null)
                     {
+                        Profiler.Begin(Profiler.Stage.FlightEstimate);
                         est = FlightTime.Estimate(w._launchPlatform, w._ap._ammunitionFileName, tgt);
+                        Profiler.End(Profiler.Stage.FlightEstimate);
+                        Profiler.CountEstimate(FlightTime.WasLastCallCacheHit);
                         // The game's own EstimateShot InterceptTime, for side-by-side accuracy
                         // comparison against the (now primary) grounded integrator. See gap line.
                         legacyEst = FlightTime.MaxRangePreciseEndTime(w._launchPlatform, w._ap, tgt);
@@ -193,6 +245,8 @@ namespace AutoTOT
                         LastDistM = distM,
                         LastSeenTime = simNow,
                         Target = tgt,
+                        CurrentTarget = tgt,
+                        CurrentTargetName = tgt.getUIDAndName(),
                         PredictedImpact = pred0,   // -1 if this target isn't (yet) coordinated
                         LastTelemetrySim = -1f,
                         KinEstAtLaunch = est,
@@ -216,15 +270,11 @@ namespace AutoTOT
                     _flightTracker[w] = fresh;
                 }
             }
-            if (Coordinator.ProfilingEnabled) { _subSw.Stop(); LastScanLoopMs = (float)(_subSw.Elapsed.TotalMilliseconds); }
+        }
 
-            LastTrackedMissiles = _flightTracker.Count;
-            
-            if (Coordinator.ProfilingEnabled) _subSw.Restart();
-            FinalizeExpectations(simNow);
-            if (Coordinator.ProfilingEnabled) { _subSw.Stop(); LastFinalizeMs = (float)(_subSw.Elapsed.TotalMilliseconds); }
-
-            if (Coordinator.ProfilingEnabled) _subSw.Restart();
+        /// <summary>Gather trackers whose missile is gone, into the reused scratch list.</summary>
+        private static void CollectDeadTrackers()
+        {
             _trackerScratch.Clear();
             foreach (KeyValuePair<WeaponBase, FlightSample> kv in _flightTracker)
             {
@@ -232,10 +282,14 @@ namespace AutoTOT
                 if (w == null || w.IsDestroyed || w._type != ObjectBase.ObjectType.Missile)
                     _trackerScratch.Add(w);
             }
-            if (Coordinator.ProfilingEnabled) { _subSw.Stop(); LastCleanupMs = (float)(_subSw.Elapsed.TotalMilliseconds); }
+        }
 
-            if (Coordinator.ProfilingEnabled) { _tickSw.Stop(); LastTickMs = (float)(_tickSw.Elapsed.TotalMilliseconds); }
-
+        /// <summary>
+        /// Drop the gathered trackers, logging each round's impact and its estimate-vs-actual gap on
+        /// the way out. Deliberately outside the timed region, matching the original instrumentation.
+        /// </summary>
+        private static void RetireDeadTrackers()
+        {
             for (int i = 0; i < _trackerScratch.Count; i++)
             {
                 WeaponBase w = _trackerScratch[i];
@@ -245,6 +299,17 @@ namespace AutoTOT
                     if (Coordinator.VerboseLog && s.Coordinated)
                     {
                         string outcome = (s.LastDistM <= HitRangeM) ? "HIT" : "ended";
+                        // Did the seeker end up on a different ship than the one this round was
+                        // assigned? If so, LastDistM is measured to the SUBSTITUTE, so "HIT" means it
+                        // killed something, just not what was ordered.
+                        // ReferenceEquals throughout, deliberately. UnityEngine.Object overloads ==
+                        // so a DESTROYED object compares equal to null, and a ship being destroyed is
+                        // exactly the case this check exists for; `s.CurrentTarget != null` would go
+                        // false the moment the substitute sank and hide the switch.
+                        bool retargeted = !ReferenceEquals(s.CurrentTarget, s.Target)
+                                       && !ReferenceEquals(s.CurrentTarget, null)
+                                       && !ReferenceEquals(s.Target, null);
+                        string switched = retargeted ? $" [RETARGETED -> {s.CurrentTargetName}]" : "";
                         // Residual = observed impact − our predicted (anchor-finalized) impact, so the
                         // log shows coordination accuracy directly instead of hand-diffing. Uses the
                         // value stamped on the sample, so it still prints after the target (and its
@@ -254,13 +319,24 @@ namespace AutoTOT
                             residual = $", predicted {s.PredictedImpact:0.0}, residual {s.LastSeenTime - s.PredictedImpact:+0.0;-0.0}s";
                         Bootstrap.Log.LogInfo(
                             $"[AutoTOT] impact {s.AmmoName} -> {s.TargetName}: {outcome} at sim {s.LastSeenTime:0.0} " +
-                            $"(flight {flightTime:0.0}s, final range {s.LastDistM:0} m){residual}");
+                            $"(flight {flightTime:0.0}s, final range {s.LastDistM:0} m){switched}{residual}");
                         // Grounded flight-model signal: the game's own single-shot sim InterceptTime
                         // (captured at launch) vs the ACTUAL flown time. gap = actual − sim (positive =>
                         // sim UNDER-predicts, missile flies slower/longer than modelled). Peak altitude
                         // and terminal speed characterize WHERE the gap comes from (loft arc / terminal
                         // decel). Only meaningful for rounds that actually reached the target (HIT).
-                        if (s.KinEstAtLaunch > 0f && outcome == "HIT")
+                        // A retargeted round measures formation geometry, not the estimator: its flight
+                        // is to the ship the seeker picked while simEst was computed for the ship it
+                        // was ordered against. Reporting a gap for it invites chasing a phantom error
+                        // of ten seconds or more. Say what happened instead.
+                        if (retargeted && s.KinEstAtLaunch > 0f && outcome == "HIT")
+                        {
+                            Bootstrap.Log.LogInfo(
+                                $"[AutoTOT] gap {s.AmmoName} -> {s.TargetName}: SKIPPED, seeker switched to " +
+                                $"{s.CurrentTargetName}. Flight {flightTime:0.0}s is to that ship; " +
+                                $"simEst {s.KinEstAtLaunch:0.0}s was for the assigned one. Not estimator error.");
+                        }
+                        else if (s.KinEstAtLaunch > 0f && outcome == "HIT")
                         {
                             string legacy = s.LegacyEstAtLaunch > 0f
                                 ? $", legacyEst {s.LegacyEstAtLaunch:0.0}s (gap {flightTime - s.LegacyEstAtLaunch:+0.0;-0.0}s)"
@@ -327,6 +403,7 @@ namespace AutoTOT
                 Target = it.Target,
                 Requested = shots,
                 Launched = 0,
+                RegisteredSim = GameClock.SimNow(),
                 DeadlineSim = GameClock.SimNow() + ripple + waveTail + ExpectationMarginSim,
                 Linked = isAnchor ? sched : null,
                 IniInterval = interval,
@@ -343,17 +420,38 @@ namespace AutoTOT
             string ammoFile = w._ap != null ? w._ap._ammunitionFileName : null;
             if (platform == null || ammoFile == null) return;
 
+            float launchStamp = GameClock.LaunchStamp(w);   // one reflection read, reused
+
+            // Stamp SHIP activity first, and unconditionally. This round proves the launcher is still
+            // working even if it belongs to no order we are tracking, which is what keeps a queued
+            // order from being reported short.
+            _shipLastLaunchSim[platform.GetInstanceID() + "/" + ammoFile] = launchStamp;
+
             for (int i = 0; i < _launchExpectations.Count; i++)
             {
                 LaunchExpectation e = _launchExpectations[i];
                 if (e.Launched < e.Requested && e.Unit == platform && e.Target == tgt && e.AmmoFile == ammoFile)
                 {
-                    float launchStamp = GameClock.LaunchStamp(w);   // one reflection read, reused
                     e.Launched++;
                     e.LastLaunchSim = launchStamp;
                     // Feed the batch anchor's live impact prediction (observation anchoring).
                     if (e.Linked != null && e.Linked.IsAnchor && !e.Linked.RippleDone)
                         e.Linked.LaunchTimes.Add(launchStamp);
+                    return;
+                }
+            }
+
+            // No expectation matched. That is NORMAL for most rounds: expectations only exist for
+            // anchors and multi-shot orders, so a salvo of single-shot orders has nothing to match
+            // against and counting those made the figure meaningless (74 on a clean run).
+            // Only a launch from a ship that DOES have an open order for this ammo, but at another
+            // target, indicates real misattribution. That is the case worth counting.
+            for (int i = 0; i < _launchExpectations.Count; i++)
+            {
+                LaunchExpectation e = _launchExpectations[i];
+                if (e.Launched < e.Requested && e.Unit == platform && e.AmmoFile == ammoFile)
+                {
+                    UncreditedLaunches++;
                     return;
                 }
             }
@@ -373,14 +471,29 @@ namespace AutoTOT
                 // pace — a fixed deadline fired mid-ripple and logged false SHORTFALLs. Only a
                 // true stall (no launch for max(4x measured cadence, 30s), plus any reload-wave
                 // tail) counts as a shortfall now.
-                if (e.Launched > 0 && e.Launched < e.Requested)
+                if (e.Launched < e.Requested)
                 {
                     float interval = e.IniInterval;
                     List<float> lt = e.Linked?.LaunchTimes;
                     if (lt != null && lt.Count >= 2)
                         interval = (lt[lt.Count - 1] - lt[0]) / (lt.Count - 1);
                     if (interval <= 0f) interval = LauncherFactsSource.FallbackShotInterval;
-                    float adaptive = e.LastLaunchSim
+
+                    // Reference point: this order's own last launch if it has started, otherwise the
+                    // SHIP's last launch of this ammo, otherwise when the order was issued. A ship
+                    // still cycling its launcher is not stalled, and an order queued behind others is
+                    // not short -- it has not had its turn. Before this, a one-shot order got 10s and
+                    // no extension at all, so a ship handed several targets reported false shortfalls
+                    // for the tail of its queue while the rounds were still going out.
+                    float since = e.LastLaunchSim;
+                    if (since < 0f)
+                    {
+                        if (!_shipLastLaunchSim.TryGetValue(
+                                (e.Unit != null ? e.Unit.GetInstanceID() : 0) + "/" + e.AmmoFile, out since))
+                            since = e.RegisteredSim;
+                        else if (since < e.RegisteredSim) since = e.RegisteredSim;
+                    }
+                    float adaptive = since
                     + Mathf.Max(Coordinator.StallCadenceMultiplier * interval, Coordinator.StallMinWindowSim)
                     + e.WaveTailSim;
                     if (adaptive > e.DeadlineSim) e.DeadlineSim = adaptive;
@@ -408,9 +521,13 @@ namespace AutoTOT
                     ready = f.ReadyRounds; reserve = f.Reserve;
                     e.Unit.AmmunitionAmountDictionary.TryGetValue(e.AmmoId, out inv);
                 }
+                string quiet = "never";
+                if (_shipLastLaunchSim.TryGetValue(
+                        (e.Unit != null ? e.Unit.GetInstanceID() : 0) + "/" + e.AmmoFile, out float shipLast))
+                    quiet = $"{simNow - shipLast:0.0}s ago";
                 string detail =
                     $"launched {e.Launched}/{e.Requested}, ready {ready}, reserve {reserve}, inventory {inv}, " +
-                    $"targetGone {targetGone}, shooterGone {shooterGone}";
+                    $"ship last fired this ammo {quiet}, targetGone {targetGone}, shooterGone {shooterGone}";
 
                 if (targetGone || shooterGone)
                 {
@@ -442,9 +559,21 @@ namespace AutoTOT
             // Grounded-integrator per-phase breakdown — pins WHICH loft phase (climb/cruise/descent)
             // the model gets wrong when its intercept time disagrees with the actual flown time.
             // peakAlt vs loftAlt = climb-height error; a slow VTerm + long DescentTime = descent error.
-            if (w._launchPlatform != null && w.CurrentIntendedTargetObject != null &&
-                FlightTime.TryIntegratedPhaseDiag(w._launchPlatform, ap._ammunitionFileName,
-                    w.CurrentIntendedTargetObject, out float intT, out FlightTime.IntegratedPhases ph))
+            // Hoisted out of the `if` so the integrator run can be timed. TryIntegratedPhaseDiag
+            // calls IntegratedEndTimeCore directly rather than going through FlightTime.Estimate, so
+            // without this the profiler misses it and the stage totals fall short of `model: loop`.
+            bool phaseDiagOk = false;
+            float intT = 0f;
+            FlightTime.IntegratedPhases ph = default;
+            if (w._launchPlatform != null && w.CurrentIntendedTargetObject != null)
+            {
+                Profiler.Begin(Profiler.Stage.FlightEstimate);
+                phaseDiagOk = FlightTime.TryIntegratedPhaseDiag(w._launchPlatform, ap._ammunitionFileName,
+                    w.CurrentIntendedTargetObject, out intT, out ph);
+                Profiler.End(Profiler.Stage.FlightEstimate);
+                Profiler.CountEstimate(cacheHit: false);   // always a fresh sim, never cached
+            }
+            if (phaseDiagOk)
             {
                 Bootstrap.Log.LogInfo(
                     $"[AutoTOT] int-phases {ap._ammunitionFileName}#{w.GetInstanceID()}: " +

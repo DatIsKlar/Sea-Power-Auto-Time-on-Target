@@ -6,7 +6,7 @@ Units throughout: **positions and altitudes in Unity units** (1 u = 67.200066 m)
 knots**, **angles in degrees**. `KU = 0.0076554087` converts knots → Unity units per second.
 
 Sign convention: **positive pitch is climbing.** The game's `CalculateDrag` uses the opposite sign,
-so pitch and pitch-rate are negated at the call boundary — see [§4](04-speed.md).
+so pitch and pitch-rate are negated at the call boundary; see [§4](04-speed.md).
 
 ## 2.1 Ammunition `.ini` fields
 
@@ -36,13 +36,13 @@ Every `AmmunitionParameters` field the model reads, all via `ap.`:
 | `LiftFactor` | induced-lift coefficient passed to `CalculateDrag` | [§4](04-speed.md) |
 | `MinVelocity` | stall floor, and the intercept-reject threshold | [§4](04-speed.md) |
 
-### A field that looks useful and is not
+### `_fixVerticalLaunchAngle`: reads 35° everywhere, unusable
 
 `_fixVerticalLaunchAngle` (with `_additionalFixVerticalLaunchAngle` and
 `_fixVerticalLaunchAngleForLauncher`) reads **35° for every launcher in the game**. It is the `.ini`
 default, and the bool gating it also defaults true (`ObjectBaseLoader.cs:2688-2690`), so it is not a
 usable test for vertical launch and not a usable launch elevation. The model reads the launcher's
-transform instead — [§3.1](03-trajectory.md#31-launch-geometry). The field is still logged beside the
+transform instead ([§3.1](03-trajectory.md#31-launch-geometry)). The field is still logged beside the
 measured value for comparison.
 
 ## 2.2 Launcher fields
@@ -51,7 +51,7 @@ Read off the `WeaponSystem` / `_vwp` that will fire the round:
 
 | field | role |
 |---|---|
-| `_containers[i]._gunObject` | the object the game actually elevates — the rail's true attitude |
+| `_containers[i]._gunObject` | the object the game elevates, the rail's true attitude |
 | `_containerBaseObject` | shared base when containers are joined; fallback source for the rail |
 | `_mountObject` | mount pitch, subtracted when computing a trainable launcher's aim |
 | `_isMountRotatable`, `_areContainersRotatable` | together decide fixed rail vs trainable mount |
@@ -69,7 +69,7 @@ on any handle makes the integrator decline, and the shot falls to the next tier.
   diagnostic; resolved with three `float.MakeByRefType()`)
 - `LoftCap(AmmunitionParameters, float launchAlt, float targetAlt) → float`
 - `BuildAltitudeNodes(AmmunitionParameters, float launchAlt, float targetAlt, float flatDistTotal,
-  float loftAltOverride, out float loftEndFlat) → List<Vector2>` — **private static**; resolved by
+  float loftAltOverride, out float loftEndFlat) → List<Vector2>`; **private static**, resolved by
   exact `GetMethod` with `typeof(float).MakeByRefType()` for the `out` parameter, because a by-name
   search skips by-ref signatures
 - `BurnEndTime(AmmunitionParameters, bool) → float`
@@ -86,7 +86,7 @@ per-missile tuning.
 | `MetersPerUnity` | 67.200066 | Unity unit → metres (game constant) |
 | `ZeroDensityAltU` | 1 / 0.00163 ≈ 613.5 u | where the game's air density `(1 − 0.00163·h)^4.256` reaches zero |
 | `AltToleranceU` | 0.5 u | altitude deadband on the pitch command |
-| `DefaultClimbDeg`, `DefaultDescentDeg` | 30° | fallback when the `.ini` angles are unset — the game's own `.ini` defaults (`AmmunitionParameters.cs:1633/1662/1683`) |
+| `DefaultClimbDeg`, `DefaultDescentDeg` | 30° | fallback when the `.ini` angles are unset; the game's own `.ini` defaults (`AmmunitionParameters.cs:1633/1662/1683`) |
 | `BoostClimbDeg` | 90° | vertical boost climb, applied only to high ballistic lofters ([§3](03-trajectory.md)) |
 | `BankingRollRateDeg` | 60°/s | the game's hardcoded roll rate (`WeaponBase.cs:1792`) |
 | `DefaultTurnRateDeg` | 5°/s | fallback slew rate when `_maxTurnRateDegrees` is unset |

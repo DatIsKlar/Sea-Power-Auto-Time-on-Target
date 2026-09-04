@@ -83,7 +83,17 @@ namespace AutoTOT
             string eta = "--", range = "";
             if (haveTarget)
             {
-                eta = FormatTime(FlightTime.Estimate(ship, r.AmmoId, _target));
+                // Out-of-range rows print "(out of range)" instead of the ETA below, so simulating
+                // one is wasted work -- and it is the worst kind, because an unreachable shot is
+                // exactly where the integrator bails and the call then also pays for WaypointSim.
+                if (r.InRange)
+                {
+                    Profiler.Begin(Profiler.Stage.UiEstimate);
+                    float etaSec = FlightTime.EstimateForDisplay(ship, r.AmmoId, _target);
+                    Profiler.End(Profiler.Stage.UiEstimate);
+                    Profiler.Count(Profiler.Counter.UiEstimateCalls);
+                    eta = FormatTime(etaSec);
+                }
                 float nm = GameUnits.NmBetween(ship, _target);
                 range = $"{nm:0.0}nm";
             }

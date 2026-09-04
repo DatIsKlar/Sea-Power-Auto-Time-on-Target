@@ -40,6 +40,44 @@ namespace AutoTOT
         // per-frame caller doesn't recompute and re-register a profiling "miss" every frame.
         private static readonly TtlCache<TofKey, float> _fallbackCache = new TtlCache<TofKey, float>(CacheTtlSeconds);
 
+        // Display-only memo in front of Estimate. The panel asks for an ETA per visible row per
+        // frame, ~90 calls, and at the 0.5s firing TTL a couple of those fell through to a full
+        // 4300-step integration EVERY FRAME purely to draw a text label: 4.2ms/frame, 20% of a frame,
+        // even with nothing in flight.
+        //
+        // This does not introduce a second estimator. It returns exactly what Estimate returns, just
+        // recomputed less often, so a label can be up to DisplayCacheTtlSeconds stale -- about 1% of
+        // a 500s flight, invisible in text rounded to the second. Firing decisions never read this
+        // cache and are unaffected.
+        private const float DisplayCacheTtlSeconds = 5f;
+        private static readonly TtlCache<TofKey, float> _displayCache =
+            new TtlCache<TofKey, float>(DisplayCacheTtlSeconds);
+
+        /// <summary>
+        /// Flight time for on-screen display. Same value as <see cref="Estimate"/>, memoised for
+        /// several seconds. Never call this for a firing decision: use <see cref="Estimate"/>, which
+        /// the commit and release paths share.
+        /// </summary>
+        internal static float EstimateForDisplay(ObjectBase unit, string ammoId, ObjectBase target)
+        {
+            if (unit == null || target == null) return 0f;
+            Ammunition ammo = unit.getAmmunitionByName(ammoId);
+            AmmunitionParameters ap = ammo?._ap;
+            if (ap == null) return 0f;
+
+            TofKey key = new TofKey
+            {
+                UnitId = unit.GetInstanceID(),
+                AmmoFile = ap._ammunitionFileName,
+                TargetId = target.GetInstanceID(),
+            };
+            if (_displayCache.TryGet(key, out float cached)) return cached;
+
+            float value = Estimate(unit, ammoId, target);
+            _displayCache.Set(key, value);
+            return value;
+        }
+
         private static bool _lastCallWasHit;
         internal static bool WasLastCallCacheHit => _lastCallWasHit;
 
@@ -94,7 +132,7 @@ namespace AutoTOT
             return value;
         }
 
-        internal static void ClearCache() { _cache.Clear(); _fallbackCache.Clear(); _profileCache.Clear(); ClearRailLog(); }
+        internal static void ClearCache() { _cache.Clear(); _fallbackCache.Clear(); _displayCache.Clear(); _profileCache.Clear(); ClearRailLog(); }
 
         internal static long TofHits => _cache.HitCount;
         internal static long TofMisses => _cache.MissCount;
@@ -231,14 +269,27 @@ namespace AutoTOT
         private static float KinematicRaw(ObjectBase unit, AmmunitionParameters ap, ObjectBase target)
         {
             float integrated = IntegratedEndTime(unit, ap, target);
-            if (integrated > MinValidSeconds) return integrated;
+            if (integrated > MinValidSeconds)
+            {
+                ModelStats.TierUsed(ModelStats.Tier.Integrator);
+                return integrated;
+            }
+            // The integrator declined to answer, so this call also pays for whichever tier does.
+            ModelStats.Stalled();
 
             if (WaypointSim.Ready && WaypointSim.FullReady)
             {
                 float wp = WaypointSim.EndTime(unit, ap, target);
-                if (wp > MinValidSeconds) return wp;
+                if (wp > MinValidSeconds)
+                {
+                    ModelStats.TierUsed(ModelStats.Tier.Waypoint);
+                    return wp;
+                }
             }
-            return MaxRangePreciseEndTime(unit, ap, target);
+            float mrp = MaxRangePreciseEndTime(unit, ap, target);
+            ModelStats.TierUsed(mrp > MinValidSeconds ? ModelStats.Tier.MaxRangePrecise
+                                                      : ModelStats.Tier.Failed);
+            return mrp;
         }
 
         internal static float MaxRangePreciseEndTime(ObjectBase unit, AmmunitionParameters ap, ObjectBase target)

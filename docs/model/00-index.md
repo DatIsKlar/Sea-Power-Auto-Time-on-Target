@@ -1,14 +1,14 @@
 # The AutoTOT flight-time model
 
 AutoTOT coordinates missile salvos so they arrive together. That requires knowing, at planning time,
-how long each round will fly — per weapon, per range, per launcher. This folder documents how that
+how long each round will fly, per weapon, per range, per launcher. This folder documents how that
 number is produced.
 
 The core is a **forward-Euler step integrator** that flies the missile in simulation at a fixed
 0.1 s step, calling the game's own thrust and drag functions through reflection and reproducing the
-guidance state machine the live mover runs. It is not a curve fit and holds no per-missile constants:
-every quantity is a game constant, a field from the ammunition's `.ini`, or a value returned by a
-game method.
+guidance state machine the live mover runs. It holds no per-missile constants and does no
+curve fitting: every quantity is a game constant, a field from the ammunition's `.ini`, or a value
+returned by a game method.
 
 ## Read in order
 
@@ -24,7 +24,7 @@ game method.
 
 ## At a glance
 
-Estimation is tiered — each tier is tried in turn and the first that returns a usable answer wins:
+Estimation is tiered: each tier is tried in turn and the first that returns a usable answer wins:
 
 | tier | source | used when |
 |---|---|---|

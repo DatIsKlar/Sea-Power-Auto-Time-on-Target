@@ -129,7 +129,7 @@ while t < maxFlight:
 return −1                                                            # out of range
 ```
 
-## 5.3 Why the intercept test is closest-approach
+## 5.3 The closest-approach intercept test
 
 The loop does not test for a distance threshold alone. It returns at the step where horizontal
 distance **stops decreasing**, or when it falls inside 3 u. A pure threshold test would miss any

@@ -1,4 +1,4 @@
-# Auto Time-on-Target (Sea Power mod)
+# Auto Time-on-Target for Sea Power
 
 Coordinates missile launches so the whole salvo arrives at the target simultaneously
 (Time-on-Target). Works for **multi-ship formation attacks** and **one ship firing
@@ -136,7 +136,7 @@ The `dist/AutoTOT/` folder is exactly what you'd upload as a Steam Workshop item
 
 Both use the configurable modifier (`ToggleModifier`; set to `None` for single-key).
 
-### Planner panel (Alt+G)
+### Planner panel
 
 Starts minimized; expand via the ▸ chevron, drag it anywhere, resize the edges. It
 tracks your last-selected friendly ship as shooter (with a **This-ship /
@@ -157,13 +157,13 @@ The panel **auto-scales to your screen** (high-DPI/4K-aware). The footer's
 (`UIScale`, `0` = auto) and the relative trim (`UIScaleMultiplier`) are also editable
 in the config file under `[Interface]`. Pressing **Alt+G** hides the panel completely.
 
-### Automatic mode (Alt+T)
+### Automatic mode
 
-When armed, a Harmony patch intercepts `ObjectBase.InsertEngageTask` for
-**player-issued missile attacks**. Each launch is held briefly while the coordinator
-collects all orders aimed at the same target, then released at the moment that makes
-impacts coincide. Guns and single-shot attacks are effectively unaffected; AI
-auto-attacks are never intercepted.
+Armed and disarmed with Alt+T. When armed, a Harmony patch intercepts
+`ObjectBase.InsertEngageTask` for **player-issued missile attacks**. Each launch is held
+briefly while the coordinator collects all orders aimed at the same target, then released at
+the moment that makes impacts coincide. Guns and single-shot attacks are effectively
+unaffected; AI auto-attacks are never intercepted.
 
 ## How it works
 
@@ -203,7 +203,7 @@ the full flight-time model in [`docs/model/`](docs/model/00-index.md).
 
 Sources live in five folders by concern: `Core/` (pipeline + lifecycle),
 `Simulation/` (flight-time estimation), `UI/` (planner panel), `Diagnostics/`
-(launch observation), `Support/` (shared utilities).
+(launch observation and profiling), `Support/` (shared utilities).
 
 | File | Purpose |
 |---|---|
@@ -213,11 +213,13 @@ Sources live in five folders by concern: `Core/` (pipeline + lifecycle),
 | `Core/Coordinator.cs` | Core pipeline: batching, anchor selection, open-loop scheduling, release, fire |
 | `Simulation/FlightTime.cs` | Flight-time API + caches: estimate entry, 3-tier kinematic wiring, speed profiles, group forming delay |
 | `Simulation/FlightTime.Integrator.cs` | Grounded step-integrator (primary tier, beta) + phase diagnostics |
-| `Simulation/FlightTime.Reflection.cs` | Reflection resolution for the game's sim internals (beta/legacy drift) |
+| `Simulation/FlightTime.Reflection.cs` | Reflection resolution for the game's sim internals (beta/legacy drift) + the typed-delegate fast path for per-step thrust/drag |
+| `Simulation/FlightTime.Stats.cs` | Estimator cost counters (simulations, steps, which tier answered) behind the `Profiling` switch |
 | `Simulation/WaypointSim.cs` | Reflection port of the public `SimulateShotLinear`, the middle-tier fallback estimator |
 | `UI/Hud.cs` (+`Hud.Render.cs`, `Hud.Mouse.cs`, `Hud.Styles.cs`) | IMGUI planner panel: layout/data, drawing, pointer capture, styling |
 | `Diagnostics/LaunchDiagnostics.cs` | Impact reports + launch shortfall detection; feeds anchor observations |
 | `Diagnostics/EngagementBoard.cs` | Per-target engagement state behind the HUD's ENGAGEMENTS list |
+| `Diagnostics/CoordinatorProfiler.cs` | Per-frame timing report behind the `Profiling` switch |
 | `Support/GameClock.cs` | Version-agnostic sim clock + launch-timestamp access (float/double beta drift) |
 | `Support/GameUnits.cs` | Shared unit conversions (Unity units ↔ metres/nm/knots) |
 | `Support/LauncherFacts.cs` | Launcher cadence/ready rounds/reserve + cache, reload-wave helpers |
@@ -242,8 +244,8 @@ All settings take effect live when edited (BepInEx reloads the file; no restart 
 | Interface | `UIScaleMultiplier` | `1.0` | Fine-trim on top of `UIScale` (0.5–2.0), so you can shrink the auto scale without giving it up. |
 | Timing | `GroupWindowSeconds` | `0.75` | Quiet gap (real s) after the last order before the batch locks in. |
 | Timing | `MaxCollectSeconds` | `6.0` | Hard cap (real s) on how long one target collects orders. |
-| Debug | `VerboseLogging` | `false` | Log every queued and released launch with timing details. |
-| Debug | `Profiling` | `false` | Log per-frame timing every 60 frames to diagnose performance issues. |
+| Debug | `VerboseLogging` | `false` | Log every queued and released launch with timing details, plus per-shot flight-model diagnostics. Costly during a large salvo: it runs an extra flight simulation per missile, so leave it off unless you are investigating something. |
+| Debug | `Profiling` | `false` | Log a timing report every 60 frames: the mod's share of the frame, worst frame, where the time went, and how many flight simulations ran. |
 
 ## Compatibility
 
@@ -274,6 +276,18 @@ All settings take effect live when edited (BepInEx reloads the file; no restart 
 - Held orders track the anchor's predicted impact until the anchor's ripple
   completes; after that the impact time is final. A salvo ordered after the anchor
   finalized joins a fresh batch with its own anchor.
+- **Against a ship formation, rounds often strike a ship other than the one you
+  picked.** These missiles carry their own active seeker and do not split up the way
+  a grouped salvo does, so one sent at a ship deep in a formation locks onto whatever
+  it detects first. Ships at the back of a formation can absorb nothing at all while
+  the rounds meant for them kill the escorts in front. This is the game's seeker
+  behaviour, not something the mod schedules around; the log marks such rounds
+  `[RETARGETED -> ...]` so their flight times are not mistaken for estimator error.
+- **One shooter can only engage so many targets at once.** The game queues every
+  engage task but services them through whichever launcher is free, so a ship with a
+  single box launcher assigned to many targets fires them one after another and
+  time-on-target across those targets cannot hold. The log warns with
+  `launcher contention` when this is set up. Spread the shots across more shooters.
 
 ## Troubleshooting
 

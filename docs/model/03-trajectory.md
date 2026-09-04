@@ -2,10 +2,10 @@
 
 [← Parameters](02-parameters.md) · [index](00-index.md) · next: [Speed](04-speed.md)
 
-The game does not fly missiles with proportional navigation. It runs a **guidance state machine** —
-Launch → ToBearing → MaintainLoftAlt / SeaSkimming / FinalFlightAlt → TerminalApproach — where each
-stage commands an altitude and a speed, and the airframe slews toward that command at a finite rate.
-The integrator reproduces that machine. Trajectory shape is the only thing modelled by hand;
+The game does not fly missiles with proportional navigation. It runs a **guidance state machine**:
+Launch → ToBearing → MaintainLoftAlt / SeaSkimming / FinalFlightAlt → TerminalApproach. Each
+stage commands an altitude and a speed, and the airframe slews toward that command at a finite
+rate. The integrator reproduces that machine. Trajectory shape is the only thing modelled by hand;
 everything else is the game's own physics ([§4](04-speed.md)).
 
 ## 3.1 Launch geometry
@@ -16,7 +16,7 @@ and both are read from the launcher's transform rather than from any `.ini` fiel
 
 ### Choosing the launcher
 
-A ship may mount several launchers for the same ammunition, including pairs installed 180° apart —
+A ship may mount several launchers for the same ammunition, including pairs installed 180° apart,
 one bearing to port, one to starboard. The round comes off whichever launcher bears on the target, so
 the model iterates every launcher carrying the ammunition and picks the one whose horizontal rail
 direction is closest to the target bearing, skipping rails that are vertical (no bearing to compare).
@@ -24,16 +24,16 @@ Taking an arbitrary launcher would apply a spurious ~180° turn.
 
 ### Elevation
 
-The rail's true attitude comes from `_containers[i]._gunObject.transform` — the object the game
-actually elevates (`WeaponSystem.alignToTarget:1379-1381`), falling back to `_containerBaseObject`
+The rail's true attitude comes from `_containers[i]._gunObject.transform`, the object the game
+elevates (`WeaponSystem.alignToTarget:1379-1381`), falling back to `_containerBaseObject`
 when containers are joined. Elevation is `asin(forward.y)`, floored at 0°:
 
 ```
 launchPitch = max( asin(rail.forward.y) · rad2deg , 0 )
 ```
 
-`launchPitch >= 0` is the sentinel meaning "a launch attitude is known"; −1 means unknown, and the
-model then simply steers at the target from t = 0.
+`launchPitch >= 0` is the sentinel for a known launch attitude; −1 means unknown, and the model
+steers at the target from t = 0.
 
 Fixed rails and trainable mounts are handled separately, because a trainable mount's *current*
 transform is wherever it happens to be parked and must never be read as a launch attitude:
@@ -41,15 +41,15 @@ transform is wherever it happens to be parked and must never be read as a launch
 | launcher | source of the launch elevation |
 |---|---|
 | **fixed** (`!_isMountRotatable && !_areContainersRotatable`) | the rail as built: `clamp(asin(forward.y), 0, 90)` |
-| **trainable** | the game's own aim is recomputed — elevation to the target (or `_fixVerticalLaunchAngle` where the launcher uses a fixed angle), plus `_additionalFixVerticalLaunchAngle`, minus the mount's own pitch, clamped to the elevation arc (`alignToTarget:1360-1377`) |
+| **trainable** | the game's own aim is recomputed: elevation to the target (or `_fixVerticalLaunchAngle` where the launcher uses a fixed angle), plus `_additionalFixVerticalLaunchAngle`, minus the mount's own pitch, clamped to the elevation arc (`alignToTarget:1360-1377`) |
 
 This covers vertical launch for free: a VLS cell cannot train, so `alignToTarget` returns immediately
-and the cell stays as built — vertical.
+and the cell stays as built, vertical.
 
 ### Heading
 
 A launcher that cannot train fires **along its own bearing**. An off-bearing shot therefore spends
-its initial flight phase flying the wrong way and must then turn — closure that a model steering
+its initial flight phase flying the wrong way and must then turn, closure that a model steering
 straight at the target from t = 0 never pays for.
 
 So for a fixed, non-vertical rail the model carries a heading vector, the horizontal mirror of the
@@ -63,13 +63,51 @@ if launchHeading is set:
     horizDir = launchHeading
 ```
 
-It is inert wherever the rail is already on-bearing, vertical, or trainable — which is most
-launchers.
+### A vertical cell inherits the ship's heading
 
-> **Known approximation.** The game rate-limits *combined* pitch and yaw in a single
-> `Quaternion.RotateTowards` (`WeaponBase.cs:1770`); the model limits heading and pitch
-> independently. For an abeam launch the turn is overwhelmingly yaw, so the error is small, but this
-> is not a faithful port.
+A vertical rail has no bearing of its own, so there is no rail direction to seed from. The round
+still leaves the cell carrying the **ship's** yaw, though, and must turn onto the target bearing
+before it can close. A vertically launched round fired abeam runs its ToBearing stage to the full
+10 s cap.
+
+So for a vertical rail the heading is seeded from the ship's flattened forward vector instead, and
+the same hold-then-turn logic above applies unchanged:
+
+```
+launchHeading = rail is vertical ? horizontal(ship.forward)
+                                 : horizontal(rail.forward)
+```
+
+The mechanism is inert wherever the launcher is already on-bearing or trainable. A trainable mount
+aims before firing, so it has no launch turn to model.
+
+### Pitch and heading share one budget
+
+The two axes are not rate-limited separately. The game turns the whole airframe with a single
+`Quaternion.RotateTowards` covering pitch, yaw and roll at once (`WeaponBase.cs:1769-1771`), so
+yawing and pitching compete for the same degrees per second. A round that must do both finishes
+later than one doing either alone.
+
+For non-kinematic ammunition, which is the path that rotation code serves, the model does the same:
+
+```
+att  = RotateTowards(att, Euler(-targetPitch, yaw(targetHeading)), turnRate · dt)
+pitch, heading = read back off att · forward
+```
+
+**The attitude is carried from step to step**, and that is what makes the coupling work. Turning a
+nose-up airframe in yaw is largely roll, and roll is real travel out of the same budget. Rebuilding
+the attitude from pitch and heading each step, and reading only the forward vector back out,
+discards that roll and hands the budget back every step, which reproduces independent limiting
+almost exactly. Carrying the attitude keeps the cost. The target orientation carries no roll, so
+whatever the turn builds up bleeds away as the round settles on its bearing.
+
+The effect is largest where the turn is slowest and both axes are loaded. Rotating from 90° pitch
+and 90° of heading error to level and on-bearing is 120° of travel, not the 90° that independent
+limiting would charge; at 10°/s that is 12 s of turning rather than 9 s.
+
+With no heading error the quaternion angle equals the pitch change exactly, so this reduces to the
+plain slew above and cannot disturb a shot that has nothing to yaw.
 
 ## 3.2 The turn-rate budget
 
@@ -79,7 +117,7 @@ Pitch slews toward its command at `_maxTurnRateDegrees` (5°/s when unset):
 pitchDeg = MoveTowards(prevPitch, targetPitch, turnRate · dt)
 ```
 
-This finite rate is not a detail — it is what produces the **loft overshoot**. A missile commanded to
+This finite rate produces the **loft overshoot**. A missile commanded to
 level off at its loft altitude is still near +90° pitch when it arrives, and needs several seconds to
 swing down, climbing the whole way. A model that levels instantly peaks hundreds of Unity units low.
 
@@ -89,7 +127,7 @@ A **non-kinematic** missile with `_supportsBanking` gets a *second* rotation cal
 `setCourseTowardsPositionLegacy` runs its normal `RotateTowards` at `_maxTurnRateDegrees`, and then
 `performToTargetRoll` runs another at a hardcoded 60°/s (`WeaponBase.cs:1773-1776`, `:1789-1792`).
 That second call assigns a locally-read Euler angle to *world* rotation, which is gimbal-degenerate
-near vertical — so after a vertical launch its budget lands largely on **pitch**, not roll.
+near vertical, so after a vertical launch its budget lands largely on **pitch**, not roll.
 
 ```
 if nonKinematic && ap._supportsBanking:
@@ -104,9 +142,9 @@ Three phases, selected each step by remaining horizontal distance to the predict
 
 | phase | selected when | altitude | speed target |
 |---|---|---|---|
-| 0 — loft | lofting, and beyond `finalDist` | `loftAlt` from the game's `LoftCap` | `_maxLoftVelocityInKnots` |
-| 1 — final / sea-skim | within `finalDist` | `finalAlt` | `_maxVelocityInKnots` |
-| 2 — terminal | within `diveStart` | `termAlt` | `_terminalVelocityInKnots` |
+| 0: loft | lofting, and beyond `finalDist` | `loftAlt` from the game's `LoftCap` | `_maxLoftVelocityInKnots` |
+| 1: final / sea-skim | within `finalDist` | `finalAlt` | `_maxVelocityInKnots` |
+| 2: terminal | within `diveStart` | `termAlt` | `_terminalVelocityInKnots` |
 
 Boundaries come straight from the `.ini`, with `_loftToSkim` selecting which pair applies:
 
@@ -118,13 +156,13 @@ finalAlt  = toSkim ? _seaSkimmingAltUnity              : _finalFlightPhaseAltUni
 
 ### Launch and ToBearing command the maximum speed
 
-The loft speed applies only once the stage is actually `MaintainLoftAlt`. During Launch and ToBearing
+The loft speed applies only when the stage is `MaintainLoftAlt`. During Launch and ToBearing
 the commanded speed is `_maxVelocityInKnots` (`Missile.cs:3142-3145`), so the model overrides the
 stage target for that window. Inert for ammunition whose loft speed equals its maximum speed.
 
 ### Terminal onset
 
-The dive begins at whichever comes first — the declared terminal distance, or the geometric distance
+The dive begins at whichever comes first: the declared terminal distance, or the geometric distance
 at which the descent angle still reaches the terminal altitude:
 
 ```
@@ -158,7 +196,7 @@ The two are not interchangeable, and each is wrong where the other belongs:
   noses over at its turn rate. Bang-bang reproduces that, and the overshoot it produces is a
   consequence of the turn-rate limit, not an error.
 - **Holding** an altitude, bang-bang limit-cycles: pitch saturates one way, overshoots, saturates
-  back. On a long cruise this costs real closure — a round can sit at +33° with its altitude
+  back. On a long cruise this costs real closure: a round can sit at +33° with its altitude
   effectively frozen, bleeding `cos 33° = 0.825` of its speed into a climb that goes nowhere.
 
 So the model latches on first arrival and switches:
@@ -176,7 +214,7 @@ else:                targetPitch =  0
 ```
 
 Arrival is detected as a **sign change** in the altitude error, not as entry into a position band. A
-crossing cannot be stepped over; a band can — at cruise the loop moves 3–5.5 u of altitude per 0.1 s
+crossing cannot be stepped over; a band can. At cruise the loop moves 3–5.5 u of altitude per 0.1 s
 step against a 1 u-wide band. The latch resets whenever the phase changes.
 
 ### The climb angle
@@ -198,8 +236,8 @@ The same gate steepens the dive: a high ballistic lofter descends at `descentOns
 
 ### The launch hold
 
-While `t < _initialFlightPhaseDuration` and a launch attitude is known, the command is simply the
-launch elevation — the round flies off the rail before it flies its stage.
+While `t < _initialFlightPhaseDuration` and a launch attitude is known, the command is the launch
+elevation; the round flies off the rail before it flies its stage.
 
 ## 3.5 Terminal-loft altitude
 

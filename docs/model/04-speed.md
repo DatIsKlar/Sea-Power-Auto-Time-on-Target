@@ -5,7 +5,7 @@
 The game runs **two different speed models**, selected by `ApplyKinematics`, and they are not
 variations of one another. The integrator branches the same way.
 
-## 4.1 Non-kinematic ammunition (`Kinematics == None`)
+## 4.1 Non-kinematic ammunition: `Kinematics == None`
 
 The round does not integrate forces. It seeks its current stage's commanded speed at its own
 acceleration and deceleration rates, and drag is never applied:
@@ -21,7 +21,7 @@ Stage targets are `_maxLoftVelocityInKnots`, `_maxVelocityInKnots` and `_termina
 [§3.3](03-trajectory.md#33-the-stage-model). This branch covers most cruise missiles and
 sea-skimmers.
 
-## 4.2 Kinematic ammunition (`ApplyKinematics = True`)
+## 4.2 Kinematic ammunition: `ApplyKinematics = True`
 
 Speed is thrust minus drag, **uncapped**:
 
@@ -61,7 +61,7 @@ The key property of the expansion above: **`num9` is speed-independent, and it b
 `ρ(targetAlt) → 0`.** The divisor floors at 0.001, so it can grow by a factor of roughly 800.
 
 The live mover feeds `targetAlt` conditionally (`Missile.cs:3170-3175`): the *target's* altitude
-while the seeker holds lock — dense air, divisor ≈ 0.816, the term is negligible — and the missile's
+while the seeker holds lock (dense air, divisor ≈ 0.816, the term is negligible) and the missile's
 *own* altitude once lock drops. A round coasting through near-vacuum after lock loss therefore
 decelerates hard, and any model that ignores this arrives far too fast.
 
@@ -72,8 +72,8 @@ inVacuumDive = phase == 2 && alt > 613.5 u && pitch < −40°
 targetAltArg = inVacuumDive ? alt : predictedTarget.y
 ```
 
-This is the model's one deliberate heuristic. It describes a class — steeply diving, post-burnout,
-above the atmosphere — not a particular missile.
+This is the model's one deliberate heuristic. It describes a class: steeply diving, post-burnout,
+above the atmosphere.
 
 **Worked example.** A Mach-10 lofter at own altitude 708 u (vacuum), pitch 59°, `dragFactor` 2.4,
 `liftFactor` 0.005, lock dropped so `targetAlt` = 708 u ⇒ `ρ(708) = 0` ⇒ divisor 0.001:
@@ -85,7 +85,7 @@ num9 = sqrt(cos 59°) · 2.4 · 0.005 · 9.81 / 0.001
 ```
 
 which matches the deceleration observed on a real flight. In dense air (`targetAlt` = 0, divisor
-0.816) the same term is ≈ 0.2 kn/s — negligible.
+0.816) the same term is ≈ 0.2 kn/s, negligible.
 
 ## 4.5 Class taxonomy
 

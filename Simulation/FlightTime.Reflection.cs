@@ -14,6 +14,19 @@ namespace AutoTOT
 
         private static MethodInfo _thrustMethod;
         private static MethodInfo _dragMethod;
+
+        // The integrator calls these two once per 0.1s step, so a 12-minute flight is tens of
+        // thousands of calls and a busy frame is far more. MethodInfo.Invoke boxes every argument on
+        // every call; a bound delegate does neither. The MethodInfo lookup above stays as the thing
+        // that finds the method (the branches differ in signature), and these are bound from
+        // whatever it found. Null when binding fails, in which case the Invoke path still runs.
+        private delegate float ThrustFn(AmmunitionParameters ap, bool isAirLaunched,
+                                        float timeSinceLaunch, float timeWindow);
+        private delegate float DragFn(float altitude, float velocity, float time, float pitch,
+                                      float dragFactor, bool motorBurning, float targetAltitude,
+                                      float liftFactor, float stallSpeedKnots, float pitchRateDegPerSec);
+        private static ThrustFn _thrustFn;
+        private static DragFn _dragFn;
         private static MethodInfo _loftCapMethod;
         private static MethodInfo _altNodesMethod;
 
@@ -66,10 +79,34 @@ namespace AutoTOT
                             typeof(float), typeof(float).MakeByRefType()
                         }, null);
 
+                        BindFastPath();
+
                         LogSimInit(ms);
                         WaypointSim.EnsureLookup(typeof(Missile).Assembly);
                     }
                 }
+            }
+        }
+
+        /// <summary>
+        /// Bind the per-step thrust and drag calls to typed delegates. Purely a performance step:
+        /// binding preserves the signature exactly, and a failure is not fatal, since the integrator
+        /// falls back to invoking the MethodInfo.
+        /// </summary>
+        private static void BindFastPath()
+        {
+            try
+            {
+                if (_thrustMethod != null)
+                    _thrustFn = (ThrustFn)Delegate.CreateDelegate(typeof(ThrustFn), _thrustMethod, false);
+                if (_dragMethod != null)
+                    _dragFn = (DragFn)Delegate.CreateDelegate(typeof(DragFn), _dragMethod, false);
+            }
+            catch (Exception e)
+            {
+                _thrustFn = null; _dragFn = null;
+                if (Coordinator.VerboseLog)
+                    Bootstrap.Log.LogWarning($"[AutoTOT] fast-path bind failed: {e.GetType().Name}: {e.Message}");
             }
         }
 
@@ -98,7 +135,8 @@ namespace AutoTOT
                 Bootstrap.Log.LogInfo(
                     $"[AutoTOT] sim-init: beta {_simIsBeta}, thrust {(_thrustMethod != null)}, " +
                     $"drag {(_dragMethod != null)}, loftCap {(_loftCapMethod != null)}, " +
-                    $"altNodes {(_altNodesMethod != null)}");
+                    $"altNodes {(_altNodesMethod != null)}, " +
+                    $"fastPath {(_thrustFn != null && _dragFn != null)}");
                 foreach (var pair in new (string name, MethodInfo mi)[]
                 {
                     ("CalculateThrustOverTime", _thrustMethod), ("CalculateDrag", _dragMethod),

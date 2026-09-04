@@ -127,7 +127,7 @@ release until sim time resumes).
 evaluating flight time a fraction of a (sim) step before the missile
 launches. `Mathf.Max(0f, ...)` guards against negative deltas.
 
-## Why open-loop scheduling
+## Open-loop scheduling
 
 The mod never guides missiles. It only decides WHEN each order is handed to the
 game. The shared impact time is fixed at commit (then refined by the anchor), and
@@ -306,8 +306,8 @@ leading, `LauncherFacts.Compute` floors the a-priori `ShotInterval` with the lau
 hatch-open animation duration (`max(declared, hatchOpenSeconds)`) for per-tube-hatch
 launchers that declare no cadence field, e.g. the SS-N-19's ~3 s shaft-hatch animation,
 which its INI omits. This only RAISES an unset cadence, never overrides a declared one,
-so it's a pure fallback with no effect on launchers that set their timing. See the
-launcher facts deep-dive above for the full derivation.
+so it's a pure fallback with no effect on launchers that set their timing. Full derivation:
+[ShotInterval derivation](#shotinterval-derivation).
 
 Held orders track the running prediction: their `ImpactAtSim` is overwritten every
 tick until the ripple finalizes, so their unchanged release formula tracks reality.
@@ -412,12 +412,24 @@ DeadlineSim = GameClock.SimNow() + ripple + waveTail + ExpectationMarginSim (10 
 
 ### Adaptive deadline
 
-`FinalizeExpectations` (LaunchDiagnostics.cs) is called every tick. The deadline
-is adaptive once launches begin (LaunchDiagnostics.cs): if `Launched > 0 && Launched < Requested`,
-the measured cadence is `(last − first) / (count − 1)` from the anchor's `LaunchTimes`
-(once count ≥ 2). The adaptive deadline is `LastLaunchSim + Max(4 * interval, 30 s) + WaveTailSim`.
-The deadline only ever extends. Rationale: realized cadence is often far slower than INI
-pace; fixed deadlines caused false SHORTFALLs.
+`FinalizeExpectations` (LaunchDiagnostics.cs) is called every tick. The measured cadence is
+`(last − first) / (count − 1)` from the anchor's `LaunchTimes` (once count ≥ 2). The adaptive
+deadline is `since + Max(4 * interval, 30 s) + WaveTailSim`, and it only ever extends.
+
+`since` is the reference point, chosen in this order:
+
+1. the order's own `LastLaunchSim`, if it has launched anything;
+2. otherwise the **ship's** last observed launch of that ammunition, tracked in
+   `_shipLastLaunchSim` and updated on every sighting including rounds that match no open
+   order;
+3. otherwise `RegisteredSim`, when the order was issued.
+
+The question a shortfall answers is "has the **ship** stopped launching", not "has this order
+started". A ship can hold many engage tasks at once and the game services them through
+whatever launcher is free, so an order can sit queued for minutes while rounds are still
+leaving the rails. Keying the deadline to the order's own first launch gave a one-shot order
+10 s and no extension at all, which reported the tail of a queue as short while it was still
+being worked through.
 
 ### Shortfall detection
 
@@ -426,7 +438,28 @@ Close-out (LaunchDiagnostics.cs): `done = Launched >= Requested`. If not done an
 complete" (VerboseLog only). Else compute `targetGone` / `shooterGone`. If the shooter is
 alive, gather `ready`/`reserve`/`inventory`. Severity split: if `targetGone || shooterGone`,
 log "order ended early" (VerboseLog only). Else unconditional `LogWarning` "SHORTFALL".
-SHORTFALL is the only unconditional (non-VerboseLog) log in LaunchDiagnostics.
+SHORTFALL is the only unconditional (non-VerboseLog) log in LaunchDiagnostics. The detail line
+also reports how long ago the ship last fired that ammunition, which distinguishes a launcher
+that has stalled from one that is still working through a queue.
+
+### Seeker re-targeting
+
+These missiles carry their own active seeker and, unlike grouped rounds, do not split up. A round
+sent at a ship deep in a formation locks onto whatever it detects first and strikes a ship in
+front of the one it was ordered against. `w.CurrentIntendedTargetObject` follows that switch;
+the order's assignment does not.
+
+Each `FlightSample` therefore keeps both: `Target`, stamped at first sighting, and `CurrentTarget`,
+refreshed every tick. When they differ at impact:
+
+- the `impact` line is tagged `[RETARGETED -> <ship>]`, because "final range 4192 m" otherwise
+  reads as a miss when the round in fact killed something else;
+- the `gap` line is **replaced** by a `SKIPPED, seeker switched` line. A retargeted round's flight
+  time is to the ship the seeker chose while `simEst` was computed for the ship it was assigned,
+  so the difference measures formation geometry, not the estimator, and is worth tens of seconds.
+
+Both comparisons use `ReferenceEquals`. `UnityEngine.Object` overloads `==` so a destroyed object
+compares equal to null, and a ship sinking is precisely the case this detects.
 
 ## Engagement board and HUD
 
@@ -477,7 +510,7 @@ Snapshot scratch buffers are reused every call to avoid per-frame allocation: `_
    non-fired entries; for fired anchors with `!RippleDone`, set `AnchorLaunched` and
    `AnchorTotal`.
 2. **In-flight pass** via `LaunchDiagnostics.ForEachInFlight`: count only for targets
-   actually coordinated/fired (`HasFired(t)`), else any friendly missile at that contact
+   coordinated/fired (`HasFired(t)`), else any friendly missile at that contact
    would inflate the overview.
 3. **Prune pass**: for each `_byTarget` entry, skip never-fired rows. `active = row exists
    in _salvoMap && (Queued > 0 || InFlight > 0)`. `inGrace = (now - FiredAtSim) < EngageGrace`
@@ -582,7 +615,7 @@ anyway." then calls `Init()`.
 `ModMenuEnabled` computes the mod's own folder from the assembly location and iterates
 `SearchDirectory` entries, matching on full paths trimmed of trailing slashes,
 `OrdinalIgnoreCase`. Returns `sd.IsChecked`. If the mod's own folder is not listed (e.g.
-run from BepInEx/plugins), returns `true` ("can't tell where we live; don't block").
+run from BepInEx/plugins), returns `true`: it cannot tell where it lives, so it does not block.
 
 ### Init ordering
 
@@ -644,7 +677,7 @@ frame. `Update`:
 
 Sources live in five folders by concern: `Core/` (pipeline + lifecycle),
 `Simulation/` (flight-time estimation), `UI/` (planner panel), `Diagnostics/`
-(launch observation), `Support/` (shared utilities).
+(launch observation and profiling), `Support/` (shared utilities).
 
 | File | Responsibility |
 |---|---|
@@ -654,7 +687,8 @@ Sources live in five folders by concern: `Core/` (pipeline + lifecycle),
 | `Core/Coordinator.cs` | The pipeline: batching, anchor selection, open-loop scheduling, release, fire |
 | `Simulation/FlightTime.cs` | Flight-time API: tier wiring, TTL caches, straight-line fallback, speed profile + group-forming delay |
 | `Simulation/FlightTime.Integrator.cs` | Grounded step integrator (tier 1, beta) + phase diagnostics |
-| `Simulation/FlightTime.Reflection.cs` | Branch detection + reflection resolution for the game's sim internals |
+| `Simulation/FlightTime.Reflection.cs` | Branch detection + reflection resolution, and the typed-delegate fast path for the per-step thrust/drag calls |
+| `Simulation/FlightTime.Stats.cs` | Estimator cost counters: sims, integration steps, setup vs loop time, which tier answered |
 | `Simulation/WaypointSim.cs` | Reflection port of the public `SimulateShotLinear` (tier 2, beta) |
 | `Support/GameClock.cs` | Version-agnostic sim clock + launch-timestamp access (float/double beta drift) |
 | `Support/GameUnits.cs` | Shared unit conversions (Unity units ↔ metres/nm/knots) |
@@ -663,6 +697,7 @@ Sources live in five folders by concern: `Core/` (pipeline + lifecycle),
 | `Support/DotsScanHardening.cs` | Multiplayer mission-load crash shield for the DOTS assembly scan |
 | `Diagnostics/LaunchDiagnostics.cs` | Flight tracker (impact reports) + launch expectations (shortfall detection); feeds anchor launch times |
 | `Diagnostics/EngagementBoard.cs` | Per-target engagement state for the HUD (consolidated: one row per target) |
+| `Diagnostics/CoordinatorProfiler.cs` | Per-frame timing (`Profiler`): stage timers, counters, frame share, the 60-frame report |
 | `UI/Hud.cs` (+ `.Render` `.Mouse` `.Styles` partials) | IMGUI planner panel: layout/data, drawing, pointer capture, styling |
 
 ## Multiplayer crash shield: `DotsScanHardening`
