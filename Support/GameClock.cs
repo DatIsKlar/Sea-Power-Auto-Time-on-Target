@@ -5,23 +5,15 @@ using SeaPower;
 namespace AutoTOT
 {
     /// <summary>
-    /// Version-agnostic accessor for the game's sim clock.
+    /// Version-agnostic accessor for the game's sim clock. The beta build removed
+    /// <c>GameTime.time</c> (float) and the public build still has it, so the getter is resolved
+    /// once by reflection and cached; one DLL then runs on both branches.
     ///
-    /// The 2026-09-01 beta migrated timing from <c>float</c> to <c>double</c>: it removed
-    /// <c>GameTime.time</c> (float). A compile-time reference to it would
-    /// <see cref="MissingMethodException"/> on beta, and the current PUBLIC build still has it, so
-    /// we resolve the getter once via reflection and cache it — the same cached-reflection pattern
-    /// the flight-time integrator uses in FlightTime.cs.
-    ///
-    /// The replacement is <c>GameTime.missionElapsedTime</c> (double), NOT <c>simulationTime</c>.
-    /// Verified against both decompiles: old <c>time</c> and <c>missionElapsedTime</c> share the
-    /// exact same accumulation (<c>+= deltaTime</c>, the compression-scaled update clock), so
-    /// <c>missionElapsedTime</c> is the behavioral continuation of old <c>time</c>. Critically, the
-    /// game sets a weapon's <c>_launchTime</c> from this clock (WeaponBase: <c>_launchTime =
-    /// GameTime.missionElapsedTime</c>), and the mod compares launch times against it — so the mod's
-    /// clock MUST be the same one. <c>simulationTime</c> advances by a physics-capped
-    /// <c>fixedDeltaTime</c> and DIVERGES from <c>missionElapsedTime</c> under high time compression;
-    /// using it would desync scheduling from <c>_launchTime</c>. Do NOT use it.
+    /// The clock is <c>GameTime.missionElapsedTime</c> (double), NOT <c>simulationTime</c>. The game
+    /// stamps a weapon's <c>_launchTime</c> from <c>missionElapsedTime</c> and the mod compares
+    /// launch times against its own clock, so the two must be the same one. <c>simulationTime</c>
+    /// advances by a physics-capped <c>fixedDeltaTime</c> and diverges under high time compression.
+    /// Do NOT use it.
     /// </summary>
     internal static class GameClock
     {
@@ -38,12 +30,10 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// A weapon's launch timestamp (sim-clock seconds, float), read via reflection: the field's
-        /// TYPE drifted in the 2026-09-01 beta (<c>float</c> on public, <c>double</c> on beta), and a
-        /// compile-time reference bakes whichever type the build referenced into the IL — a DLL built
-        /// against one branch <see cref="MissingFieldException"/>s on the other. Reading through the
-        /// FieldInfo makes one DLL run on both branches (same cached-reflection pattern as above).
-        /// Returns -1 if the weapon is null or the field cannot be resolved.
+        /// A weapon's launch timestamp (sim-clock seconds), read via reflection: the field's TYPE
+        /// differs between branches (<c>float</c> on public, <c>double</c> on beta) and a
+        /// compile-time reference bakes one of them into the IL, so a DLL built against either
+        /// branch throws on the other. Returns -1 if the weapon or the field cannot be resolved.
         /// </summary>
         public static float LaunchStamp(WeaponBase w)
         {

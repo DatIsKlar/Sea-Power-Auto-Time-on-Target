@@ -167,7 +167,6 @@ namespace AutoTOT
             }
         }
 
-        // ---------- GUI ----------
 
         private void OnGUI()
         {
@@ -332,7 +331,6 @@ namespace AutoTOT
             GUI.DragWindow(new Rect(0, 0, 100000, HeaderH));
         }
 
-        // ---------- helpers ----------
 
         private List<ObjectBase> GetShooters()
         {

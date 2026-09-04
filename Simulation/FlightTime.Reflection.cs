@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Reflection;
 using SeaPower;
@@ -85,6 +85,40 @@ namespace AutoTOT
                         WaypointSim.EnsureLookup(typeof(Missile).Assembly);
                     }
                 }
+                LogEstimatorBinding();
+            }
+        }
+
+        /// <summary>
+        /// Report which estimator the integrator actually bound to, once per session and regardless
+        /// of the verbose setting.
+        ///
+        /// This is deliberately not behind <c>VerboseLog</c>. The integrator needs the beta
+        /// <c>MissileSimulator</c> internals; on the public branch it finds
+        /// <c>Missile.SimulateShotLinear</c> instead, binds nothing, and declines every call, so
+        /// every flight time silently comes from <c>MaxRangePrecise</c>. That degradation is correct
+        /// behaviour but it is invisible, and the rule for performance runs is that verbose logging
+        /// stays off, so the one configuration that hid it was the one used to measure. A single
+        /// line per session makes "which estimator produced these numbers" answerable in any log.
+        /// </summary>
+        private static void LogEstimatorBinding()
+        {
+            bool integratorReady = _simIsBeta && _thrustMethod != null;
+            string branch = _simIsBeta ? "beta" : "public";
+            if (integratorReady)
+            {
+                Bootstrap.Log.LogInfo(
+                    $"[AutoTOT] estimator: integrator ACTIVE ({branch} branch, " +
+                    $"fastPath {(_thrustFn != null && _dragFn != null)})");
+            }
+            else
+            {
+                Bootstrap.Log.LogWarning(
+                    $"[AutoTOT] estimator: integrator UNAVAILABLE on the {branch} branch " +
+                    $"(SimulateShotLinear {(_simulateShotMethod != null && !_simIsBeta)}, " +
+                    $"thrust {(_thrustMethod != null)}). Flight times will fall back to " +
+                    $"WaypointSim/MaxRangePrecise, which are less accurate. Time-on-target " +
+                    $"coordination still works; timing precision does not match the tested model.");
             }
         }
 

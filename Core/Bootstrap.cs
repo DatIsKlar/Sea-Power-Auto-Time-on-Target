@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.IO;
 using System.Reflection;
 using BepInEx;
@@ -50,6 +50,8 @@ namespace AutoTOT
         private static ConfigEntry<float> _cfgMaxWindow;
         private static ConfigEntry<bool> _cfgVerbose;
         private static ConfigEntry<bool> _cfgProfiling;
+        private static ConfigEntry<int> _cfgEstimatorThreads;
+        private static ConfigEntry<bool> _cfgVerifySolve;
 
         public static void InitIfEnabled()
         {
@@ -245,6 +247,24 @@ namespace AutoTOT
                 "Log every queued and released launch.");
             _cfgProfiling = _config.Bind("Debug", "Profiling", false,
                 "Log per-frame timing every 60 frames to diagnose performance issues.");
+            _cfgEstimatorThreads = _config.Bind("Performance", "EstimatorThreads", -1,
+                "Worker threads for flight-time simulation. 0 runs everything on the main thread, " +
+                "as before. -1 picks a count from the CPU: a quarter of the logical cores, at " +
+                "least 1 and at most 4. Raise it only if the profiling line shows the queue " +
+                "backing up; the workers run below normal priority so the game always wins a " +
+                "contended core.");
+
+            _cfgVerifySolve = _config.Bind("Debug", "VerifySolve", false,
+                "Re-run every threaded flight simulation on the main thread and warn if the two " +
+                "answers differ. Proves the threaded path computes exactly what the main thread " +
+                "would. Doubles simulation work, so use it to check correctness, never to measure " +
+                "performance.");
+
+            // Threads are started once and not re-read on SettingChanged: stopping and restarting a
+            // pool mid-mission would strand queued work.
+            int threads = _cfgEstimatorThreads.Value;
+            if (threads < 0) threads = Mathf.Clamp(SystemInfo.processorCount / 4, 1, 4);
+            FlightTime.StartWorkers(threads);
 
             Coordinator.Active = _cfgDefaultOn.Value; // runtime toggle's starting state
 
@@ -260,6 +280,7 @@ namespace AutoTOT
             _cfgMaxWindow.SettingChanged += (_, __) => ApplyConfig();
             _cfgVerbose.SettingChanged += (_, __) => ApplyConfig();
             _cfgProfiling.SettingChanged += (_, __) => ApplyConfig();
+            _cfgVerifySolve.SettingChanged += (_, __) => ApplyConfig();
         }
 
         // Forwards uncaught Unity exceptions to the BepInEx log. Only LogType.Exception
@@ -280,6 +301,7 @@ namespace AutoTOT
             Coordinator.MaxWindowSeconds = _cfgMaxWindow.Value;
             Coordinator.VerboseLog = _cfgVerbose.Value;
             Coordinator.ProfilingEnabled = _cfgProfiling.Value;
+            FlightTime.VerifySolve = _cfgVerifySolve.Value;
             ShowIndicator = _cfgShowIndicator.Value;
             ToggleModifier = _cfgToggleModifier.Value;
             ToggleKey = _cfgToggleKey.Value;

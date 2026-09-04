@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using SeaPower;
 using UnityEngine;
@@ -111,10 +111,8 @@ namespace AutoTOT
             public readonly List<float> LaunchTimes = new List<float>(); // observed launch times (sim s)
             public int LastLoggedLaunches = -1;
             public float FiredAtSim = -1f;
-            // Per-item flight-estimate cache (proximity gate): far-from-release items reuse a
-            // prior FlightTime.Estimate on a sim-time cadence instead of re-running the kinematic
-            // sim every frame. Refreshed when stale or near release. Always a real Estimate output,
-            // so it never diverges from the commit path.
+            // Proximity-gate cache: far-from-release items reuse a prior FlightTime.Estimate on a
+            // sim-time cadence rather than re-running the sim every frame. See ResolveFlightEstimate.
             public float LastFlightEst = -1f;
             public float LastFlightEstSim = float.NegativeInfinity;
         }
@@ -221,6 +219,10 @@ namespace AutoTOT
             float simNow = GameClock.SimNow();
 
             Profiler.Begin(Profiler.Stage.Tick);
+
+            // Publish anything the solve workers finished since the last frame, before any stage
+            // reads the cache. Main thread, so the cache keeps exactly one writer.
+            FlightTime.DrainCompleted();
 
             Profiler.Begin(Profiler.Stage.Diag);
             LaunchDiagnostics.Tick(simNow);
@@ -370,8 +372,7 @@ namespace AutoTOT
             //  - INDEPENDENT salvos arrive spread out over the ripple, so lead = HALF the span,
             //    which CENTERS the arrival distribution on the TOT.
             //
-            // (The group flag comes from the ammo's own params, so modded group missiles are
-            // covered too.)
+            // The group flag comes from the ammo's own params, so modded group missiles are covered.
             AmmunitionParameters ap = it.Unit?.getAmmunitionByName(it.AmmoId)?._ap;
             it.Grouped = ap != null && ap._maxGroupSize > 1 && wave1 > 1;
             it.ReleaseLead = it.Grouped
@@ -470,18 +471,16 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// Observation anchoring. The batch anchor (longest enroute incl. span) was released first;
-        /// here we watch its ACTUAL launches, extrapolate the launcher's live cadence, and keep
-        /// rewriting the shared impact time every held order is released against.
+        /// Observation anchoring. The batch anchor (longest enroute incl. span) is released first;
+        /// its ACTUAL launches are watched here to extrapolate the launcher's live cadence and
+        /// rewrite the shared impact time every held order releases against.
         ///
         /// WHY the anchor's last launch predicts the group's impact: a grouped salvo's convergent
         /// impact lands when its LAST round's solo flight ends (MissileGroup.cs:106-141 —
         /// AdjustMembersVelocities applies symmetric ±40% speed clamps, so the farthest trailer
         /// flies at exactly solo speed until it closes up; then the group cashes in together,
-        /// Missile.cs:839-842). No cadence constant exists anywhere: the realized cadence of many
-        /// launchers is produced by machinery no INI declares (per-cell hatch animations,
-        /// engage-task reassignment), so it is measured from the game's own launch timing instead
-        /// of predicted.
+        /// Missile.cs:839-842). Cadence is MEASURED, not read: no INI declares it, and the realized
+        /// value comes from per-cell hatch animations and engage-task reassignment.
         ///
         /// The prediction updated every tick (k = launches observed, n = anchor shots):
         ///
@@ -599,46 +598,72 @@ namespace AutoTOT
         private static float ResolveFlightEstimate(Scheduled s, Intent it, float simNow,
                                                    float timeLeft, float releaseGate)
         {
-            // Release must use the SAME estimator the commit path (EnrouteWithLead) scheduled
-            // the impact against, so positive slack exists and the per-item launch stagger
-            // engages. FlightTime.Estimate carries its own real-0.5 s TTL cache shared with the
-            // commit path. (An earlier optimization added a separate sim-time cache + a
-            // straight-line "out of max range" pre-filter here; the pre-filter substituted
-            // distance/maxVelocity and overestimated slow long-range shots by ~120 s vs the
-            // kinematic sim, driving slack negative so whole batches dumped on one tick.)
+            // Two invariants bind here.
             //
-            // Proximity gate: most scheduled items are minutes from release, yet re-running the
-            // kinematic sim for all of them every frame dominated the tick (~536ms/435 items).
-            // Reuse a prior Estimate for far items on a sim-time cadence; always recompute fresh
-            // near release, so the launch decision uses a current value. The reused value is
-            // always a real FlightTime.Estimate output, so it cannot diverge from the commit
-            // path the way the removed pre-filter did. Using sim-time staleness (not real time)
-            // also breaks the feedback loop where slow ticks expired FlightTime's real-0.5 s TTL
-            // every frame and forced a full recompute.
-            // Near-release items refresh on a short sim cadence (FlightRefreshNearSim); far
-            // items on a long one (FlightRefreshSim). Time-on-target bunches many items into
-            // the near-release window at once, so recomputing each every frame was still the
-            // bulk of the cost — the estimate creeps slowly vs a multi-minute flight, so a
-            // sub-second cadence is plenty accurate for a launch decision.
+            // 1. Release must use the SAME estimator the commit path scheduled the impact against
+            //    (FlightTime.Estimate, whose real-0.5 s TTL cache both paths share). Any cheaper
+            //    substitute biases one path against the other, slack goes negative, and the whole
+            //    batch dumps on one tick with no stagger.
+            // 2. Staleness is measured in SIM time, not real time, or slow ticks expire the cache
+            //    every frame and force a full recompute, which is the feedback loop that made them
+            //    slow.
+            //
+            // Proximity gate: far items reuse a prior Estimate on a long cadence (FlightRefreshSim),
+            // near-release items on a short one (FlightRefreshNearSim). The reused value is always a
+            // real Estimate output, so it cannot diverge from the commit path.
+            // See docs/plans/done/2026-08-30-performance-analysis.md and
+            // docs/plans/reference/estimator-cost.md.
             bool nearRelease = s.LastFlightEst >= 0f &&
                                timeLeft <= s.LastFlightEst + releaseGate + FlightGateMargin;
             float refreshCadence = nearRelease ? FlightRefreshNearSim : FlightRefreshSim;
             bool due = s.LastFlightEst < 0f || simNow - s.LastFlightEstSim >= refreshCadence;
-            // Per-frame ceiling on fresh kinematic sims: a synchronized wave can bunch many
-            // due refreshes into one frame. Cap them; an item that already has a value just
-            // reuses it a frame longer. An item with NO estimate always computes (correctness
-            // before budget) — those are first-sight only and rare.
+            // Per-frame ceiling on fresh sims: a synchronized wave bunches many due refreshes into
+            // one frame. An item with NO estimate always computes; correctness before budget.
+            //
+            // The budget is charged AFTER the call and only when it missed the cache. Charging it
+            // before meant a cache hit spent a slot, and hits are the large majority: one measured
+            // window served 454 hits against 123 misses, the hits costing 0.1 ms in total. A ceiling
+            // of 12 therefore admitted about 2 real sims per frame and turned away roughly 64 items,
+            // so the release path ran on estimates 8 to 12 s old with the budget mostly spent on
+            // work that was free. Only a miss consumes the resource this exists to bound.
             bool budgeted = s.LastFlightEst < 0f || _flightEstimatesThisFrame < MaxFlightEstimatesPerFrame;
             float flightNow;
             if (due && budgeted)
             {
-                _flightEstimatesThisFrame++;
-                Profiler.Begin(Profiler.Stage.FlightEstimate);
-                flightNow = FlightTime.Estimate(it.Unit, it.AmmoId, it.Target);
-                Profiler.End(Profiler.Stage.FlightEstimate);
-                Profiler.CountEstimate(FlightTime.WasLastCallCacheHit);
-                s.LastFlightEst = flightNow;
-                s.LastFlightEstSim = simNow;
+                // Three ways to answer, cheapest first.
+                if (FlightTime.TryCached(it.Unit, it.AmmoId, it.Target, out float cached))
+                {
+                    // Already computed, possibly by a worker that finished since the last tick.
+                    // No Begin/End here: nothing ran, so there is no duration to attribute.
+                    Profiler.CountCachedHit();
+                    flightNow = cached;
+                    s.LastFlightEst = flightNow;
+                    s.LastFlightEstSim = simNow;
+                }
+                else if (s.LastFlightEst >= 0f &&
+                         FlightTime.RequestRefresh(it.Unit, it.AmmoId, it.Target))
+                {
+                    // A refresh of a value we already hold: queue it and keep the previous number
+                    // for now. LastFlightEstSim is deliberately NOT advanced, so the item stays due
+                    // and adopts the fresh value the moment it lands. RequestRefresh dedupes by key,
+                    // so staying due does not re-queue it.
+                    flightNow = s.LastFlightEst;
+                    Profiler.Count(Profiler.Counter.FlightQueued);
+                }
+                else
+                {
+                    // No usable previous value (the anchor releases almost immediately after being
+                    // scheduled, so it must be answered now), or the queue declined the work.
+                    // Correctness before budget, as before.
+                    Profiler.Begin(Profiler.Stage.FlightEstimate);
+                    flightNow = FlightTime.Estimate(it.Unit, it.AmmoId, it.Target);
+                    Profiler.End(Profiler.Stage.FlightEstimate);
+                    bool cacheHit = FlightTime.WasLastCallCacheHit;
+                    Profiler.CountEstimate(cacheHit);
+                    if (!cacheHit) _flightEstimatesThisFrame++;
+                    s.LastFlightEst = flightNow;
+                    s.LastFlightEstSim = simNow;
+                }
             }
             else
             {
@@ -674,10 +699,8 @@ namespace AutoTOT
                     _predictCache.Remove(s);          // fired-anchor ripple entries, if any
                     _anchorFollowers.Remove(s);
                     _scheduled.RemoveAt(i);
-                    // This item never fires, so its target may never get a fired row — which is
-                    // what the engagement board's prune loop keys off. Drop the board row now if
-                    // no other still-scheduled item shares this target, else it leaks until the
-                    // next mission Reset().
+                    // Never fires, so the target may never get a fired row, which is what the board's
+                    // prune keys off. Drop it now or it leaks until the next mission Reset().
                     DropImpactDataIfUnscheduled(it.Target);
                     LogDroppedItem(s);
                     continue;
@@ -719,12 +742,10 @@ namespace AutoTOT
                         _groupDelayCache.Remove(s);
                         _scheduled.RemoveAt(i);
                     }
-                    // Regression guardrail: large positive overshoot means the item is released
-                    // well past-due — it cannot make its scheduled impact, and every item in the
-                    // batch will have collapsed onto this tick (no launch stagger). That is the
-                    // signature of the release estimate diverging from the impact the commit path
-                    // scheduled (see PROJECT_MEMORY.md, "Commit/release estimator consistency").
-                    // Logged once per item (release removes/marks it), independent of VerboseLog.
+                    // Regression guardrail for invariant 1 in ResolveFlightEstimate: large positive
+                    // overshoot means the item cannot make its scheduled impact and the batch has
+                    // collapsed onto one tick with no stagger. Once per item, independent of
+                    // VerboseLog.
                     float overshoot = flightNow - timeLeft;
                     if (overshoot > SlackWarnSeconds)
                         Bootstrap.Log.LogWarning(
@@ -749,11 +770,8 @@ namespace AutoTOT
                             $"impactAt {s.ImpactAtSim:0.0}, now {simNow:0.0}, " +
                             $"simStep {simStep:0.0}s, overshoot {overshoot:0.0}s");
                     }
-                    // How old was the estimate this release decision used? The per-frame sim cap
-                    // trades freshness for frame time, and this is the measurement of what that
-                    // costs. 0 means it was recomputed on this frame.
-                    // LastFlightEst < 0 means no estimate was ever taken for this item, so there is
-                    // no age to report; LastFlightEstSim starts at negative infinity in that case.
+                    // Age of the estimate this release used: what the per-frame sim cap costs in
+                    // freshness. 0 = recomputed this frame, -1 = no estimate was ever taken.
                     Profiler.ReleaseStaleness(s.LastFlightEst >= 0f ? simNow - s.LastFlightEstSim : -1f);
                     Fire(it, s.IsAnchor ? s : null);
                 }
@@ -868,8 +886,8 @@ namespace AutoTOT
                 bool parallel = f.Valid && f.PerContainer;
                 if (parallel) continue;   // VLS cells cycle independently; no serialisation to warn about
 
-                // Once per shooter and ammo while the contention lasts. Warning again at 3, 4, 5 open
-                // orders as the player adds targets says nothing new and buried the log in 129 copies.
+                // Once per shooter and ammo while the contention lasts; re-warning as the player adds
+                // targets says nothing new.
                 if (_contentionWarned.Contains(key)) continue;
                 _contentionWarned.Add(key);
 

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Reflection;
 using SeaPower;
@@ -132,7 +132,12 @@ namespace AutoTOT
             return value;
         }
 
-        internal static void ClearCache() { _cache.Clear(); _fallbackCache.Clear(); _displayCache.Clear(); _profileCache.Clear(); ClearRailLog(); }
+        internal static void ClearCache()
+        {
+            _cache.Clear(); _fallbackCache.Clear(); _displayCache.Clear(); _profileCache.Clear();
+            ResetQueues();
+            ClearRailLog();
+        }
 
         internal static long TofHits => _cache.HitCount;
         internal static long TofMisses => _cache.MissCount;

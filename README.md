@@ -212,7 +212,9 @@ Sources live in five folders by concern: `Core/` (pipeline + lifecycle),
 | `Core/Patches.cs` | Harmony prefix on `ObjectBase.InsertEngageTask` |
 | `Core/Coordinator.cs` | Core pipeline: batching, anchor selection, open-loop scheduling, release, fire |
 | `Simulation/FlightTime.cs` | Flight-time API + caches: estimate entry, 3-tier kinematic wiring, speed profiles, group forming delay |
-| `Simulation/FlightTime.Integrator.cs` | Grounded step-integrator (primary tier, beta) + phase diagnostics |
+| `Simulation/FlightTime.Integrator.cs` | Grounded step-integrator (primary tier, beta): setup, which reads the game state, and phase diagnostics |
+| `Simulation/FlightTime.Solve.cs` | The integration loop as a pure function of a snapshot, so it can run off the main thread |
+| `Simulation/FlightTime.Async.cs` | Worker pool that runs the loop, plus the self-check that compares a threaded result against the main thread |
 | `Simulation/FlightTime.Reflection.cs` | Reflection resolution for the game's sim internals (beta/legacy drift) + the typed-delegate fast path for per-step thrust/drag |
 | `Simulation/FlightTime.Stats.cs` | Estimator cost counters (simulations, steps, which tier answered) behind the `Profiling` switch |
 | `Simulation/WaypointSim.cs` | Reflection port of the public `SimulateShotLinear`, the middle-tier fallback estimator |
@@ -246,6 +248,8 @@ All settings take effect live when edited (BepInEx reloads the file; no restart 
 | Timing | `MaxCollectSeconds` | `6.0` | Hard cap (real s) on how long one target collects orders. |
 | Debug | `VerboseLogging` | `false` | Log every queued and released launch with timing details, plus per-shot flight-model diagnostics. Costly during a large salvo: it runs an extra flight simulation per missile, so leave it off unless you are investigating something. |
 | Debug | `Profiling` | `false` | Log a timing report every 60 frames: the mod's share of the frame, worst frame, where the time went, and how many flight simulations ran. |
+| Debug | `VerifySolve` | `false` | Run every threaded flight simulation a second time on the main thread and warn if the answers differ. Doubles the simulation work, so use it to check correctness rather than to measure speed. |
+| Performance | `EstimatorThreads` | `-1` | Worker threads for flight simulation. `-1` takes a quarter of the logical cores, at least 1 and at most 4. `0` runs everything on the main thread. Raise it only if the profiling line shows the queue backing up. |
 
 ## Compatibility
 

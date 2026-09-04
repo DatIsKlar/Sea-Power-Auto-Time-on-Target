@@ -85,11 +85,9 @@ namespace AutoTOT
             if (vwp == null) return f;
 
             f.Valid = true;
-            // Assumption: all launchers serving one ammo share a reload style, so the first
-            // launcher's _perContainerReload speaks for the group. Ready/reserve below are summed
-            // across every launcher. This holds for real Sea Power loadouts (one launcher type per
-            // ammo); a ship mixing per-container and whole-launcher reloaders for the SAME ammo would
-            // be misclassified here, which no current unit does.
+            // Assumes all launchers serving one ammo share a reload style, so the first speaks for
+            // the group; ready/reserve below are summed across all of them. A ship mixing
+            // per-container and whole-launcher reloaders for the SAME ammo would be misclassified.
             f.PerContainer = vwp._perContainerReload;
 
             // Per-round interval: within-salvo spacing when the launcher ripples a burst, else the
@@ -110,16 +108,12 @@ namespace AutoTOT
                 shared > interval && !float.IsNaN(shared) && !float.IsInfinity(shared))
                 interval = shared;
 
-            // Cadence FLOOR from the hatch-open animation. Some launchers (e.g. the Kirov's SS-N-19:
-            // 20 individual tubes, each a container with its own ShaftHatchOpenAnim) declare NO
-            // FireRate/SharedLaunchInterval/SalvoFireTime, so `interval` falls back to the 1s
-            // fire-rate default — far faster than reality (observed ~3.9s). Their realized per-round
-            // cadence is dominated by opening each tube's hatch, whose duration lives in the animation
-            // asset (last keyframe _time), NOT a numeric cadence field. When each round ripples through
-            // its OWN hatch (per-round engage cycle + multiple hatched tubes), take that hatch-open
-            // time as a FLOOR on the interval. This never lowers a launcher that declares a real
-            // cadence (we only raise), so it's a pure fallback — zero regression for stock or modded
-            // launchers that set their timing; it only fills the gap for ones that leave it unset.
+            // Cadence FLOOR from the hatch-open animation. Some launchers (the Kirov's SS-N-19: 20
+            // tubes, each its own container and hatch) declare no FireRate, SharedLaunchInterval or
+            // SalvoFireTime, so `interval` falls back to the 1s default while the realized cadence is
+            // dominated by opening each tube's hatch. That duration lives in the animation asset (last
+            // keyframe _time), not in any numeric cadence field. Only ever RAISES the interval, so a
+            // launcher that declares real timing is untouched.
             if (vwp._salvoFireAmount <= 1 && launchers[0]._containers != null && launchers[0]._containers.Count > 1)
             {
                 float hatch = MaxHatchOpenSeconds(launchers[0]);

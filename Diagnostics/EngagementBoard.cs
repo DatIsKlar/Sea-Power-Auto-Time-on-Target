@@ -9,11 +9,10 @@ namespace AutoTOT
     /// Per-target engagement state for the planner's live overview, and the snapshot builder
     /// (<see cref="CollectSalvos"/>) that the HUD renders.
     ///
-    /// This consolidates what used to be five separate per-target dictionaries (fired-at, impact
-    /// time, impact spread, wave count, wave gap) into ONE row per target, so the rows can no
-    /// longer drift out of sync and there is exactly one prune path
-    /// (<see cref="CollectSalvos"/> prunes fired targets that went idle past their grace window;
-    /// never-fired rows of dropped orders are removed via <see cref="Drop"/>).
+    /// One row per target (fired-at, impact time, spread, wave count, wave gap) so the fields
+    /// cannot drift out of sync, with exactly one prune path: <see cref="CollectSalvos"/> prunes
+    /// fired targets idle past their grace window, and <see cref="Drop"/> removes never-fired rows
+    /// left by dropped orders.
     /// </summary>
     internal static class EngagementBoard
     {

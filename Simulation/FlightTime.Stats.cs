@@ -1,4 +1,6 @@
-using System.Diagnostics;
+﻿using System;
+﻿using System.Diagnostics;
+using System.Threading;
 
 namespace AutoTOT
 {
@@ -6,14 +8,11 @@ namespace AutoTOT
     /// Cost counters for the estimator itself, so a slow frame can be attributed to something more
     /// specific than "the flight estimate was slow".
     ///
-    /// Deliberately NOT timed per integration step. The step loop runs at dt = 0.1 s, so a 12-minute
-    /// flight is ~7,000 steps and one frame may run twelve of those. Two timestamp calls per step
-    /// would cost more than the work being measured. Steps are counted with a plain increment, and
-    /// wall time is taken twice per sim (setup, then loop), which is enough to derive a per-step
-    /// cost without perturbing it.
-    ///
-    /// Every counter here is only written when <see cref="Enabled"/>, which tracks the profiling
-    /// config key, so normal play pays one bool test per sim.
+    /// Deliberately NOT timed per step: at dt = 0.1 s a 12-minute flight is ~7,000 steps, and two
+    /// timestamp calls per step would cost more than the work being measured. Steps are counted with
+    /// a plain increment and wall time is taken twice per sim, which derives a per-step cost without
+    /// perturbing it. Counters are written only when <see cref="Enabled"/>, so normal play pays one
+    /// bool test per sim.
     /// </summary>
     internal static class ModelStats
     {
@@ -31,14 +30,20 @@ namespace AutoTOT
         internal static int Stalls;            // runs that bailed out (returned -1)
         private static readonly int[] _tier = new int[4];
 
-        private static long _setupStart, _loopStart;
+        // Per-thread, because the step loop can run on a worker: two sims in flight at once would
+        // otherwise overwrite each other's start stamps and produce nonsense durations. The
+        // accumulators below are shared, so they are merged under a lock taken twice per sim (never
+        // per step), which is far too rare to matter.
+        [ThreadStatic] private static long _setupStart;
+        [ThreadStatic] private static long _loopStart;
+        private static readonly object _sync = new object();
 
         internal static int TierCount(Tier t) => _tier[(int)t];
 
         internal static void SimStarted()
         {
             if (!Enabled) return;
-            Sims++;
+            Interlocked.Increment(ref Sims);
             _setupStart = Stopwatch.GetTimestamp();
         }
 
@@ -47,27 +52,39 @@ namespace AutoTOT
         {
             if (!Enabled) return;
             _loopStart = Stopwatch.GetTimestamp();
-            SetupMs += (_loopStart - _setupStart) * MsPerTick;
+            double ms = (_loopStart - _setupStart) * MsPerTick;
+            lock (_sync) SetupMs += ms;
+        }
+
+        /// <summary>
+        /// Stamp the start of the step loop on THIS thread. The asynchronous path splits setup and
+        /// loop across two threads, so the worker stamps its own start here; SetupDone cannot do it,
+        /// because the start it reads is thread-local to the main thread that built the input.
+        /// </summary>
+        internal static void LoopStarting()
+        {
+            if (!Enabled) return;
+            _loopStart = Stopwatch.GetTimestamp();
         }
 
         /// <summary>Called when the step loop exits, however it exits.</summary>
         internal static void LoopDone(int steps)
         {
             if (!Enabled) return;
-            LoopMs += (Stopwatch.GetTimestamp() - _loopStart) * MsPerTick;
-            Steps += steps;
+            double ms = (Stopwatch.GetTimestamp() - _loopStart) * MsPerTick;
+            lock (_sync) { LoopMs += ms; Steps += steps; }
         }
 
         internal static void Stalled()
         {
             if (!Enabled) return;
-            Stalls++;
+            Interlocked.Increment(ref Stalls);
         }
 
         internal static void TierUsed(Tier t)
         {
             if (!Enabled) return;
-            _tier[(int)t]++;
+            Interlocked.Increment(ref _tier[(int)t]);
         }
 
         internal static void Reset()

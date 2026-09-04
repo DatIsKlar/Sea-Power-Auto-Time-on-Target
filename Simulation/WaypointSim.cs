@@ -305,12 +305,10 @@ namespace AutoTOT
         /// Variable names track the decompile (simTime = t, velKnots = knots, missilePos = pos, direction = dir).
         /// </summary>
         /// <param name="emitDiag">
-        /// Emit the per-15s <c>wp-track</c> overlay. Defaults to <c>false</c> because the hot call
-        /// site is the <see cref="FlightTime.KinematicRaw"/> fallback tier, which runs for EVERY
-        /// planning candidate — including our own ships' defensive SAM loadouts, whose flights the
-        /// integrator rejects (returns -1) so they always reach this tier. Only the per-shot A/B
-        /// instrument in <c>LaunchDiagnostics</c> (already scoped to missiles AutoTOT actually
-        /// fired) passes true. Mirrors <c>IntegratedEndTimeCore</c>'s emitDiag.
+        /// Emit the per-15s <c>wp-track</c> overlay. Defaults to <c>false</c>: the hot call site is
+        /// the <see cref="FlightTime.KinematicRaw"/> fallback tier, which every planning candidate
+        /// reaches (defensive SAM loadouts are rejected by the integrator and always land here).
+        /// Only the per-shot instrument in <c>LaunchDiagnostics</c> passes true.
         /// </param>
         internal static float EndTime(ObjectBase unit, AmmunitionParameters ap, ObjectBase target,
             bool emitDiag = false)

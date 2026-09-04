@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using UnityEngine;
 
 namespace AutoTOT
@@ -26,7 +26,7 @@ namespace AutoTOT
         /// <summary>Per-frame tallies that are counted rather than timed.</summary>
         internal enum Counter
         {
-            FlightCalls, FlightHits, FlightMisses, FlightDeferred, FlightBudgetSkipped,
+            FlightCalls, FlightHits, FlightMisses, FlightDeferred, FlightBudgetSkipped, FlightQueued,
             GroupDelayCalls, PredictFlightCalls, PredictGroupDelayCalls, UiEstimateCalls,
         }
 
@@ -90,6 +90,22 @@ namespace AutoTOT
         /// Attribute the flight estimate just timed by <see cref="Stage.FlightEstimate"/> to the
         /// cache hit or miss bucket. Call directly after the matching End.
         /// </summary>
+        /// <summary>
+        /// Record a cache hit that was NOT wrapped in a Begin/End pair, because it was served from
+        /// the cache without running the estimator at all.
+        ///
+        /// Separate from <see cref="CountEstimate"/> on purpose: that one attributes the duration of
+        /// the call just timed, and calling it without a matching Begin/End charges the PREVIOUS
+        /// call's time to this one. That read as 792 hits costing 1.3 ms each with a negative
+        /// unaccounted total, which is how it was found.
+        /// </summary>
+        internal static void CountCachedHit()
+        {
+            if (!Enabled) return;
+            _counts[(int)Counter.FlightCalls]++;
+            _counts[(int)Counter.FlightHits]++;
+        }
+
         internal static void CountEstimate(bool cacheHit)
         {
             if (!Enabled) return;
@@ -178,6 +194,8 @@ namespace AutoTOT
                 $"       misses: {N(Counter.FlightMisses)} calls, {_accFlightMissMs:F1}ms total @ {avgMissMs:F3}ms avg\n" +
                 $"       unaccounted: {unaccountedMs:F1}ms\n" +
                 $"       deferred (proximity gate): {N(Counter.FlightDeferred)} | budget-skipped: {N(Counter.FlightBudgetSkipped)}\n" +
+                $"       async: {FlightTime.WorkerCount} workers, {N(Counter.FlightQueued)} queued, {FlightTime.AsyncCompleted} completed, {FlightTime.AsyncDeclined} declined, depth {FlightTime.QueueDepth}/{FlightTime.InFlight} in-flight" +
+                (FlightTime.VerifySolve ? $" | verify {FlightTime.VerifyChecked} checked, {FlightTime.VerifyMismatched} MISMATCHED" : "") + "\n" +
                 $"       model: {ModelStats.Sims} sims, {ModelStats.Steps} steps ({stepsPerSim} avg), setup {ModelStats.SetupMs:F1}ms + loop {ModelStats.LoopMs:F1}ms, {usPerKStep:F0}us/1k steps\n" +
                 $"       tiers: integrator {ModelStats.TierCount(ModelStats.Tier.Integrator)}, waypoint {ModelStats.TierCount(ModelStats.Tier.Waypoint)}, maxRange {ModelStats.TierCount(ModelStats.Tier.MaxRangePrecise)}, failed {ModelStats.TierCount(ModelStats.Tier.Failed)}, integrator declined {ModelStats.Stalls}\n" +
                 $"    -> UI (outside tick): {Ms(Stage.UiEstimate):F1}ms over {N(Counter.UiEstimateCalls)} calls\n" +

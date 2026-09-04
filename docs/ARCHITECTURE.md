@@ -349,6 +349,39 @@ reflection handle, stalled missile, out of range) and the chain asks the next
 one. `0` means unknown, never arrives-instantly; callers treat values at or
 below `MinValidSeconds` (0.01 s) as unavailable.
 
+### Where the integrator runs
+
+One simulation costs about 1.8 ms over roughly 4,300 steps, so a synchronized salvo that refreshes
+many estimates at once used to put 20 ms on a single frame. The integrator is therefore split in two:
+
+- **Setup** (`FlightTime.Integrator.cs`) reads everything that comes from the live game: shooter and
+  target transforms, target velocity, launcher rail orientation, and `_finalFlightPhaseAltUnity`,
+  which the game rewrites every frame for each missile in flight. Main thread only.
+- **Solve** (`FlightTime.Solve.cs`) is the step loop, taking a `SolveInput` snapshot of 41 values and
+  touching no Unity API. It is a pure function, so the same input always yields the same float.
+
+`EstimatorThreads` worker threads run Solve. The main thread queues a snapshot and keeps using its
+previous estimate; `FlightTime.DrainCompleted`, called at the top of the tick, publishes finished
+results into the cache. Only the main thread writes that cache, so there is still one estimator and
+one writer. Commit and release read the same values they always did, computed at a different time.
+
+Two cases stay synchronous. An order with no estimate at all computes immediately, because the anchor
+releases almost as soon as it is scheduled. Verbose runs also solve inline, since the loop writes
+`sim-track` lines and concurrent logging would interleave them.
+
+Asynchronous rather than a parallel loop joined inside the tick: the game already schedules Unity
+`IJobParallelFor` batches and blocks on `Complete()`, so it occupies most job workers during the
+tick. A parallel loop competes with those for the same cores, and its speedup is bounded by spare
+cores, which is what a slower machine lacks. Queueing removes the work from the frame whatever the
+core count; a slow machine gets its answers a few frames later instead. Workers run at below-normal
+priority so the game wins any contended core.
+
+Setting `EstimatorThreads = 0` runs everything on the main thread and is the rollback.
+
+`VerifySolve` re-runs each threaded simulation on the main thread and compares the two results
+bitwise. 1,205 simulations across kinematic, non-kinematic and waypoint-planned rounds have been
+checked this way with no mismatch.
+
 Estimates are cached 0.5 s real time per `(UnitId, AmmoFile, TargetId)` key,
 declined results included. The straight-line fallback lives in a separate cache
 so it is never misreported as a kinematic result. `FlightTime.ClearCache()`,
@@ -686,7 +719,9 @@ Sources live in five folders by concern: `Core/` (pipeline + lifecycle),
 | `Core/Patches.cs` | Harmony prefix on `ObjectBase.InsertEngageTask` (ThreadStatic `Bypass` flag) |
 | `Core/Coordinator.cs` | The pipeline: batching, anchor selection, open-loop scheduling, release, fire |
 | `Simulation/FlightTime.cs` | Flight-time API: tier wiring, TTL caches, straight-line fallback, speed profile + group-forming delay |
-| `Simulation/FlightTime.Integrator.cs` | Grounded step integrator (tier 1, beta) + phase diagnostics |
+| `Simulation/FlightTime.Integrator.cs` | Grounded step integrator (tier 1, beta): the setup half, which reads game state, plus phase diagnostics |
+| `Simulation/FlightTime.Solve.cs` | The integration loop, written as a pure function of a snapshot |
+| `Simulation/FlightTime.Async.cs` | Worker pool, result drain, and the solve self-check |
 | `Simulation/FlightTime.Reflection.cs` | Branch detection + reflection resolution, and the typed-delegate fast path for the per-step thrust/drag calls |
 | `Simulation/FlightTime.Stats.cs` | Estimator cost counters: sims, integration steps, setup vs loop time, which tier answered |
 | `Simulation/WaypointSim.cs` | Reflection port of the public `SimulateShotLinear` (tier 2, beta) |

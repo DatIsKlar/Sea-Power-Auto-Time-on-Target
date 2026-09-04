@@ -9,34 +9,21 @@ namespace AutoTOT
     /// Defensive shield for a base-game crash on the multiplayer mission-load path.
     ///
     /// <para>
-    /// <c>SeaPower.PlottingTableSerializer.RecreateWorldUsingTemp</c> calls
-    /// <c>DefaultWorldInitialization.Initialize</c>, which re-runs the DOTS bootstrap and
-    /// enumerates every assembly in the AppDomain. For each one it calls a
-    /// <c>Unity.Entities.TypeManager.IsAssemblyReferencing*</c> filter, which in turn calls
-    /// <see cref="Assembly.GetName"/>. If any loaded assembly has an invalid culture string in
-    /// its native name, <c>AssemblyName.FillName</c> → <c>CultureInfo..ctor</c> throws
-    /// ("Parameter name: name"), which aborts the LoadMission coroutine and the mission never
-    /// loads.
+    /// The DOTS bootstrap enumerates every assembly in the AppDomain and calls
+    /// <see cref="Assembly.GetName"/> on each. An assembly with an invalid culture string in its
+    /// native name makes that throw, which aborts the LoadMission coroutine. It is
+    /// multiplayer-only because only <c>RecreateWorldUsingTemp</c> re-runs the bootstrap after
+    /// mods (and their MonoMod/Harmony dynamic assemblies) have loaded; the boot-time scan is
+    /// clean.
     /// </para>
     /// <para>
-    /// At normal game boot DOTS initializes before any plugin is present, so that first scan is
-    /// clean; only the multiplayer <c>RecreateWorldUsingTemp</c> re-scan runs with mods (and
-    /// their MonoMod/Harmony dynamic assemblies) loaded, which is why the crash is
-    /// multiplayer-only and environment-specific.
-    /// </para>
-    /// <para>
-    /// Installation is robust against load order and DOTS version drift. The exact filter
-    /// method differs between Entities versions — <c>IsAssemblyReferencingEntities(Assembly)</c>
-    /// on older builds, plus
-    /// <c>IsAssemblyReferencingEntitiesOrUnityEngine(Assembly, out bool, out bool)</c> on the
-    /// Unity 6 build — and <c>Unity.Entities.dll</c> may not even be loaded into the AppDomain
-    /// yet when this mod initializes (in which case a fixed Harmony target cannot resolve).
-    /// Therefore we discover every <c>IsAssemblyReferencing*(Assembly, ...)</c> method on
-    /// <c>TypeManager</c>, force-load the assembly if possible, or otherwise defer installation
-    /// to the moment it loads, and shield each method with a finalizer that swallows the throw.
-    /// An assembly the scan cannot even name cannot be one it needs ECS types from, so letting
-    /// the call return with its outputs left at their defaults ("does not reference entities")
-    /// is correct.
+    /// The filter method is DISCOVERED rather than named: its signature differs between Entities
+    /// versions, and <c>Unity.Entities.dll</c> may not be in the AppDomain yet when this mod
+    /// initializes, so a fixed Harmony target cannot resolve. Every
+    /// <c>IsAssemblyReferencing*(Assembly, ...)</c> on <c>TypeManager</c> is shielded with a
+    /// finalizer that swallows the throw, deferring installation until the assembly loads if
+    /// needed. An assembly the scan cannot name cannot be one it needs ECS types from, so
+    /// returning with the outputs at their defaults ("does not reference entities") is correct.
     /// </para>
     /// </summary>
     internal static class DotsScanHardening

@@ -300,35 +300,29 @@ namespace AutoTOT
                     {
                         string outcome = (s.LastDistM <= HitRangeM) ? "HIT" : "ended";
                         // Did the seeker end up on a different ship than the one this round was
-                        // assigned? If so, LastDistM is measured to the SUBSTITUTE, so "HIT" means it
-                        // killed something, just not what was ordered.
-                        // ReferenceEquals throughout, deliberately. UnityEngine.Object overloads ==
-                        // so a DESTROYED object compares equal to null, and a ship being destroyed is
-                        // exactly the case this check exists for; `s.CurrentTarget != null` would go
-                        // false the moment the substitute sank and hide the switch.
+                        // assigned? If so LastDistM is measured to the SUBSTITUTE, and "HIT" means it
+                        // killed something, just not what was ordered. ReferenceEquals throughout,
+                        // deliberately: UnityEngine.Object overloads == so a DESTROYED object compares
+                        // equal to null, which would hide the switch the moment the substitute sank.
                         bool retargeted = !ReferenceEquals(s.CurrentTarget, s.Target)
                                        && !ReferenceEquals(s.CurrentTarget, null)
                                        && !ReferenceEquals(s.Target, null);
                         string switched = retargeted ? $" [RETARGETED -> {s.CurrentTargetName}]" : "";
-                        // Residual = observed impact − our predicted (anchor-finalized) impact, so the
-                        // log shows coordination accuracy directly instead of hand-diffing. Uses the
-                        // value stamped on the sample, so it still prints after the target (and its
-                        // board row) is gone — the late/missed rounds we most want to measure.
+                        // Residual = observed impact − predicted (anchor-finalized) impact. Read from
+                        // the sample, not the board, so it still prints after the target is gone,
+                        // which is the late/missed case most worth measuring.
                         string residual = "";
                         if (s.PredictedImpact >= 0f)
                             residual = $", predicted {s.PredictedImpact:0.0}, residual {s.LastSeenTime - s.PredictedImpact:+0.0;-0.0}s";
                         Bootstrap.Log.LogInfo(
                             $"[AutoTOT] impact {s.AmmoName} -> {s.TargetName}: {outcome} at sim {s.LastSeenTime:0.0} " +
                             $"(flight {flightTime:0.0}s, final range {s.LastDistM:0} m){switched}{residual}");
-                        // Grounded flight-model signal: the game's own single-shot sim InterceptTime
-                        // (captured at launch) vs the ACTUAL flown time. gap = actual − sim (positive =>
-                        // sim UNDER-predicts, missile flies slower/longer than modelled). Peak altitude
-                        // and terminal speed characterize WHERE the gap comes from (loft arc / terminal
-                        // decel). Only meaningful for rounds that actually reached the target (HIT).
-                        // A retargeted round measures formation geometry, not the estimator: its flight
-                        // is to the ship the seeker picked while simEst was computed for the ship it
-                        // was ordered against. Reporting a gap for it invites chasing a phantom error
-                        // of ten seconds or more. Say what happened instead.
+                        // gap = actual flown time − the sim estimate captured at launch (positive =>
+                        // the sim UNDER-predicts). Peak altitude and terminal speed say WHERE the gap
+                        // comes from. HIT only. A RETARGETED round is excluded and reported as such:
+                        // its flight is to the ship the seeker picked while simEst was computed for
+                        // the ship it was ordered against, so its gap measures formation geometry,
+                        // not the estimator.
                         if (retargeted && s.KinEstAtLaunch > 0f && outcome == "HIT")
                         {
                             Bootstrap.Log.LogInfo(
@@ -602,19 +596,15 @@ namespace AutoTOT
         // Fires once per transition of the game's OWN flight-stage machine
         // (Launch -> ToBearing -> MoveToLoftAlt -> MaintainLoftAlt -> ... -> TerminalApproach).
         //
-        // This is the only direct ground truth we have for the boundaries the region model
-        // hand-derives from ini fields: the distance at which the real missile leaves the loft is
-        // exactly the model's finalDist, and the distance at which it enters TerminalApproach is
-        // exactly the model's diveStart. The `track` line already prints the stage but samples it
-        // every 15s, which on a Mach-10 lofter brackets a transition to a ~43km window -- useless
-        // for the boundaries we actually argue about.
+        // The only direct ground truth for the boundaries the model derives from ini fields: where
+        // the real missile leaves the loft is the model's finalDist, and where it enters
+        // TerminalApproach is its diveStart. `track` prints the stage too, but samples every 15s,
+        // which on a Mach-10 lofter brackets a transition to a ~43km window.
         //
-        // Distances are reported three ways because the two existing telemetry lines disagree:
-        // `track` logs 3D SLANT while `sim-track` logs flat, and on a missile 80km up those differ
-        // enormously. flat is the one comparable to the model's boundaries.
+        // Distances are reported three ways because `track` logs 3D SLANT and `sim-track` logs flat;
+        // flat is the one comparable to the model's boundaries.
         //
-        // Unthrottled but change-gated, so a full flight emits well under a dozen lines.
-        // VerboseLog + Coordinated only. Returns the (stage-updated) sample.
+        // Change-gated, so a full flight emits under a dozen lines. VerboseLog + Coordinated only.
         private static FlightSample MaybeLogStageChange(WeaponBase w, ObjectBase tgt, FlightSample s, float simNow)
         {
             if (!Coordinator.VerboseLog) return s;

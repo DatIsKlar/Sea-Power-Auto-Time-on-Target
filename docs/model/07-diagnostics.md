@@ -15,6 +15,7 @@ churn and defensive-SAM launches do not drown the log.
 
 | line | content |
 |---|---|
+| `estimator` | two lines at startup, never gated by `VerboseLogging`: which tier is bound (`integrator ACTIVE` or `UNAVAILABLE` with the reason), and whether the loop runs on worker threads or the main thread |
 | `sim-init` | which reflection handles resolved |
 | `sim-launch` | one line per shot: `launchPitch`, `initPhase`, `turnRate`, `loftAlt`, `descentDeg`, `onsetDeg`, `bearingErr`, `range`, `iniPitch` (the `.ini` value, for comparison), `railAz` |
 | `sim-track` | the model's own state: `t` / speed / altitude / pitch / `hdgErr` / `roll` / drag / phase / flat distance / slant |
@@ -107,3 +108,29 @@ Reading notes:
 - **`VerboseLogging` distorts everything here.** It runs an extra full integrator sim per missile for
   the `int-phases` line, worth about 12.5 ms per frame in a large salvo against 0.03 ms with it off.
   Measure performance with verbose **off**.
+- **`async`** reports the worker pool: how many simulations were queued and completed, how many the
+  integrator declined, and the queue depth. A depth that stays near zero means the pool is keeping
+  up. A depth that climbs during a salvo is the signal to raise `EstimatorThreads`.
+
+## 7.5 Checking which estimator produced a number
+
+Read the `estimator` lines before trusting any run. They are logged unconditionally because the two
+ways this goes wrong are both silent.
+
+The integrator needs the beta `MissileSimulator` internals. On the public branch it finds
+`Missile.SimulateShotLinear` instead, binds nothing, declines every call, and every flight time comes
+from `MaxRangePrecise` instead. Nothing fails and nothing warns; the numbers are simply worse. A full
+measurement run was lost this way, because the only line that would have shown it was behind
+`VerboseLogging`, which performance runs require to be off.
+
+The second is the threading mode. `EstimatorThreads = 0` and asynchronous operation produce the same
+flight times, so a log with no marker cannot say which one ran.
+
+`tiers:` on the profiling line is the corroborating check: `integrator N, waypoint 0, maxRange 0` is a
+healthy beta run. `integrator 0` with everything in `maxRange` and a matching `integrator declined`
+count means the integrator answered nothing.
+
+`VerifySolve` settles correctness of the threaded path directly. It re-runs every threaded simulation
+on the main thread and compares bitwise, so `verify N checked, 0 MISMATCHED` proves the snapshot
+carries every value the loop reads. It doubles the simulation work, so it belongs in a correctness
+run and never in a timing one.
