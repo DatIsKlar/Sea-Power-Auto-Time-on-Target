@@ -11,6 +11,9 @@ appears in the in-game **Mods** menu like any other mod.
   overview.
 - **Auto-coordination mode** (Alt+T, off by default), intercepts your normal missile
   orders and holds/releases them so orders aimed at the same target arrive together.
+- **Multi-target strike** (Alt+H, or the panel's **ADD TO STRIKE**): stage shots at
+  several targets, from any number of formations and from ships, submarines and
+  aircraft together, then fire the lot on one shared time-on-target.
 - Works for stock and modded missiles alike. All timing comes from the game's own
   weapon data and shot simulator, no per-type tuning.
 
@@ -133,6 +136,7 @@ The `dist/AutoTOT/` folder is exactly what you'd upload as a Steam Workshop item
 |---|---|
 | **Alt+G** | Show/hide the TOT planner panel (fully hidden, tab and all) |
 | **Alt+T** | Toggle auto-coordination on/off |
+| **Alt+H** | Arm/disarm multi-target strike collection |
 
 Both use the configurable modifier (`ToggleModifier`; set to `None` for single-key).
 
@@ -151,6 +155,37 @@ target are pickable. Salvos larger than the launcher's ready rounds show a
 **FIRE — TIME ON TARGET** launches the selection coordinated; **FIRE NOW** launches
 it without sync. The **ENGAGEMENTS** overview shows every coordinated target with
 queued/in-flight counts, a synced arrival countdown, and the ±arrival spread.
+
+### Strike group
+
+The shooter list normally follows your last-selected ship. Press **+ ADD** on the SHOOTERS row
+to hold that ship (or its whole formation, with the toggle on) in a persistent **strike group**
+instead. The group survives selection changes, so you can walk through several formations and
+collect every shooter you want before picking a single target; a **GROUP** line reports what is
+held, each ship has a **remove**, and **CLEAR** empties it. With no target selected the rows
+still list every missile aboard, so salvo sizes can be set in advance. An empty group means the
+panel follows the current selection, exactly as before.
+
+### Multi-target strike
+
+A strike is assembled one target at a time. Pick a target and its shooters as usual,
+press **ADD TO STRIKE**, then pick the next target and repeat. The staged set appears
+above the fire buttons, grouped by target and removable per group, and **FIRE STRIKE**
+launches all of it on a single shared impact time. There is no collection window: a
+staged strike waits as long as you need.
+
+Press **Alt+H** to also collect the orders you issue in the game's own interface. While
+that is on, every missile order you give is held, whatever its target, and joins the same
+strike; **FIRE STRIKE** commits the staged picks and the collected orders together, and
+**CLEAR** discards both. Rows sharing a strike are marked with a ◆ in the ENGAGEMENTS
+overview.
+
+One anchor is elected across the whole strike (the shot that needs the longest to get
+there, whichever target it is aimed at) and everything else is timed against it, so a
+submarine that must first rise to launch depth or an aircraft that must first descend
+into its envelope still lands with the rest. Where one ship is committed to two targets
+off the same non-parallel launcher, the game services those orders one at a time and the
+two impacts cannot sync; the panel marks that row and the log says so.
 
 The panel **auto-scales to your screen** (high-DPI/4K-aware). The footer's
 **Scale –/+** control fine-tunes the size in 0.1 steps; both the auto reference
@@ -221,9 +256,12 @@ Sources live in five folders by concern: `Core/` (pipeline + lifecycle),
 | `UI/Hud.cs` (+`Hud.Render.cs`, `Hud.Mouse.cs`, `Hud.Styles.cs`) | IMGUI planner panel: layout/data, drawing, pointer capture, styling |
 | `Diagnostics/LaunchDiagnostics.cs` | Impact reports + launch shortfall detection; feeds anchor observations |
 | `Diagnostics/EngagementBoard.cs` | Per-target engagement state behind the HUD's ENGAGEMENTS list |
+| `Diagnostics/TelemetryCadence.cs` | Sampling offsets shared by the model and live-flight traces |
 | `Diagnostics/CoordinatorProfiler.cs` | Per-frame timing report behind the `Profiling` switch |
 | `Support/GameClock.cs` | Version-agnostic sim clock + launch-timestamp access (float/double beta drift) |
 | `Support/GameUnits.cs` | Shared unit conversions (Unity units ↔ metres/nm/knots) |
+| `Support/GameMath.cs` | Horizontal flatten and elevation-angle helpers shared by the flight-time setup paths |
+| `Support/ModLog.cs` | Shared exception reporting, with and without the verbose gate |
 | `Support/LauncherFacts.cs` | Launcher cadence/ready rounds/reserve + cache, reload-wave helpers |
 | `Support/TtlCache.cs` | Tiny real-time TTL cache used on the per-frame UI paths |
 | `Support/DotsScanHardening.cs` | Multiplayer mission-load crash shield for the DOTS assembly scan (discovery + deferred install) |
@@ -242,6 +280,7 @@ All settings take effect live when edited (BepInEx reloads the file; no restart 
 | Interface | `ToggleModifier` | `LeftAlt` | Modifier held with hotkeys (`None` for single-key). |
 | Interface | `ToggleKey` | `T` | Key (with modifier) to arm/disarm auto-coordination. |
 | Interface | `OpenPanelKey` | `G` | Key (with modifier) to open/close the planner panel. |
+| Interface | `StrikeArmKey` | `H` | Key (with modifier) to arm/disarm multi-target strike collection. |
 | Interface | `UIScale` | `0` | Panel scale factor; `0` = auto with screen height (4K gets a larger panel), else an explicit multiplier (0–4). |
 | Interface | `UIScaleMultiplier` | `1.0` | Fine-trim on top of `UIScale` (0.5–2.0), so you can shrink the auto scale without giving it up. |
 | Timing | `GroupWindowSeconds` | `0.75` | Quiet gap (real s) after the last order before the batch locks in. |
@@ -292,6 +331,25 @@ All settings take effect live when edited (BepInEx reloads the file; no restart 
   single box launcher assigned to many targets fires them one after another and
   time-on-target across those targets cannot hold. The log warns with
   `launcher contention` when this is set up. Spread the shots across more shooters.
+
+- **Radio-command missiles are capped by fire-control channels.** A missile with
+  `MidCourseCorrection=1` that cannot join a group occupies one weapon channel on its
+  guiding sensor for its whole flight. The Echo II's `Front_Door` radar declares four
+  channels and SS-N-3 declares no `GroupSize`, so only four can be airborne at once and
+  the salvo picker caps the order there. Weapons that group (SS-N-12, `GroupSize=16`) are
+  not affected, and neither are unguided ones (SS-N-19, `MidCourseCorrection=0`).
+- **A submerged boat firing a radio-command missile must come to periscope depth.** The
+  game raises it only to the weapon's own depth ceiling, which can still be below the depth
+  its guidance radar mast needs, and it then holds there indefinitely with no message. The
+  planner warns. The mod does not command a depth, because surfacing a submarine is the
+  player's call.
+- **Coordinating a submerged boat shifts the whole strike later.** It must rise to launch
+  depth and cycle its hatches before the first round leaves, which took an Oscar 133s from
+  350 ft, and the rest of the wave is timed to that. Where the boat leads the strike its
+  real launch is measured and the wave re-syncs to it. Where a longer-ranged surface shot
+  leads instead, the boat's contribution is timed on an **estimate** of that delay, and
+  measured ascent rates vary about threefold between hulls and speeds. Bring the boat to
+  launch depth before the engagement and the delay is zero and the timing exact.
 
 ## Troubleshooting
 

@@ -32,8 +32,9 @@ vel −= CalculateDrag(alt, vel·KU, dt, −pitch, dragFactor, motorBurning,
 ```
 
 There is deliberately **no stage-speed clamp** here. The live mover applies the stage target only in
-its non-kinematic branch; the kinematic branch is `_velocityInKnots += num` with nothing bounding it
-(`Missile.cs:3151`), and a real round is routinely observed above its nominal maximum.
+its non-kinematic branch; the kinematic branch adds thrust unconditionally, with nothing bounding it
+(`Missile.cs:3151`, where the thrust local is the decompile's `num`), and a real round is routinely
+observed above its nominal maximum.
 
 Note the two sign flips: the model's convention is positive-pitch-is-climbing, and `CalculateDrag`
 uses the opposite, so both pitch and pitch rate are negated at the call.
@@ -44,20 +45,24 @@ uses the opposite, so both pitch and pitch rate are negated at the call.
 pitchRate)` returns the knots to **subtract** this step (`MissileSimulator.cs:2011-2033`):
 
 ```
-ρ(h)  = (1 − 0.00163·h)^4.256, clamped ≥ 0        → reaches 0 at h ≈ 613.5 u
-aero  num  = ρ(alt) · vel² · 0.2 · dt · dragFactor          # classic ½ρv², vel in u/s
+ρ(h)     = (1 − 0.00163·h)^4.256, clamped ≥ 0     → reaches 0 at h ≈ 613.5 u
+aero     = ρ(alt) · vel² · 0.2 · dt · dragFactor            # classic ½ρv², vel in u/s
 stall (only when !motorBurning): induced term from (stallKn, pitch, pitchRate, vel)  # small
-grav  num8 = 9.81 · sin(−pitch)                             # descending gains speed
-lift  num9 = 0                                              if motorBurning
-             sqrt(|cos pitch|) · dragFactor · liftFactor · 9.81
-             / max(ρ(targetAlt)/1.225, 0.001)               otherwise
+gravity  = 9.81 · sin(−pitch)                               # descending gains speed
+lift     = 0                                                if motorBurning
+           sqrt(|cos pitch|) · dragFactor · liftFactor · 9.81
+           / max(ρ(targetAlt)/1.225, 0.001)                 otherwise
 
-return num + (num9 + num8) · 1.94384 · dt
+return aero + (lift + gravity) · 1.94384 · dt
 ```
+
+The three terms are named here for what they do. The decompile calls them `num`, `num8` and `num9`
+respectively, so read those names for `aero`, `gravity` and `lift` when diffing this against
+`MissileSimulator.cs`.
 
 ## 4.4 The vacuum brake
 
-The key property of the expansion above: **`num9` is speed-independent, and it blows up as
+The key property of the expansion above: **the lift term is speed-independent, and it blows up as
 `ρ(targetAlt) → 0`.** The divisor floors at 0.001, so it can grow by a factor of roughly 800.
 
 The live mover feeds `targetAlt` conditionally (`Missile.cs:3170-3175`): the *target's* altitude
@@ -79,7 +84,7 @@ above the atmosphere.
 `liftFactor` 0.005, lock dropped so `targetAlt` = 708 u ⇒ `ρ(708) = 0` ⇒ divisor 0.001:
 
 ```
-num9 = sqrt(cos 59°) · 2.4 · 0.005 · 9.81 / 0.001
+lift = sqrt(cos 59°) · 2.4 · 0.005 · 9.81 / 0.001
      = 0.718 · 2.4 · 0.005 · 9.81 / 0.001  ≈  84.5 m/s²
      · 1.94384                             ≈  164 kn/s
 ```

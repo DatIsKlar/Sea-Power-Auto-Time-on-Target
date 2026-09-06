@@ -8,6 +8,10 @@ namespace AutoTOT
     {
 
         private const float IntegrationStepSim = 0.1f;
+        // Altitude at which the game's air-density curve (1 - 0.00163*h)^4.256 reaches zero. Used by
+        // the setup half to classify a high ballistic lofter and by the step loop to arm the vacuum
+        // brake, so it is declared once for the whole partial class rather than in each.
+        internal const float ZeroDensityAltU = 1f / 0.00163f;
         private const float AltToleranceU = 0.5f;
         // The game's OWN ini defaults: MaxLoftAngle 30 (AmmunitionParameters.cs:1633),
         // SeaSkimmingMaxDescentAngle 30 (:1662), FinalFlightPhaseMaxAngle 30 (:1683).
@@ -16,29 +20,33 @@ namespace AutoTOT
         private const float BoostClimbDeg = 90f;
         private const float DefaultTurnRateDeg = 5f;   // MaxTurnRate default (AmmunitionParameters.cs:1732)
         private const float MinDescentOnsetDeg = 5f;
-        private const float GravityKnPerMs = 9.8f * 1.94384f;
+        // A launcher elevates between horizontal and straight up; anything outside that is a bad
+        // read of the rail transform rather than a real aim point.
+        private const float MaxLaunchElevationDeg = 90f;
+        // An ini angle field left at its default reads as 0. This is the "was it actually set"
+        // threshold, well under any angle a real round commands.
+        private const float SetAngleEpsilonDeg = 0.01f;
+        /// <summary>g in knots per second, for converting an ini deceleration in g into knots/s.
+        /// Shared with WaypointSim, which computes the same decel from the same two factors.</summary>
+        internal const float GravityKnPerMs = 9.8f * 1.94384f;
         private const float StallSpeedMultiplier = 1.1f;
         private const float CloseEnoughDistU = 3f;
-        // Deliberately NOT a round number: a 15s sampler aliased a 15.0s limit cycle and reported a
-        // steady altitude while the missile swung 1115 <-> 1260u. 7 is prime relative to the
-        // plausible cycle periods here.
-        private const float TelemetrySampleIntervalSim = 7f;
-        // The launch phase lasts up to ~19s and creates the residual fixed offset, so sample it
-        // densely; 7s would leave one point inside it.
-        private const float LaunchBurstWindowSim = 20f;
-        private const float LaunchBurstIntervalSim = 1f;
-        // Inner tier for the nose-over itself. A vertically-launched sea-skimmer reverses its whole
-        // launch attitude inside ~2s, and at 1s cadence the same yj-18a data reads as either 19 or
-        // 33.7 deg/s depending on the averaging window. 0.25s gives ~20 samples instead of two.
-        private const float NoseOverWindowSim = 5f;
-        private const float NoseOverIntervalSim = 0.25f;
+        // Sampling cadence for the `sim-track` trace. Defined once in TelemetryCadence, because the
+        // live `track` trace in LaunchDiagnostics has to sample at the same offsets for the two to
+        // be comparable. Aliased here rather than called directly so the step loop, which reads
+        // these, keeps its existing identifiers and generated code.
+        private const float TelemetrySampleIntervalSim = TelemetryCadence.SampleIntervalSim;
+        private const float LaunchBurstWindowSim = TelemetryCadence.LaunchBurstWindowSim;
+        private const float LaunchBurstIntervalSim = TelemetryCadence.LaunchBurstIntervalSim;
+        private const float NoseOverWindowSim = TelemetryCadence.NoseOverWindowSim;
+        private const float NoseOverIntervalSim = TelemetryCadence.NoseOverIntervalSim;
         private const float VacuumDivePitchThreshold = -40f;
         private const float VelocityEpsilonKn = 0.001f;
         private const float MinSpeedKn = 1f;
         private const float LookaheadMultiplier = 20f;
         private const float MinLookaheadU = 50f;
 
-        // ---- Isolation gates. Each mirrors one piece of the live mover's behaviour, kept separate
+        // Isolation gates. Each mirrors one piece of the live mover's behaviour, kept separate
         // so a single rebuild can A/B them independently. Every one below is validated and on.
         // What each models: docs/model/03-trajectory.md. The evidence that established it, the
         // alternatives that were falsified and the measurements behind them:
@@ -54,7 +62,7 @@ namespace AutoTOT
         // missile closes at CRUISE speed past its nominal _terminalApproachDist.
         private const bool SearchTimeTerminalOnset = true;
 
-        // ---- Launch-phase fidelity. The game runs Launch -> ToBearing before any cruise/loft
+        // Launch-phase fidelity. The game runs Launch -> ToBearing before any cruise/loft
         // command, and both the commanded speed and the attitude the round leaves with differ
         // there. Those first seconds become a fixed offset carried for the rest of the flight.
 
@@ -148,7 +156,7 @@ namespace AutoTOT
                     int pick = 0;
                     if (launchers.Count > 1)
                     {
-                        Vector3 toTgtH = targetPos - launchPos; toTgtH.y = 0f;
+                        Vector3 toTgtH = GameMath.Flatten(targetPos - launchPos);
                         float best = float.MaxValue;
                         for (int li = 0; li < launchers.Count; li++)
                         {
@@ -160,8 +168,8 @@ namespace AutoTOT
                             else if (lw != null && lw._containerBaseObject != null)
                                 lt = lw._containerBaseObject.transform;
                             if (lt == null || toTgtH.sqrMagnitude < 1e-6f) continue;
-                            Vector3 lf = lt.forward; lf.y = 0f;
-                            if (lf.sqrMagnitude < 1e-4f) continue;   // vertical: no bearing
+                            Vector3 lf = GameMath.Flatten(lt.forward);
+                            if (lf.sqrMagnitude < GameMath.MinFlatSqrMagnitude) continue;   // vertical: no bearing
                             float off = Vector3.Angle(lf, toTgtH);
                             if (off < best) { best = off; pick = li; }
                         }
@@ -184,9 +192,7 @@ namespace AutoTOT
                         ? vwp._mountObject.transform : null;
                     rail = railGun ?? railBase;
 
-                    float railDeg = rail != null
-                        ? Mathf.Asin(Mathf.Clamp(rail.forward.y, -1f, 1f)) * Mathf.Rad2Deg
-                        : float.NaN;
+                    float railDeg = rail != null ? GameMath.ElevationDeg(rail.forward) : float.NaN;
 
                     // A launcher that cannot move fires along the rail as built. One that can
                     // move aims first, so its CURRENT transform is wherever it is parked and
@@ -200,7 +206,7 @@ namespace AutoTOT
                     {
                         if (fixedRail && !float.IsNaN(railDeg))
                         {
-                            predictedPitch = Mathf.Clamp(railDeg, 0f, 90f);
+                            predictedPitch = Mathf.Clamp(railDeg, 0f, MaxLaunchElevationDeg);
                         }
                         else
                         {
@@ -208,17 +214,15 @@ namespace AutoTOT
                             // angle, less the mount's own pitch, clamped to the elevation arc.
                             Vector3 toTgt = targetPos - launchPos;
                             float tgtElev = toTgt.sqrMagnitude > 1e-6f
-                                ? Mathf.Asin(Mathf.Clamp(toTgt.normalized.y, -1f, 1f)) * Mathf.Rad2Deg
-                                : 0f;
+                                ? GameMath.ElevationDeg(toTgt.normalized) : 0f;
                             float mountPitch = railMount != null
-                                ? Mathf.Asin(Mathf.Clamp(railMount.forward.y, -1f, 1f)) * Mathf.Rad2Deg
-                                : 0f;
-                            float bas = vwp._fixVerticalLaunchAngleForLauncher
+                                ? GameMath.ElevationDeg(railMount.forward) : 0f;
+                            float baseElevDeg = vwp._fixVerticalLaunchAngleForLauncher
                                 ? vwp._fixVerticalLaunchAngle : tgtElev;
-                            float e = bas + vwp._additionalFixVerticalLaunchAngle - mountPitch;
+                            float elevDeg = baseElevDeg + vwp._additionalFixVerticalLaunchAngle - mountPitch;
                             if (vwp._elevationArc.y > vwp._elevationArc.x)
-                                e = Mathf.Clamp(e, vwp._elevationArc.x, vwp._elevationArc.y);
-                            predictedPitch = Mathf.Clamp(e, 0f, 90f);
+                                elevDeg = Mathf.Clamp(elevDeg, vwp._elevationArc.x, vwp._elevationArc.y);
+                            predictedPitch = Mathf.Clamp(elevDeg, 0f, MaxLaunchElevationDeg);
                         }
                     }
 
@@ -228,9 +232,8 @@ namespace AutoTOT
                     float railAzDeg = float.NaN;
                     if (rail != null)
                     {
-                        Vector3 rf = rail.forward; rf.y = 0f;
-                        Vector3 tt = targetPos - launchPos; tt.y = 0f;
-                        if (rf.sqrMagnitude < 1e-4f) railAzTxt = "vertical";
+                        Vector3 tt = GameMath.Flatten(targetPos - launchPos);
+                        if (!GameMath.TryFlatDirection(rail.forward, out Vector3 rf)) railAzTxt = "vertical";
                         else if (tt.sqrMagnitude > 1e-6f)
                         {
                             railAzDeg = Vector3.Angle(rf, tt);
@@ -260,8 +263,7 @@ namespace AutoTOT
                                 if (!float.IsNaN(railAzDeg)) _railLoggedAz[railKey] = railAzDeg;
                                 _railLogCount[railKey] = n + 1;
                                 string E(Transform tr) => tr == null ? "n/a"
-                                    : (Mathf.Asin(Mathf.Clamp(tr.forward.y, -1f, 1f)) * Mathf.Rad2Deg)
-                                        .ToString("0.0") + "°";
+                                    : GameMath.ElevationDeg(tr.forward).ToString("0.0") + "°";
                                 Bootstrap.Log.LogInfo(
                                     $"[AutoTOT] launch-rail {ap._ammunitionFileName}: " +
                                     $"gunObj {E(railGun)}, containerBase {E(railBase)}, mount {E(railMount)}, " +
@@ -320,8 +322,8 @@ namespace AutoTOT
                     termDist - maxVelKn * GameUnits.KnotsToUnityPerSecond * ap._searchForTargetsTime, 0f);
             }
             float termAlt = ap._terminalAltUnity > 0f ? ap._terminalAltUnity : finalAlt;
-            float descentDeg = ap._finalFlightPhaseMaxAngle > 0.01f ? ap._finalFlightPhaseMaxAngle
-                             : (ap._seaSkimmingMaxDescentAngle > 0.01f ? ap._seaSkimmingMaxDescentAngle : DefaultDescentDeg);
+            float descentDeg = ap._finalFlightPhaseMaxAngle > SetAngleEpsilonDeg ? ap._finalFlightPhaseMaxAngle
+                             : (ap._seaSkimmingMaxDescentAngle > SetAngleEpsilonDeg ? ap._seaSkimmingMaxDescentAngle : DefaultDescentDeg);
             float descentOnsetDeg = Mathf.Max(descentDeg,
                 Mathf.Max(ap._finalFlightPhaseMaxAngle, ap._seaSkimmingMaxDescentAngle));
             return new StageProfile(finalDist, finalAlt, termDist, termAlt, descentDeg, descentOnsetDeg);
@@ -338,8 +340,8 @@ namespace AutoTOT
         {
             try
             {
-                Vector3 shipFwd = unit.transform.forward; shipFwd.y = 0f;
-                Vector3 toTarget = targetPos - launchPos; toTarget.y = 0f;
+                Vector3 shipFwd = GameMath.Flatten(unit.transform.forward);
+                Vector3 toTarget = GameMath.Flatten(targetPos - launchPos);
                 if (shipFwd.sqrMagnitude > 1e-6f && toTarget.sqrMagnitude > 1e-6f)
                     return Vector3.Angle(shipFwd, toTarget);
             }
@@ -432,22 +434,12 @@ namespace AutoTOT
                 bool nonKin = ap.Kinematics == AmmunitionParameters.KinematicsLevel.None;
                 if (!nonKin && _dragMethod == null) return false;
 
-                const float ZeroDensityAltU = 1f / 0.00163f;
                 Vector3 launchPos = unit.transform.position;
                 Vector3 targetPos = target.transform.position;
                 Vector3 targetVel = target._velocityVecInUnity;
                 bool isAir = unit.IsAirUnit;
 
-                float tvMag = targetVel.magnitude;
-                if (tvMag > 0f && ap.AssumeEvasiveTarget(target))
-                {
-                    Vector3 flee = targetPos - launchPos; flee.y = 0f;
-                    if (flee.sqrMagnitude > 1e-8f)
-                    {
-                        targetVel += flee.normalized * (tvMag * EvasiveBoostFraction);
-                        targetVel = targetVel.normalized * Mathf.Min(targetVel.magnitude, tvMag);
-                    }
-                }
+                ApplyEvasiveBoost(ap, target, launchPos, targetPos, ref targetVel);
 
                 float dragFactor = ap.GetDragFactor(isAir);
                 float startVelKnots = Mathf.Max(unit._velocityInKnots, 0f);
@@ -520,15 +512,13 @@ namespace AutoTOT
                 Vector3 launchHeading = Vector3.zero;
                 if (FixedRailLaunchHeading && fixedRail && rail != null)
                 {
-                    Vector3 rfwd = rail.forward; rfwd.y = 0f;
-                    if (rfwd.sqrMagnitude > 1e-4f) launchHeading = rfwd.normalized;
-                    else if (VerticalLaunchInheritsShipHeading)
+                    if (!GameMath.TryFlatDirection(rail.forward, out launchHeading)
+                        && VerticalLaunchInheritsShipHeading)
                     {
                         // Vertical rail: no bearing of its own, so inherit the ship's yaw
                         // (see VerticalLaunchInheritsShipHeading). Same vector the bearingErr
                         // diagnostic reads above; the per-step block below is reused unchanged.
-                        Vector3 sfwd = unit.transform.forward; sfwd.y = 0f;
-                        if (sfwd.sqrMagnitude > 1e-4f) launchHeading = sfwd.normalized;
+                        GameMath.TryFlatDirection(unit.transform.forward, out launchHeading);
                     }
                 }
                 // Attitude carried ACROSS steps for the coupled turn: rebuilding it each step would
@@ -545,20 +535,18 @@ namespace AutoTOT
                 float prevAltErr = float.NaN;
 
                 Vector2[] altNodes = null;
-                float flatDistTotal = new Vector2(targetPos.x - launchPos.x, targetPos.z - launchPos.z).magnitude;
+                float flatDistTotal = GameMath.FlatDistance(targetPos, launchPos);
                 if (isTerminalLoft && _altNodesMethod != null && flatDistTotal > 1f)
                 {
                     try
                     {
                         object[] an = { ap, Mathf.Max(launchPos.y, 0f), targetAlt0, flatDistTotal, -1f, 0f };
-                        var lst = _altNodesMethod.Invoke(null, an)
+                        var nodes = _altNodesMethod.Invoke(null, an)
                             as System.Collections.Generic.List<Vector2>;
-                        if (lst != null && lst.Count >= 2) altNodes = lst.ToArray();
+                        if (nodes != null && nodes.Count >= 2) altNodes = nodes.ToArray();
                     }
                     catch { altNodes = null; }
                 }
-                object[] thrustArgs = new object[4];
-                object[] dragArgs = new object[10];
                 float nextSample = NoseOverIntervalSim;
                 bool trackDiag = Coordinator.VerboseLog && emitDiag;
                 string ammoLabel = ap._ammunitionFileName ?? "?";
@@ -628,8 +616,7 @@ namespace AutoTOT
             }
             catch (Exception e)
             {
-                if (Coordinator.VerboseLog)
-                    Bootstrap.Log.LogWarning($"[AutoTOT] integrated flight-time setup failed: {e.GetType().Name}: {e.Message}");
+                ModLog.VerboseWarn("integrated flight-time setup failed", e);
                 return false;
             }
         }

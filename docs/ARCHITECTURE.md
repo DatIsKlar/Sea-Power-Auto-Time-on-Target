@@ -43,6 +43,9 @@ Two entry paths feed the same pipeline:
 - **Planner panel** (Alt+G): `Coordinator.FireCoordinated` builds the same
   Intent/Schedule structures directly from hand-picked shots, bypassing the
   collection window.
+- **Armed strike** (Alt+H, or the panel's ADD TO STRIKE / FIRE STRIKE): one
+  batch that spans any number of targets and commits only when the player
+  fires it. Both entry paths above feed it while it is armed.
 
 ### Interceptability gates
 
@@ -60,7 +63,8 @@ batch) only when all of these hold:
 
 Any gate failing returns `false` and the original method runs unmodified. The
 order is appended to `_openBatches[target]` (Coordinator.cs), keyed by
-the target object reference.
+the target object reference, or, while a strike is armed, to the single
+`_strikeBatch`, which has no key and no target of its own.
 
 ### Re-validation at fire time
 
@@ -78,6 +82,11 @@ Orders accumulate in `_openBatches` until one of two conditions triggers commit
 
 - **Debounce**: `(now - LastRealTime) >= DebounceSeconds` (0.75 s)
 - **Hard cap**: `(now - FirstRealTime) >= MaxWindowSeconds` (6.0 s)
+
+The armed strike is exempt from both. It is not in `_openBatches`, so the
+debounce sweep never sees it and it commits only on `ExecuteStrike`. That is
+what lets the player work through several formations and several targets at
+their own pace before anything locks in.
 
 Both use `Time.unscaledTime` (Unity unscaled real time), so the collection
 window advances during game pause and is unaffected by time compression. The
@@ -274,6 +283,23 @@ Exact game-API field names used in `LauncherFacts.Compute`:
 `getLoadedAmmoCount`, `getMagazineAmmoCount`, `_openAnimation`, `_sequences`,
 `_sequenceData`, `_time`.
 
+The channel cap is the game's own: `WeaponSystemLauncher.cs:436-452` calls
+`hasFreeWeaponChannel()` in the launch path, and `CheckForMissileGroup` short-circuits it.
+So grouped ammo bypasses the check while ungrouped guided ammo does not, which is why
+SS-N-12 (`GroupSize=16`) fires a full 8 through a 4-channel radar and SS-N-3 (no
+`GroupSize`) caps at 4.
+
+Guidance and launch-state members, added for submarine handling: `_associatedSensors`,
+`_weaponChannels`, `_associatedWeapons`, `_engageState`, `_requiresGuidance`,
+`_maxGroupSize`, `_maxDepthUnity`, `_minDepthUnity`, and on `Submarine` itself
+`IsSubmerged`, `IsBelowPeriscopeDepth`, `_divingInProgress`, `DesiredAltitude`,
+`SP._periscopeDepth`, `SP._maxDepthChangeUsingTanks`.
+
+`EffectiveWeaponChannels` and `CanGuideAmmo` exist **only on the beta branch** and are
+reached by cached reflection, falling back to `_weaponChannels` and to "can guide". Binding
+them directly compiles but throws on the public branch. `_engageState` is compared by NAME
+for the same reason. Everything else above is public on both branches.
+
 ## Observation anchoring
 
 The realized launch cadence of many launchers is produced by machinery no INI
@@ -281,7 +307,11 @@ declares as a cadence field (per-cell hatch animations, engage-task reassignment
 The Kirov's SS-N-19 realizes ~3.9 s/round while its INI fire-rate implies
 1 s/round. Once launches are observed, measuring it is trivial. So:
 
-1. The batch's anchor (longest enroute incl. lead) releases first.
+1. The batch's anchor (longest enroute incl. lead) releases first. The anchor is chosen
+   across the whole batch, not per target, so a strike spanning several targets has exactly
+   one anchor and one shared impact. If that anchor is lost before it releases anything,
+   `PromoteNewAnchor` re-elects the longest-enroute survivor and keeps the impact time; if it
+   is lost after launching, the impact is locked where the ripple last put it.
 2. `LaunchDiagnostics` sees each missile leave the rail (`WeaponBase._launchTime`)
    and appends the time to the anchor's `LaunchTimes`.
 3. Every tick, `UpdateAnchorTracking` rewrites the shared impact time every held
@@ -299,6 +329,75 @@ impact    = lastRound + liveKinematicEstimate − centering + groupDelay
 
 4. Finalizes when wave 1 has fully launched (`k ≥ n`) or launches stall
    (no launch for `max(4×cadence, 30s)`; or nothing at all for 120s).
+
+**The no-launch hold.** The 120 s figure above is a floor, not a deadline. An order that
+has launched nothing is not stalled while the shooter is visibly still working, in either
+of two senses: the launcher reports an engage state meaning a launch is under way
+(`LauncherFacts.IsPreparingToFire`), or a submarine is blocked below the weapon's launch
+depth and has come shallower since the last 5 s sample. An absolute
+`NoLaunchMaxHoldSim` (300 s) bounds both.
+
+`LauncherTooLow` is deliberately **excluded** from the preparing set, and that exclusion
+is load-bearing. A submarine holding a radio-command weapon it cannot guide sits in that
+state permanently: the launcher raises the boat only to the weapon's own depth ceiling
+(`−_maxDepthUnity + 0.115`, so 75 ft for a 100 ft ceiling) while the guidance radar is a
+mast needing periscope depth, and nothing commands the boat shallower. Treating that as
+progress would hang every such order for the full 300 s instead of reporting it.
+
+When the hold does expire with nothing launched, the engagement is **dropped** from
+`EngagementBoard` rather than left holding a predicted impact no missile will arrive at,
+which would otherwise strand every co-shooter synced to it.
+
+**Followers wait for the anchor's first round.** A held order does not release until the
+anchor has actually launched something. The anchor is by construction the longest-enroute
+shot, so a follower going first can only be too early. This is a no-op in the normal case
+and matters when the anchor is a submarine whose ascent outran the estimate folded into
+its `StartupLead`. `RippleDone` bounds it: a completed or abandoned anchor frees its
+followers on the next tick.
+
+**Launch-envelope delay.** `StartupLead` carries the time a shooter needs before it can
+fire at all, via `LaunchEnvelope.TimeToReady`, because the enroute ranking and the release
+gate both read it. Surface ships contribute 0. A submerged submarine contributes its
+ascent to the weapon's launch depth plus the launcher's hatch cycle. Aircraft, which must
+descend into a launch envelope, are the next platform for this seam and are not modelled
+yet.
+
+Both platforms turn out to have the same shape, which the two integrators share: a **limit**, a
+**proximity taper**, a **sine**, times **speed**. A submarine's limit is its ballast/dive-plane
+interlock and its taper is the shrinking depth error; an aircraft's limit is a descent-pitch
+parameter and its taper is `GetDesiredPitch`'s altitude-error term. `LaunchEnvelope` dispatches
+on unit type and the coordinator consumes one number either way.
+
+Measured accuracy: submarine ascent **1.4%** over 13 manoeuvres on three hulls; aircraft descent
+**5.2%** over 4 descents on two airframes. Aircraft CLIMB is not modelled, being energy-limited
+through a private `_dragPower`; that case returns 0 and falls back to the launch-state hold.
+
+The ascent is **stepped through the game's own model** (`Simulation/SubmarineAscent.cs`),
+not divided by an assumed rate, because `Submarine.applyDepth` runs two mutually exclusive
+mechanisms:
+
+```
+ballTgt  = clamp(targetDepth − depth, ±_maxDepthChangeUsingTanks)
+ballast -> ballTgt at _ballastTankChangeRate per second
+tgtPitch = normSpd · clamp(_maxPitchAngle·err, ±_maxPitchAngle·clamp01(2·depth))
+pitch   -> tgtPitch at _pitchChangeRate per second
+if (normSpd > 0.1 && |pitch| > 5)  ballast = 0                    ← the interlock
+depth   += (ballast + vKnots·0.0076554087·sin(pitch))·dt
+```
+
+The pitch term is applied by the forward translation (`Submarine.cs:704`), not by
+`applyDepth`, which reads the resulting `y` and adds only ballast; the two compose. Below
+the interlock a boat is ramp-limited by `BallastTankChangeRate`, which at 0.00025 Unity
+units/s² is **0.055 ft/s²** and needs 91 s to reach its own 5 ft/s cap. Above it the boat
+flies its planes and can exceed that cap. Measured ascents of 1.7 and 4.9 ft/s on hulls
+declaring identical parameters are this regime boundary, not noise.
+
+The asymmetry that sets the accuracy bar: where the boat wins the anchor role the estimate
+only has to be big enough to release it first, since its measured launch then rewrites the
+shared impact; where it ends up a follower nothing measures it and the error lands directly
+on arrival time. The planner warns whenever the delay is nonzero, because it is zero and
+exact only at launch depth. The `asc-sim` / `asc-track` / `asc-residual` triple scores the
+model the same way `sim-track` / `track` / `gap` scores the flight model.
 
 **A-priori cadence for anchor SELECTION.** Anchor selection happens at commit, before
 any launch is observed, so it can't use the measured cadence. To keep the right order
@@ -357,7 +456,7 @@ many estimates at once used to put 20 ms on a single frame. The integrator is th
 - **Setup** (`FlightTime.Integrator.cs`) reads everything that comes from the live game: shooter and
   target transforms, target velocity, launcher rail orientation, and `_finalFlightPhaseAltUnity`,
   which the game rewrites every frame for each missile in flight. Main thread only.
-- **Solve** (`FlightTime.Solve.cs`) is the step loop, taking a `SolveInput` snapshot of 41 values and
+- **Solve** (`FlightTime.Solve.cs`) is the step loop, taking a `SolveInput` snapshot of 42 values and
   touching no Unity API. It is a pure function, so the same input always yields the same float.
 
 `EstimatorThreads` worker threads run Solve. The main thread queues a snapshot and keeps using its
@@ -378,6 +477,35 @@ priority so the game wins any contended core.
 
 Setting `EstimatorThreads = 0` runs everything on the main thread and is the rollback.
 
+### Threading contract
+
+Everything in the mod runs on the main thread except the step loop, so one rule decides whether any
+piece of code may be reached from a worker.
+
+**Main thread only:**
+
+- `Time.unscaledTime`, which `TtlCache` reads on every `TryGet` and every `Set`. That is why the
+  caches are written only during `DrainCompleted`.
+- Any `transform` access, and any read of game state the game mutates per frame. All of it happens
+  in setup, which is what makes the snapshot a snapshot.
+- `Bootstrap.Log`. BepInEx's `ManualLogSource` is not documented as thread-safe. The one exception
+  is the worker's catch-all in `FlightTime.Async.cs`, which must report rather than die silently; a
+  worker exception during a verbose run can interleave with main-thread lines.
+
+**Safe anywhere:** pure `Mathf` and `Vector3` arithmetic. `GameMath` and `TelemetryCadence` hold
+nothing else, deliberately, so they can be shared with the loop.
+
+Four ordering rules follow from this and keep the split to a single estimator:
+
+1. Setup runs on the main thread; workers run only the pure loop.
+2. Only the main thread writes the cache, during `DrainCompleted`.
+3. Workers touch no shared mod state.
+4. `Solve` is deterministic over its input, so an asynchronous value equals the synchronous one bit
+   for bit. The split changes **when** a value is computed, never **what**.
+
+The loop itself is left alone by refactoring passes even where a shared helper would fit, because its
+per-step cost (`us/1k steps` in the profiling line) is the figure tracked across builds.
+
 `VerifySolve` re-runs each threaded simulation on the main thread and compares the two results
 bitwise. 1,205 simulations across kinematic, non-kinematic and waypoint-planned rounds have been
 checked this way with no mismatch.
@@ -391,6 +519,16 @@ The **speed profile** behind the group-drag correction (§Release lead) uses the
 same plumbing: `ComputeSpeedProfile` invokes the branch's shot simulator and
 records `(time, speed)` samples. When neither sim method resolves, the profile
 is empty and `groupDelay` no-ops.
+
+## Game-side launch limits
+
+Three behaviours in the game itself decide whether an ordered salvo leaves the rails at all, and in
+what pattern: missile-group capacity shared between nearby shooters, beam-only launchers that steer
+to three degrees abeam rather than to their declared arc, and the physics time-scale cap above 10x
+compression. Two of them drive planner warnings, and all three are the first thing to check when a
+salvo arrives short or spread out. They are written up separately in
+[GAME-BEHAVIOUR.md](GAME-BEHAVIOUR.md), which also covers why the second one looks like an engine
+bug rather than a design choice.
 
 ## Launch observation and shortfall detection
 
@@ -508,7 +646,8 @@ a single prune path.
 sim time of last release at this target, `GameClock.SimNow()`; −1 = held only), `ImpactSim` (float, init −1;
 scheduled or anchor-tracked live impact time; −1 = none), `ImpactSpread` (float; ± arrival
 spread in seconds; independent salvos only, 0 for grouped), `Waves` (int, init 1;
-reload-separated waves), `WaveGap` (float; sim seconds between successive wave impacts).
+reload-separated waves), `WaveGap` (float; sim seconds between successive wave impacts),
+`StrikeId` (int; rows sharing an id were scheduled as one strike, 0 = none).
 
 Storage: `_byTarget` `Dictionary<ObjectBase, Engagement>` (EngagementBoard.cs),
 created lazily by `GetOrCreate` (EngagementBoard.cs).
@@ -518,7 +657,8 @@ created lazily by `GetOrCreate` (EngagementBoard.cs).
 `SalvoLine` struct (EngagementBoard.cs) is one HUD row: `Target`, `Queued` (shots
 still held), `InFlight` (friendly missiles in flight at target), `ImpactSim` (−1 if unknown),
 `ImpactSpread` (± s), `Waves` (1 = single wave), `WaveGap`, `AnchorLaunched` (launches
-observed so far), `AnchorTotal` (>0 while a batch anchor's ripple is tracked).
+observed so far), `AnchorTotal` (>0 while a batch anchor's ripple is tracked), `StrikeId`
+(rows sharing an id land on one coordinated impact, 0 = none).
 
 Snapshot scratch buffers are reused every call to avoid per-frame allocation: `_salvoMap`
 (`Dictionary<ObjectBase, SalvoLine>`) and `_pruneScratch` (`List<ObjectBase>`)
@@ -526,10 +666,13 @@ Snapshot scratch buffers are reused every call to avoid per-frame allocation: `_
 
 #### Write API
 
-- `RecordScheduled(target, impactSim, impactSpread, waves, waveGap)` (EngagementBoard.cs):
-  creates or overwrites the row. Called when a batch is scheduled (Coordinator.cs).
+- `RecordScheduled(target, impactSim, impactSpread, waves, waveGap, strikeId)`
+  (EngagementBoard.cs): creates or overwrites the row. Called once per distinct target when a
+  batch is scheduled (Coordinator.cs); the arrival-shape figures are per target, the impact
+  time and strike id are shared.
 - `UpdateImpact(target, impactSim)` (EngagementBoard.cs): rewrites `ImpactSim` only.
-  Called every coordinator tick while an anchor ripple is live (Coordinator.cs).
+  Called every coordinator tick while an anchor ripple is live, once per target in the
+  anchor's `BoardTargets` (Coordinator.cs).
 - `MarkFired(target)` (EngagementBoard.cs): stamps `FiredAtSim = GameClock.SimNow()`.
   Called from `Coordinator.Fire` (Coordinator.cs).
 - `Drop(target)` (EngagementBoard.cs): removes the row only if the target never
@@ -727,12 +870,15 @@ Sources live in five folders by concern: `Core/` (pipeline + lifecycle),
 | `Simulation/WaypointSim.cs` | Reflection port of the public `SimulateShotLinear` (tier 2, beta) |
 | `Support/GameClock.cs` | Version-agnostic sim clock + launch-timestamp access (float/double beta drift) |
 | `Support/GameUnits.cs` | Shared unit conversions (Unity units ↔ metres/nm/knots) |
+| `Support/GameMath.cs` | Horizontal flatten and elevation-angle helpers used across the setup paths. Worker-safe |
+| `Support/ModLog.cs` | The two exception-report shapes (`Warn`, `VerboseWarn`) the reflection and estimator paths share |
 | `Support/LauncherFacts.cs` | Launcher cadence / ready rounds / reserve + TTL cache + reload-wave helpers |
 | `Support/TtlCache.cs` | Tiny real-time TTL cache used by FlightTime and LauncherFacts |
 | `Support/DotsScanHardening.cs` | Multiplayer mission-load crash shield for the DOTS assembly scan |
 | `Diagnostics/LaunchDiagnostics.cs` | Flight tracker (impact reports) + launch expectations (shortfall detection); feeds anchor launch times |
 | `Diagnostics/EngagementBoard.cs` | Per-target engagement state for the HUD (consolidated: one row per target) |
-| `Diagnostics/CoordinatorProfiler.cs` | Per-frame timing (`Profiler`): stage timers, counters, frame share, the 60-frame report |
+| `Diagnostics/TelemetryCadence.cs` | Sampling offsets shared by the `sim-track` and `track` traces, so the two stay comparable |
+| `Diagnostics/CoordinatorProfiler.cs` | Per-frame timing (`CoordinatorProfiler`): stage timers, counters, frame share, the 60-frame report |
 | `UI/Hud.cs` (+ `.Render` `.Mouse` `.Styles` partials) | IMGUI planner panel: layout/data, drawing, pointer capture, styling |
 
 ## Multiplayer crash shield: `DotsScanHardening`
@@ -765,6 +911,7 @@ itself never depends on it.
 | State | Lives in | Cleared when |
 |---|---|---|
 | Open batches | `Coordinator._openBatches` | committed (debounce/cap) |
+| Armed strike | `Coordinator._strikeBatch` | committed by `ExecuteStrike`, or discarded by `CancelStrike` |
 | Held/fired-anchor entries | `Coordinator._scheduled` | released (non-anchor), ripple finalized (anchor), unit/target destroyed |
 | Per-target engagement rows | `EngagementBoard` | fired + idle past 8s grace (prune in `CollectSalvos`), dropped held target, mission end |
 | Flight tracker / expectations | `LaunchDiagnostics` | missile gone / expectation finalized; mission end |
@@ -811,3 +958,187 @@ own kinematic simulator, plus observation of the PLAYER'S OWN launch timing
 missiles' in-flight positions for guidance, use closure-rate feedback, or apply
 fitted constants. [`model/`](model/00-index.md) applies the
 same rule to the flight-time model.
+
+## Submarine launch-depth gating
+
+The coordinator's ripple-stall windows assume surface-ship launch mechanics (order issued, rounds
+leave within seconds). A submarine must first reach the launch depth for the weapon, and the game
+holds the launcher silently while it gets there:
+
+```
+WeaponSystemLauncher.cs:414-421
+  if (DesiredAltitude.Value < -ap._maxDepthUnity + 0.1f)
+      DesiredAltitude.Value = -ap._maxDepthUnity + 0.115f;   // order the ascent
+  _engageState = EngageState.LauncherTooLow;
+  if (position.y < -ap._maxDepthUnity && (ap._maxDepthUnity > 0f || isSubmerged()))
+      return;                                                // no launch, no message
+```
+
+`_maxDepthUnity` is the weapon's launch-depth ceiling (ammo INI `Guidance/MaxDepth`,
+`AmmunitionParameters.cs:1860`). The default is 100 ft for a missile, not 0, so the split is by
+weapon and not by boat:
+
+- `MaxDepth > 0` (SS-N-12, SS-N-19: no INI key, so the 100 ft default): the boat ascends to
+  a shallow submerged depth and fires. Self-resolving.
+- `MaxDepth == 0` (SS-N-3, SS-N-3b: explicit in the ammo INI): the second clause falls through
+  to `isSubmerged()`, so the boat must fully surface before anything launches.
+
+The same Echo II hull therefore behaves differently with its early SS-N-3 fit than with the
+late SS-N-12 fit, which is why this reads as an intermittent per-boat fault.
+
+`SubmarineFacts.cs` reads this gate for diagnostics. Nothing there changes behaviour;
+`EngageState.LauncherTooLow` is the game's own explicit "not firing because I am too deep"
+signal and is the point of the whole file.
+
+## Async solver design
+
+`FlightTime.Async.cs` runs the integration loop on worker threads so a burst of refreshes does
+not land on the frame that asks for them.
+
+### Why async rather than parallel-for
+
+The game already runs Unity `IJobParallelFor` batches and blocks on `Complete()`, so it occupies
+roughly `(cores - 1)` job workers during the tick. A parallel-for draws from the .NET thread pool
+and would compete with those for the same physical cores, and its speedup is bounded by spare cores,
+which is exactly what a weak machine lacks. Queueing decouples from core count instead: a slow
+machine gets its answers a few frames later rather than blocking the frame.
+
+The freshness cost is small against what the release path already tolerates. Measured release
+staleness is 0.09 s average; a few frames is 50 to 150 ms.
+
+### Ordering rules
+
+- Setup runs on the main thread (it reads transforms), workers only run the pure loop.
+- Only the main thread writes the cache, during `Drain`. Workers touch no shared mod state.
+- Solve is deterministic over its input, so an async value equals the synchronous one bit for bit.
+  This changes when a value is computed, never what.
+
+### Worker lifecycle
+
+Workers are started once from config and never stopped. The threads are `IsBackground`, so process
+exit is the only shutdown. Stopping a pool mid-mission would strand queued work. A worker that
+throws logs and continues; a dead worker would fill the queue and stall every refresh.
+
+### Verification mode
+
+`VerifySolve` solves every queued request a second time on the main thread and compares. Solve is
+deterministic over its input, so the two answers must agree exactly. Any difference means the
+snapshot did not carry some value correctly, which is the only way this refactor can be wrong.
+Checking it in the mod rather than by comparing runs matters because usable accuracy samples are
+scarce: a mission's ships run out of missiles after one salvo, and most rounds are excluded as
+seeker switches, so a run yields one to three comparisons. Verification yields one per queued
+simulation, several hundred per mission. It doubles the simulation work while on, so it is a
+correctness run, never a timing run.
+
+## DOTS scan hardening
+
+`DotsScanHardening.cs` is a defensive shield for a base-game crash on the multiplayer mission-load
+path.
+
+### The crash
+
+The DOTS bootstrap enumerates every assembly in the `AppDomain` and calls `Assembly.GetName` on
+each. An assembly with an invalid culture string in its native name makes that throw, which aborts
+the `LoadMission` coroutine. It is multiplayer-only because only `RecreateWorldUsingTemp` re-runs
+the bootstrap after mods (and their MonoMod/Harmony dynamic assemblies) have loaded; the boot-time
+scan is clean.
+
+### The shield
+
+The filter method is discovered rather than named: its signature differs between Entities versions,
+and `Unity.Entities.dll` may not be in the `AppDomain` yet when this mod initializes, so a fixed
+Harmony target cannot resolve. Every `IsAssemblyReferencing*(Assembly, ...)` on `TypeManager` is
+shielded with a finalizer that swallows the throw, deferring installation until the assembly loads
+if needed. An assembly the scan cannot name cannot be one it needs ECS types from, so returning
+with the outputs at their defaults ("does not reference entities") is correct.
+
+### Deferred install
+
+If `Unity.Entities.dll` is not yet loaded at mod init time, an `AssemblyLoad` event handler waits
+for it. The handler must never throw: an exception here would leak into whatever game code triggered
+the load. An assembly whose very name throws is exactly what the shield protects against; it cannot
+be `Unity.Entities`.
+
+## Launcher facts timing
+
+`LauncherFacts.cs` reads launcher timing and capacity facts for one ship plus ammo type, from the
+game's own weapon parameters: per-round firing interval (including shared-launch-interval gating),
+reload gap, ready rounds, and magazine reserve.
+
+### Per-round interval
+
+Within-salvo spacing when the launcher ripples a burst, else the single-shot fire-rate cadence.
+The game gates each launch on both the fire-rate timer and a per-`SystemName` shared timer
+(`WeaponSystemLauncher.cs:633-642`). For example, the Slava's SS-N-12 declares
+`SharedLaunchInterval=5`, shared across its port and starboard launchers. The effective cadence is
+the slower of the two; without this the interval reads ~5x too fast and every span/wave figure on
+these launchers is far too small.
+
+### Hatch animation floor
+
+Some launchers (the Kirov's SS-N-19: 20 tubes, each its own container and hatch) declare no
+`FireRate`, `SharedLaunchInterval` or `SalvoFireTime`, so the interval falls back to the 1 s
+default while the realized cadence is dominated by opening each tube's hatch. That duration lives
+in the animation asset (last keyframe `_time`), not in any numeric cadence field. The hatch
+duration only ever raises the interval, so a launcher that declares real timing is untouched.
+
+### Startup delay
+
+The fire-to-first-launch offset (`WeaponSystemLauncher.cs` engage cycle):
+
+- `PreLaunchDelay`: a fixed wait after the hatch opens (INI, default 0).
+- `MaxReactiontime`: a random reaction delay re-rolled per engage as uniform `[0, MaxReactiontime]`;
+  the expected value is half.
+
+The launcher pays this once before round 1, not between rounds, so it belongs in the release lead
+as a fixed offset, not in the per-round `ShotInterval` span.
+
+### Guidance channel cap
+
+A weapon whose mid-course correction is radio command (`_requiresGuidance`) occupies one of its
+guiding sensor's weapon channels for as long as it needs guidance. Rounds that can join a group
+share that, so only ungroupable guided ammo is genuinely capped: the Echo II's SS-N-3 declares no
+`GroupSize` and its `Front_Door` radar declares `WeaponChannels=4`, so an 8-round salvo can only
+ever put 4 up. Its SS-N-12 fit has `GroupSize=16` and is not capped, which is exactly the
+difference observed between the two test runs.
+
+## Launch diagnostics design
+
+`LaunchDiagnostics.cs` has two subsystems sharing one tick:
+
+### Flight tracker
+
+Records a baseline the first time each friendly missile is seen airborne, follows its
+distance-to-target, and reports the outcome (flight time plus final range) once the missile object
+is gone, so the log shows when each salvo member actually arrived, not just when it launched.
+
+The tracker also feeds coordination: each anchor's observed launch times are forwarded to its
+`Coordinator.Scheduled` entry for observation anchoring.
+
+### Launch expectations
+
+Per coordinated order, how many missiles were requested vs. how many actually left the rail
+(attributed via `WeaponBase._launchPlatform`). Catches the rare case where one ship fires short
+while its sister fires the identical order in full.
+
+Deadlines are sim-time and adaptive. A fixed deadline fired mid-ripple logged false shortfall
+reports because a launcher's realized cadence (hatch cycles, task reassignment) is often far slower
+than its INI pace. The adaptive deadline extends on every observed launch. Only a true stall (no
+launch for `max(4x measured cadence, 30s)`, plus any reload-wave tail) counts as a shortfall.
+
+### Ship-level launch tracking
+
+`_shipLastLaunchSim` records the last observed launch per (ship, ammo file), updated for every
+sighting including rounds that match no open order. A ship working through a queue of engage tasks
+is not stalled, and an order sitting behind others in that queue must not be reported short while
+rounds are still leaving. Keyed by instance id and ammo file rather than by `ObjectBase`, so a
+destroyed shooter cannot keep the entry alive.
+
+### Submarine ascent hold
+
+A shooter that has not started yet may be legitimately mid launch cycle or, for a submarine, still
+rising to its launch depth. Both routinely outlast the adaptive window: an Oscar ordered up from
+350 ft needed ~70 s of ascent and then over a minute opening 24 hatches, and reported a shortfall
+of 0/24 while doing exactly what it was told. The deadline is held off while `ShooterStillWorking`
+returns true, bounded absolutely from the order so a boat parked at a depth it will not leave
+still reports.

@@ -8,6 +8,14 @@ namespace AutoTOT
 {
     internal static partial class FlightTime
     {
+        // Game-side names this mod resolves by reflection. Named because each was spelled out at
+        // three sites here (primary lookup, arity fallback, diagnostic dump) and again in
+        // WaypointSim, and a typo in any one copy fails silently as "method not found".
+        internal const string MissileSimulatorType = "SeaPower.MissileSimulator";
+        internal const string ThrustMethodName = "CalculateThrustOverTime";
+        internal const string DragMethodName = "CalculateDrag";
+        internal const string LoftCapMethodName = "LoftCap";
+
         private static MethodInfo _simulateShotMethod;
         private static bool _simulateLookedUp;
         private static bool _simIsBeta;
@@ -44,7 +52,7 @@ namespace AutoTOT
                 _simIsBeta = false;
                 if (_simulateShotMethod == null)
                 {
-                    Type ms = typeof(Missile).Assembly.GetType("SeaPower.MissileSimulator");
+                    Type ms = typeof(Missile).Assembly.GetType(MissileSimulatorType);
                     _simulateShotMethod = ms?.GetMethod("EstimateShot", new Type[]
                     {
                         typeof(AmmunitionParameters), typeof(Vector3), typeof(float), typeof(Vector3), typeof(Vector3),
@@ -55,22 +63,22 @@ namespace AutoTOT
 
                     if (_simIsBeta)
                     {
-                        _thrustMethod = ms.GetMethod("CalculateThrustOverTime", new Type[]
+                        _thrustMethod = ms.GetMethod(ThrustMethodName, new Type[]
                         { typeof(AmmunitionParameters), typeof(bool), typeof(float), typeof(float) });
-                        _dragMethod = ms.GetMethod("CalculateDrag", new Type[]
+                        _dragMethod = ms.GetMethod(DragMethodName, new Type[]
                         {
                             typeof(float), typeof(float), typeof(float), typeof(float), typeof(float),
                             typeof(bool), typeof(float), typeof(float), typeof(float), typeof(float)
                         });
-                        _loftCapMethod = ms.GetMethod("LoftCap", new Type[]
+                        _loftCapMethod = ms.GetMethod(LoftCapMethodName, new Type[]
                         { typeof(AmmunitionParameters), typeof(float), typeof(float) });
 
                         if (_thrustMethod == null)
-                            _thrustMethod = ResolveByName(ms, "CalculateThrustOverTime", 4);
+                            _thrustMethod = ResolveByName(ms, ThrustMethodName, 4);
                         if (_dragMethod == null)
-                            _dragMethod = ResolveByName(ms, "CalculateDrag", 10);
+                            _dragMethod = ResolveByName(ms, DragMethodName, 10);
                         if (_loftCapMethod == null)
-                            _loftCapMethod = ResolveByName(ms, "LoftCap", 3);
+                            _loftCapMethod = ResolveByName(ms, LoftCapMethodName, 3);
 
                         const BindingFlags NPS = BindingFlags.NonPublic | BindingFlags.Static;
                         _altNodesMethod = ms.GetMethod("BuildAltitudeNodes", NPS, null, new Type[]
@@ -113,11 +121,14 @@ namespace AutoTOT
             }
             else
             {
+                // Names MaxRangePrecise alone, deliberately. WaypointSim is beta-only by design:
+                // EnsureLookup is called from the _simIsBeta branch below, so off beta it never
+                // initializes, Ready stays false, and KinematicRaw skips that tier entirely.
                 Bootstrap.Log.LogWarning(
                     $"[AutoTOT] estimator: integrator UNAVAILABLE on the {branch} branch " +
                     $"(SimulateShotLinear {(_simulateShotMethod != null && !_simIsBeta)}, " +
                     $"thrust {(_thrustMethod != null)}). Flight times will fall back to " +
-                    $"WaypointSim/MaxRangePrecise, which are less accurate. Time-on-target " +
+                    $"MaxRangePrecise, which is less accurate. Time-on-target " +
                     $"coordination still works; timing precision does not match the tested model.");
             }
         }
@@ -139,8 +150,7 @@ namespace AutoTOT
             catch (Exception e)
             {
                 _thrustFn = null; _dragFn = null;
-                if (Coordinator.VerboseLog)
-                    Bootstrap.Log.LogWarning($"[AutoTOT] fast-path bind failed: {e.GetType().Name}: {e.Message}");
+                ModLog.VerboseWarn("fast-path bind failed", e);
             }
         }
 
@@ -173,8 +183,8 @@ namespace AutoTOT
                     $"fastPath {(_thrustFn != null && _dragFn != null)}");
                 foreach (var pair in new (string name, MethodInfo mi)[]
                 {
-                    ("CalculateThrustOverTime", _thrustMethod), ("CalculateDrag", _dragMethod),
-                    ("LoftCap", _loftCapMethod),
+                    (ThrustMethodName, _thrustMethod), (DragMethodName, _dragMethod),
+                    (LoftCapMethodName, _loftCapMethod),
                 })
                 {
                     if (pair.mi != null) continue;
@@ -190,7 +200,7 @@ namespace AutoTOT
             }
             catch (Exception e)
             {
-                Bootstrap.Log.LogWarning($"[AutoTOT] sim-init dump failed: {e.GetType().Name}: {e.Message}");
+                ModLog.Warn("sim-init dump failed", e);
             }
         }
     }

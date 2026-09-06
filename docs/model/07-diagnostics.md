@@ -36,7 +36,11 @@ churn and defensive-SAM launches do not drown the log.
 
 ## 7.2 Sampling cadence
 
-`sim-track` and `track` share three tiers, so the two series can be read against each other directly:
+`sim-track` and `track` share three tiers, so the two series can be read against each other directly.
+The schedule has one definition, `Diagnostics/TelemetryCadence.cs`, which both traces read: the two
+series are only comparable while they agree, and two copies of a cadence agree until someone tunes
+one of them.
+
 
 | window | interval | why |
 |---|---|---|
@@ -119,9 +123,15 @@ ways this goes wrong are both silent.
 
 The integrator needs the beta `MissileSimulator` internals. On the public branch it finds
 `Missile.SimulateShotLinear` instead, binds nothing, declines every call, and every flight time comes
-from `MaxRangePrecise` instead. Nothing fails and nothing warns; the numbers are simply worse. A full
-measurement run was lost this way, because the only line that would have shown it was behind
-`VerboseLogging`, which performance runs require to be off.
+from `MaxRangePrecise`. That is correct behaviour, and it is invisible in play: nothing fails, the
+mod still coordinates, and only the timing precision drops. A full measurement run was lost to it
+once, because the only line that would have shown it sat behind `VerboseLogging`, which performance
+runs require to be off. The `estimator: integrator UNAVAILABLE` warning exists for exactly that case
+and is logged whatever the verbose setting.
+
+That warning names `MaxRangePrecise` alone. The waypoint tier cannot cover the public branch:
+`WaypointSim.EnsureLookup` runs only from the beta branch of `EnsureSimLookup`, so off beta the type
+never initialises and tier 2 is skipped.
 
 The second is the threading mode. `EstimatorThreads = 0` and asynchronous operation produce the same
 flight times, so a log with no marker cannot say which one ran.
@@ -134,3 +144,110 @@ count means the integrator answered nothing.
 on the main thread and compares bitwise, so `verify N checked, 0 MISMATCHED` proves the snapshot
 carries every value the loop reads. It doubles the simulation work, so it belongs in a correctness
 run and never in a timing one.
+
+## 7.6 Submarine ascent model
+
+`SubmarineAscent.cs` steps the game's own vertical model to predict how long a submarine needs to
+reach its weapon's launch depth. The game drives depth with two mutually exclusive mechanisms, and
+which one is active changes the answer several-fold:
+
+```
+err       = targetDepth - depth                              // unity units, + = go deeper
+ballTgt   = clamp(err, +/-_maxDepthChangeUsingTanks)
+ballast  -> ballTgt at _ballastTankChangeRate per second
+normSpd   = |vKnots| / _maxForwardVelocitySubmergedInKnots
+depthFac  = clamp01(2 * depth)
+tgtPitch  = normSpd * clamp(_maxPitchAngle * err, +/-_maxPitchAngle * depthFac)
+pitch    -> tgtPitch at _pitchChangeRate per second
+if (normSpd > 0.1 && |pitch| > 5)  ballast = 0              // THE INTERLOCK
+depth    += (ballast + vKnots * KnotsToUnity * sin(pitch)) * dt
+```
+
+The pitch term is not applied inside `applyDepth`. The boat translates along its local forward
+vector (`Submarine.cs:704`, `TransformDirection` then `Translate` in world space), so a pitched hull
+carries vertical motion, and `applyDepth` then reads the resulting y and adds only the ballast
+delta. The two compose, which is why both appear in the step above.
+
+### Measurement evidence
+
+Measured against two real ascents, both hulls declaring the same parameters:
+
+- Echo II, slow, 170 to 75 ft: below the interlock, so ramp-limited ballast alone. Closed form
+  `sqrt(2d/a)` with `a = 0.055 ft/s^2` gives 58.7 s against ~56 s observed.
+- Oscar, under way, 350 to 75 ft: ballast alone covers 86 ft of the 275 ft travelled and the
+  observed 6.1 ft/s peak exceeds the 5 ft/s ballast cap outright, so the interlock had
+  zeroed ballast and the boat was flying its planes.
+
+A single rate constant fits neither; this fits both. The apparent 3x spread was a regime
+boundary, not noise.
+
+### The interlock
+
+The interlock zeroes the ballast state, not just the current step's contribution, exactly as the
+game does (`_currentDepthChangeUsingTanks = 0f`). Getting this wrong is invisible in steady state
+and costs ~10% on the total: with the state left charging in the background, ballast is released
+fully wound up at its 5 ft/s cap the instant pitch drops below the threshold near the target, and
+the boat finishes far too fast. It must ramp again from zero at `_ballastTankChangeRate`,
+which on a deep run is a minute of the approach. Measured against 13 real manoeuvres this single
+behaviour moved mean error from 4.5% to 1.4%.
+
+### Time compression
+
+This is compression-invariant, which matters because players run the game fast. The game keeps
+these same equations at every compression and only grows its own step
+(`fixedDeltaTime = Time.fixedDeltaTime * TimeCompression / _physicsTimeScaleCap`, `GameTime.cs`),
+adding anti-overshoot clamps once that step is large. Both ramps here are linear in time, so a
+coarse Euler step integrates them exactly; only `sin(pitch)` is nonlinear and it varies slowly.
+Simulated against the game's own step sizes the answer moves <0.2% out to 300x and <1% at
+1000x, inside the 1.4% validation error, so this needs no compression-dependent behaviour.
+
+### Known limit
+
+Speed is held constant for the whole ascent. A boat re-ordered to a new speed mid-climb will
+diverge, and nothing here notices.
+
+## 7.7 Vertical profiler
+
+`VerticalProfiler.cs` captures how a platform changes depth or altitude, off by default. This is
+a research tool, not a runtime diagnostic.
+
+### Why separate from the asc-* lines
+
+The `asc-*` lines only fire while an AutoTOT order is pending, which is useless for modelling: to
+characterise a hull you want to order a depth or altitude change with no engagement at all and
+watch the response. The profiler samples every submarine and aircraft whenever its commanded
+altitude differs from where it is, and stops when it settles, so one dive or climb produces one
+labelled block that can be pulled straight out of the log.
+
+Sampling is deliberately fast (1 s) because an aircraft crosses its whole envelope in the time a
+submarine moves a few feet. Each block carries a run number so several manoeuvres in one mission
+stay separable.
+
+### What the trace captures
+
+A trace is only worth having if the model's own variables are in it. The two game models take
+different inputs:
+
+- **Submarine** (`Submarine.applyDepth`) is a proportional controller on depth error with a
+  ballast/dive-plane interlock, so it needs depth, commanded depth, pitch, speed and the
+  tank rate. See `SubmarineAscent`, which already implements it.
+- **Aircraft** (`FixedWingFlightPhysics`) has two paths. The approximation path is a constant
+  `MoveTowards` at `_maxClimbRate` (`FixedWingFlightPhysics.cs:361`). The full path is
+  energy-based: `sin(climbAngle) = clamp01((thrust*lapse - drag)/weight + speedTrade)`,
+  optionally capped at `_maxClimbRate/V` (`FixedWingFlightPhysics.cs:800-816`). Which one runs
+  changes the answer completely, so the card records the approximation flag, and mass and
+  speed are sampled because thrust-to-weight drives the energy path.
+
+### Opening thresholds
+
+Aircraft hold altitude to within a few feet and never sit exactly on the commanded value,
+so a 3 ft opening test turned station-keeping jitter into 321 junk blocks out of 330 in
+the first session. A run has to be worth measuring before it is worth opening. The opening
+thresholds are 50 ft for aircraft and 5 ft for submarines.
+
+### Position snaps
+
+The game teleports a unit on spawn and on altitude correction (`transform.position = ...DesiredAltitude`),
+and the first session logged peaks of 1372 and 1612 ft/s, above the airframes' own declared maxima.
+Samples beyond a plausible ceiling are dropped from the rate statistics and counted, so a
+snap-heavy run is visibly suspect rather than quietly biased.

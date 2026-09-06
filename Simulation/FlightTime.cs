@@ -20,6 +20,26 @@ namespace AutoTOT
         internal const float EvasiveBoostFraction = 0.8f;
         internal const float MaxFlightTimeFallback = 600f;
 
+        /// <summary>
+        /// The evasive-target speed boost the game applies before simulating a shot: push the
+        /// target's velocity away from the shooter by <see cref="EvasiveBoostFraction"/> of its own
+        /// speed, then renormalize so the boost changes direction without adding speed. No-op when
+        /// the target is stationary or the ammo does not assume evasion.
+        ///
+        /// Main thread only: reads <c>ap.AssumeEvasiveTarget</c>, which touches game state. Both
+        /// callers (the integrator's setup half and WaypointSim.EndTime) are on that path.
+        /// </summary>
+        internal static void ApplyEvasiveBoost(AmmunitionParameters ap, ObjectBase target,
+            Vector3 launchPos, Vector3 targetPos, ref Vector3 targetVel)
+        {
+            float speed = targetVel.magnitude;
+            if (speed <= 0f || !ap.AssumeEvasiveTarget(target)) return;
+            Vector3 flee = targetPos - launchPos; flee.y = 0f;
+            if (flee.sqrMagnitude <= 1e-8f) return;
+            targetVel += flee.normalized * (speed * EvasiveBoostFraction);
+            targetVel = targetVel.normalized * Mathf.Min(targetVel.magnitude, speed);
+        }
+
         private struct TofKey : IEquatable<TofKey>
         {
             public int UnitId;
@@ -33,6 +53,29 @@ namespace AutoTOT
             {
                 unchecked { return ((UnitId * 397) ^ TargetId) * 397 ^ (AmmoFile?.GetHashCode() ?? 0); }
             }
+        }
+
+        private static TofKey KeyFor(ObjectBase unit, AmmunitionParameters ap, ObjectBase target)
+            => new TofKey
+            {
+                UnitId = unit.GetInstanceID(),
+                AmmoFile = ap._ammunitionFileName,
+                TargetId = target.GetInstanceID(),
+            };
+
+        /// <summary>
+        /// Resolve a (unit, ammo id, target) triple to the ammo's parameters and its cache key.
+        /// False when any part is missing, in which case the caller has nothing to estimate.
+        /// </summary>
+        private static bool TryKey(ObjectBase unit, string ammoId, ObjectBase target,
+                                   out AmmunitionParameters ap, out TofKey key)
+        {
+            ap = null; key = default;
+            if (unit == null || target == null) return false;
+            ap = unit.getAmmunitionByName(ammoId)?._ap;
+            if (ap == null) return false;
+            key = KeyFor(unit, ap, target);
+            return true;
         }
 
         private static readonly TtlCache<TofKey, float> _cache = new TtlCache<TofKey, float>(CacheTtlSeconds);
@@ -60,17 +103,7 @@ namespace AutoTOT
         /// </summary>
         internal static float EstimateForDisplay(ObjectBase unit, string ammoId, ObjectBase target)
         {
-            if (unit == null || target == null) return 0f;
-            Ammunition ammo = unit.getAmmunitionByName(ammoId);
-            AmmunitionParameters ap = ammo?._ap;
-            if (ap == null) return 0f;
-
-            TofKey key = new TofKey
-            {
-                UnitId = unit.GetInstanceID(),
-                AmmoFile = ap._ammunitionFileName,
-                TargetId = target.GetInstanceID(),
-            };
+            if (!TryKey(unit, ammoId, target, out _, out TofKey key)) return 0f;
             if (_displayCache.TryGet(key, out float cached)) return cached;
 
             float value = Estimate(unit, ammoId, target);
@@ -83,28 +116,17 @@ namespace AutoTOT
 
         internal static float Estimate(ObjectBase unit, string ammoId, ObjectBase target)
         {
-            if (unit == null || target == null) return 0f;
-
-            Ammunition ammo = unit.getAmmunitionByName(ammoId);
-            AmmunitionParameters ap = ammo?._ap;
-            if (ap == null) return 0f;
+            if (!TryKey(unit, ammoId, target, out AmmunitionParameters ap, out TofKey key)) return 0f;
 
             float kinematic = Kinematic(unit, ap, target);
             if (kinematic > MinValidSeconds) return kinematic;
 
-            TofKey key = new TofKey
-            {
-                UnitId = unit.GetInstanceID(),
-                AmmoFile = ap._ammunitionFileName,
-                TargetId = target.GetInstanceID(),
-            };
-            if (_fallbackCache.TryGet(key, out float cachedFallback))
-            {
-                _lastCallWasHit = true;
-                return cachedFallback;
-            }
+            // The kinematic tier ran and declined, so this call paid for a full integration whatever
+            // the straight-line cache does next. Leave _lastCallWasHit false (Kinematic set it on
+            // its way through): raising it here charged that integration to the profiler's cache-hit
+            // bucket, which is the accounting error CoordinatorProfiler.CountCachedHit documents.
+            if (_fallbackCache.TryGet(key, out float cachedFallback)) return cachedFallback;
 
-            _lastCallWasHit = false;
             float speedMs = ap._maxVelocityInKnots * GameUnits.KnotsToMs;
             if (speedMs <= MinSpeedMs) return 0f;
             float fallback = GameUnits.MetersBetween(unit, target) / speedMs;
@@ -114,16 +136,11 @@ namespace AutoTOT
 
         internal static float Kinematic(ObjectBase unit, AmmunitionParameters ap, ObjectBase target)
         {
-            TofKey key = new TofKey
-            {
-                UnitId = unit.GetInstanceID(),
-                AmmoFile = ap._ammunitionFileName,
-                TargetId = target.GetInstanceID(),
-            };
-            if (_cache.TryGet(key, out float hit))
+            TofKey key = KeyFor(unit, ap, target);
+            if (_cache.TryGet(key, out float cached))
             {
                 _lastCallWasHit = true;
-                return hit;
+                return cached;
             }
 
             _lastCallWasHit = false;
@@ -212,14 +229,14 @@ namespace AutoTOT
             return cum;
         }
 
-        private struct SpeedProfile { public float[] Times; public float[] Speeds; public Vector3[] Positions; }
+        private struct SpeedProfile { public float[] Times; public float[] Speeds; }
         private static readonly TtlCache<TofKey, SpeedProfile> _profileCache =
             new TtlCache<TofKey, SpeedProfile>(CacheTtlSeconds);
 
         private static SpeedProfile GetSpeedProfile(ObjectBase unit, AmmunitionParameters ap, ObjectBase target)
         {
-            TofKey key = new TofKey { UnitId = unit.GetInstanceID(), AmmoFile = ap._ammunitionFileName, TargetId = target.GetInstanceID() };
-            if (_profileCache.TryGet(key, out SpeedProfile hit)) return hit;
+            TofKey key = KeyFor(unit, ap, target);
+            if (_profileCache.TryGet(key, out SpeedProfile cached)) return cached;
 
             SpeedProfile prof = ComputeSpeedProfile(unit, ap, target);
             _profileCache.Set(key, prof);
@@ -253,16 +270,17 @@ namespace AutoTOT
                     };
                 _simulateShotMethod.Invoke(null, args);
                 if (speeds.Count < 2 || times.Count != speeds.Count) return default;
+                // `traj` is filled only because the game's sim signature requires the list; nothing
+                // here reads the trajectory back, so it is not copied out.
                 return new SpeedProfile
                 {
                     Times = times.ToArray(),
                     Speeds = speeds.ToArray(),
-                    Positions = traj.Count == speeds.Count ? traj.ToArray() : null,
                 };
             }
             catch (Exception e)
             {
-                if (Coordinator.VerboseLog) Bootstrap.Log.LogWarning($"[AutoTOT] speed-profile sim failed: {e.GetType().Name}: {e.Message}");
+                ModLog.VerboseWarn("speed-profile sim failed", e);
                 return default;
             }
         }
@@ -284,17 +302,17 @@ namespace AutoTOT
 
             if (WaypointSim.Ready && WaypointSim.FullReady)
             {
-                float wp = WaypointSim.EndTime(unit, ap, target);
-                if (wp > MinValidSeconds)
+                float waypointEst = WaypointSim.EndTime(unit, ap, target);
+                if (waypointEst > MinValidSeconds)
                 {
                     ModelStats.TierUsed(ModelStats.Tier.Waypoint);
-                    return wp;
+                    return waypointEst;
                 }
             }
-            float mrp = MaxRangePreciseEndTime(unit, ap, target);
-            ModelStats.TierUsed(mrp > MinValidSeconds ? ModelStats.Tier.MaxRangePrecise
-                                                      : ModelStats.Tier.Failed);
-            return mrp;
+            float maxRangeEst = MaxRangePreciseEndTime(unit, ap, target);
+            ModelStats.TierUsed(maxRangeEst > MinValidSeconds ? ModelStats.Tier.MaxRangePrecise
+                                                              : ModelStats.Tier.Failed);
+            return maxRangeEst;
         }
 
         internal static float MaxRangePreciseEndTime(ObjectBase unit, AmmunitionParameters ap, ObjectBase target)
@@ -319,7 +337,7 @@ namespace AutoTOT
             }
             catch (Exception e)
             {
-                if (Coordinator.VerboseLog) Bootstrap.Log.LogWarning($"[AutoTOT] kinematic flight-time failed: {e.GetType().Name}: {e.Message}");
+                ModLog.VerboseWarn("kinematic flight-time failed", e);
                 return -1f;
             }
         }

@@ -11,7 +11,7 @@ namespace AutoTOT
     /// each call in `if (ProfilingEnabled) { time it } else { call it }`, which meant every measured
     /// call appeared twice and could drift between the two copies.
     /// </summary>
-    internal static class Profiler
+    internal static class CoordinatorProfiler
     {
         /// <summary>Timed sections. Nesting is fine: Tick wraps the four stage entries.</summary>
         internal enum Stage
@@ -41,7 +41,12 @@ namespace AutoTOT
         private static readonly long[] _startTicks = new long[StageCount];
         private static readonly double[] _accMs = new double[StageCount];
         private static readonly int[] _counts = new int[CounterCount];
-        private static readonly double MsPerTick = 1000.0 / Stopwatch.Frequency;
+        /// <summary>
+        /// Milliseconds per Stopwatch tick. Shared with <see cref="ModelStats"/>, which times the
+        /// estimator on the same clock: two copies of this would silently disagree if one were ever
+        /// converted differently.
+        /// </summary>
+        internal static readonly double MsPerTick = 1000.0 / Stopwatch.Frequency;
 
         private static int _frameCount;
         private static float _accScanLoopMs, _accFinalizeMs, _accCleanupMs;
@@ -87,10 +92,6 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// Attribute the flight estimate just timed by <see cref="Stage.FlightEstimate"/> to the
-        /// cache hit or miss bucket. Call directly after the matching End.
-        /// </summary>
-        /// <summary>
         /// Record a cache hit that was NOT wrapped in a Begin/End pair, because it was served from
         /// the cache without running the estimator at all.
         ///
@@ -106,6 +107,10 @@ namespace AutoTOT
             _counts[(int)Counter.FlightHits]++;
         }
 
+        /// <summary>
+        /// Attribute the flight estimate just timed by <see cref="Stage.FlightEstimate"/> to the
+        /// cache hit or miss bucket. Call directly after the matching End.
+        /// </summary>
         internal static void CountEstimate(bool cacheHit)
         {
             if (!Enabled) return;
@@ -156,7 +161,7 @@ namespace AutoTOT
 
         private static void Report()
         {
-            float inv = 1f / _frameCount;
+            float perFrame = 1f / _frameCount;
             long totalHits = FlightTime.TofHits + FlightTime.ProfileHits + LauncherFactsSource.CacheHits;
             long totalMisses = FlightTime.TofMisses + FlightTime.ProfileMisses + LauncherFactsSource.CacheMisses;
             long total = totalHits + totalMisses;
@@ -175,21 +180,21 @@ namespace AutoTOT
             // bursts (a few flight estimates across thousands of frames), so a per-frame average of a
             // one-off 0.5ms call is 0.008ms and rounds to nothing. The total is what says whether a
             // stage cost anything at all; the tick line already answers the per-frame question.
-            double frameAvg = _accFrameMs * inv;
+            double frameAvg = _accFrameMs * perFrame;
             // Tick PLUS the UI stage. UiEstimate runs in OnGUI, outside the tick by construction, so
             // a share computed from the tick alone understates the mod's real cost (it read 9.3%
             // where the honest figure was 26.8%).
-            double autoTotMs = (Ms(Stage.Tick) + Ms(Stage.UiEstimate)) * inv;
+            double autoTotMs = (Ms(Stage.Tick) + Ms(Stage.UiEstimate)) * perFrame;
             double share = frameAvg > 0.001 ? 100.0 * autoTotMs / frameAvg : 0d;
             double staleAvg = _releaseCount > 0 ? _accReleaseStaleness / _releaseCount : 0d;
 
             Bootstrap.Log.LogInfo(
-                $"[AutoTOT Profiling] {_frameCount} frames: tick {Ms(Stage.Tick):F1}ms total, {Ms(Stage.Tick) * inv:F3}ms avg, WORST {_maxTickMs:F2}ms (release {_maxTickReleaseMs:F2}ms)\n" +
+                $"[AutoTOT Profiling] {_frameCount} frames: tick {Ms(Stage.Tick):F1}ms total, {Ms(Stage.Tick) * perFrame:F3}ms avg, WORST {_maxTickMs:F2}ms (release {_maxTickReleaseMs:F2}ms)\n" +
                 $"  frame {frameAvg:F2}ms avg ({1000.0 / (frameAvg > 0.001 ? frameAvg : 1):F0} fps), worst {_maxFrameMs:F2}ms => AutoTOT {autoTotMs:F2}ms/frame = {share:F1}% (tick + UI)\n" +
                 $"  release staleness: {_releaseCount} released, estimate age {staleAvg:F2}s avg, {_maxReleaseStaleness:F2}s worst (sim seconds)\n" +
                 $"  Diag {Ms(Stage.Diag):F1}ms: scan {_accScanLoopMs:F1} | finalize {_accFinalizeMs:F1} | cleanup {_accCleanupMs:F1} (weapons {LaunchDiagnostics.LastWeaponCount}, tracked {LaunchDiagnostics.LastTrackedMissiles}, uncredited {LaunchDiagnostics.UncreditedLaunches})\n" +
-                $"  Commit {Ms(Stage.Commit):F1}ms | Anchor {Ms(Stage.Anchor):F1}ms (PredictAnchorImpact {Ms(Stage.AnchorPredict):F1}ms) | Release {Ms(Stage.Release):F1}ms (avg sched {_accScheduled * inv:F1})\n" +
-                $"    -> FlightTime.Estimate: {Ms(Stage.FlightEstimate):F1}ms over {N(Counter.FlightCalls)} calls ({N(Counter.FlightCalls) * inv:F2}/frame)\n" +
+                $"  Commit {Ms(Stage.Commit):F1}ms | Anchor {Ms(Stage.Anchor):F1}ms (PredictAnchorImpact {Ms(Stage.AnchorPredict):F1}ms) | Release {Ms(Stage.Release):F1}ms (avg sched {_accScheduled * perFrame:F1})\n" +
+                $"    -> FlightTime.Estimate: {Ms(Stage.FlightEstimate):F1}ms over {N(Counter.FlightCalls)} calls ({N(Counter.FlightCalls) * perFrame:F2}/frame)\n" +
                 $"       hits: {N(Counter.FlightHits)} calls, {_accFlightHitMs:F1}ms total @ {avgHitMs:F3}ms avg\n" +
                 $"       misses: {N(Counter.FlightMisses)} calls, {_accFlightMissMs:F1}ms total @ {avgMissMs:F3}ms avg\n" +
                 $"       unaccounted: {unaccountedMs:F1}ms\n" +

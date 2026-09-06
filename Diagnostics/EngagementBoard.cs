@@ -26,12 +26,13 @@ namespace AutoTOT
             public float ImpactSpread;      // ± arrival spread (s); independent salvos only, 0 for grouped
             public int Waves = 1;           // reload-separated waves
             public float WaveGap;           // sim seconds between successive wave impacts
+            public int StrikeId;            // rows sharing an id were scheduled as ONE strike; 0 = none
         }
 
         private static readonly Dictionary<ObjectBase, Engagement> _byTarget =
             new Dictionary<ObjectBase, Engagement>();
 
-        // ---- Snapshot scratch (reused every CollectSalvos call to avoid per-frame allocation) ----
+        // Snapshot scratch (reused every CollectSalvos call to avoid per-frame allocation)
         private static readonly Dictionary<ObjectBase, SalvoLine> _salvoMap =
             new Dictionary<ObjectBase, SalvoLine>();
         private static readonly List<ObjectBase> _pruneScratch = new List<ObjectBase>();
@@ -50,11 +51,12 @@ namespace AutoTOT
             public float WaveGap;        // sim seconds between successive wave impacts
             public int AnchorLaunched;   // observation anchoring: launches observed so far
             public int AnchorTotal;      // >0 while a batch anchor's ripple is being tracked
+            public int StrikeId;         // rows sharing an id land on one coordinated impact; 0 = none
         }
 
         private static void CountInFlightAt(WeaponBase w, ObjectBase t)
         {
-            // In-flight rounds count only for targets we actually coordinated (fired) — otherwise
+            // In-flight rounds count only for targets we actually coordinated (fired) ; otherwise
             // any friendly missile at that contact would inflate the overview.
             if (!HasFired(t)) return;
             _salvoMap.TryGetValue(t, out SalvoLine ln);
@@ -74,13 +76,15 @@ namespace AutoTOT
         }
 
         /// <summary>Called when a batch is scheduled: sets the shared impact + arrival-shape figures.</summary>
-        internal static void RecordScheduled(ObjectBase target, float impactSim, float impactSpread, int waves, float waveGap)
+        internal static void RecordScheduled(ObjectBase target, float impactSim, float impactSpread,
+                                             int waves, float waveGap, int strikeId)
         {
             Engagement e = GetOrCreate(target);
             e.ImpactSim = impactSim;
             e.ImpactSpread = impactSpread;
             e.Waves = waves;
             e.WaveGap = waveGap;
+            e.StrikeId = strikeId;
         }
 
         /// <summary>Called by observation anchoring while the anchor ripple rewrites the shared impact.</summary>
@@ -94,7 +98,7 @@ namespace AutoTOT
         internal static bool HasFired(ObjectBase target)
             => _byTarget.TryGetValue(target, out Engagement e) && e.FiredAtSim >= 0f;
 
-        /// <summary>True if AutoTOT is coordinating this target (a row exists) — i.e. a missile at
+        /// <summary>True if AutoTOT is coordinating this target (a row exists) ; i.e. a missile at
         /// it is one we fired, not an auto-fired defensive SAM. Scopes verbose per-missile
         /// diagnostics to our own shots.</summary>
         internal static bool IsCoordinated(ObjectBase target)
@@ -169,6 +173,7 @@ namespace AutoTOT
                     ln.ImpactSpread = e.ImpactSpread;
                     ln.Waves = e.Waves;
                     ln.WaveGap = e.WaveGap;
+                    ln.StrikeId = e.StrikeId;
                 }
                 else
                 {
@@ -176,19 +181,24 @@ namespace AutoTOT
                     ln.ImpactSpread = 0f;
                     ln.Waves = 1;
                     ln.WaveGap = 0f;
+                    ln.StrikeId = 0;
                 }
                 outList.Add(ln);
             }
 
             // Prune fired targets that are idle and past their grace window (or gone). Never-fired
-            // rows stay — they belong to held orders and are dropped via Drop() or Clear().
+            // rows stay ; they belong to held orders and are dropped via Drop() or Clear().
             _pruneScratch.Clear();
             foreach (KeyValuePair<ObjectBase, Engagement> kv in _byTarget)
             {
                 ObjectBase t = kv.Key;
                 Engagement e = kv.Value;
                 if (e.FiredAtSim < 0f) continue;
-                bool active = _salvoMap.TryGetValue(t, out SalvoLine ln) && (ln.Queued > 0 || ln.InFlight > 0);
+                // "Active" has to include an order that has fired but whose rounds have not left
+                // the rail yet, or a slow launcher (a submarine climbing to launch depth) loses its
+                // row mid-ascent and the round that follows is treated as one we never fired.
+                bool active = (_salvoMap.TryGetValue(t, out SalvoLine ln) && (ln.Queued > 0 || ln.InFlight > 0))
+                              || LaunchDiagnostics.HasPendingLaunch(t);
                 bool inGrace = (now - e.FiredAtSim) < EngageGrace;
                 if (t == null || t.IsDestroyed || (!active && !inGrace))
                     _pruneScratch.Add(t);

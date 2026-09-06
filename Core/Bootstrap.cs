@@ -33,10 +33,11 @@ namespace AutoTOT
         internal static KeyCode ToggleModifier = KeyCode.LeftAlt;
         internal static KeyCode ToggleKey = KeyCode.T;   // arm/disarm auto mode
         internal static KeyCode PanelKey = KeyCode.G;    // open/close the planner
+        internal static KeyCode StrikeArmKey = KeyCode.H; // arm/disarm multi-target strike collection
         internal static float UiScale = 0f;              // 0 = auto (scale to screen height)
         internal static float UiScaleMultiplier = 1f;    // fine-tune on top of UiScale
 
-        // --- Config ---
+        // Config
         private static ConfigFile _config;
         private static ConfigEntry<bool> _cfgEnabled;
         private static ConfigEntry<bool> _cfgDefaultOn;
@@ -44,11 +45,13 @@ namespace AutoTOT
         private static ConfigEntry<KeyCode> _cfgToggleModifier;
         private static ConfigEntry<KeyCode> _cfgToggleKey;
         private static ConfigEntry<KeyCode> _cfgPanelKey;
+        private static ConfigEntry<KeyCode> _cfgStrikeArmKey;
         private static ConfigEntry<float> _cfgUiScale;
         private static ConfigEntry<float> _cfgUiScaleMultiplier;
         private static ConfigEntry<float> _cfgDebounce;
         private static ConfigEntry<float> _cfgMaxWindow;
         private static ConfigEntry<bool> _cfgVerbose;
+        private static ConfigEntry<bool> _cfgVerticalProfile;
         private static ConfigEntry<bool> _cfgProfiling;
         private static ConfigEntry<int> _cfgEstimatorThreads;
         private static ConfigEntry<bool> _cfgVerifySolve;
@@ -58,7 +61,7 @@ namespace AutoTOT
             bool? enabled = ModMenuEnabled();
             if (enabled == false)
             {
-                Log.LogInfo("AutoTOT is present but not enabled in the Mods menu — standing down.");
+                Log.LogInfo("AutoTOT is present but not enabled in the Mods menu ; standing down.");
                 return;
             }
             if (enabled == true)
@@ -115,7 +118,7 @@ namespace AutoTOT
         // which refreshes the UiScaleMultiplier field the HUD reads.
         internal static void SetUiScaleMultiplier(float v)
         {
-            v = Mathf.Clamp(v, 0.5f, 2.0f);
+            v = Mathf.Clamp(v, Hud.MinUiScaleMultiplier, Hud.MaxUiScaleMultiplier);
             if (_cfgUiScaleMultiplier != null) _cfgUiScaleMultiplier.Value = v;
             else UiScaleMultiplier = v;
         }
@@ -136,10 +139,10 @@ namespace AutoTOT
             Harmony = new Harmony(Guid);
 
             // A null target here means the game's InsertEngageTask signature changed
-            // (e.g. after a game update) — PatchAll would then fail. Log it either way.
+            // (e.g. after a game update) ; PatchAll would then fail. Log it either way.
             var patchTarget = AccessTools.Method(typeof(ObjectBase), nameof(ObjectBase.InsertEngageTask));
             if (patchTarget == null)
-                Log.LogError("[AutoTOT] patch target ObjectBase.InsertEngageTask NOT found — the game version may be incompatible; patching will likely fail.");
+                Log.LogError("[AutoTOT] patch target ObjectBase.InsertEngageTask NOT found ; the game version may be incompatible; patching will likely fail.");
             else
                 Log.LogInfo($"[AutoTOT] patch target resolved: {patchTarget.DeclaringType?.FullName}.{patchTarget.Name}");
 
@@ -149,13 +152,13 @@ namespace AutoTOT
             }
             catch (Exception e)
             {
-                Log.LogError($"[AutoTOT] Harmony PatchAll failed — mod will not function:\n{e}");
+                Log.LogError($"[AutoTOT] Harmony PatchAll failed ; mod will not function:\n{e}");
                 throw;
             }
 
             // Shield the DOTS assembly scan (multiplayer mission-load crash). Done explicitly
             // rather than via PatchAll: the exact target differs between Entities versions and
-            // Unity.Entities.dll may not be loaded yet at this point — Install handles both.
+            // Unity.Entities.dll may not be loaded yet at this point ; Install handles both.
             DotsScanHardening.Install(Harmony);
 
             // Diagnostic for the multiplayer mission-load crash: DOTS re-init
@@ -176,7 +179,7 @@ namespace AutoTOT
 
         // One-shot sweep mirroring what Unity's DOTS TypeManager does during multiplayer
         // world re-init: call GetName() on every loaded assembly and report the ones that
-        // throw (the "Parameter name: name" / invalid-culture case). Purely diagnostic —
+        // throw (the "Parameter name: name" / invalid-culture case). Purely diagnostic ;
         // never throws itself.
         private static void LogAssembliesThatFailGetName()
         {
@@ -195,7 +198,7 @@ namespace AutoTOT
                         bad++;
                         Log.LogWarning(
                             $"[AutoTOT] Assembly with unreadable name ({DotsScanHardening.SafeIdentify(asm)}) " +
-                            $"— this is the kind that crashes the DOTS multiplayer world re-init. " +
+                            $"this is the kind that crashes the DOTS multiplayer world re-init. " +
                             $"{ge.GetType().Name}: {ge.Message}");
                     }
                 }
@@ -227,24 +230,34 @@ namespace AutoTOT
                 "Key (with ToggleModifier) that toggles the auto-coordinate-normal-orders mode.");
             _cfgPanelKey = _config.Bind("Interface", "OpenPanelKey", KeyCode.G,
                 "Key (with ToggleModifier) that opens/closes the Time-on-Target planner panel.");
+            _cfgStrikeArmKey = _config.Bind("Interface", "StrikeArmKey", KeyCode.H,
+                "Key (with ToggleModifier) that arms or disarms multi-target strike collection. " +
+                "While armed, every missile order you issue is held, whatever its target, until you " +
+                "fire the strike from the planner panel; all of it then lands at the same moment.");
             _cfgUiScale = _config.Bind("Interface", "UIScale", 0f,
                 new ConfigDescription(
                     "Scale factor for the planner panel and its text. 0 = auto (scales with screen height, so 4K screens get a larger panel). Otherwise an explicit multiplier, e.g. 1.5 or 2.0.",
-                    new AcceptableValueRange<float>(0f, 4.0f)));
+                    new AcceptableValueRange<float>(0f, Hud.MaxUiScale)));
             _cfgUiScaleMultiplier = _config.Bind("Interface", "UIScaleMultiplier", 1.0f,
                 new ConfigDescription(
                     "Fine-tune multiplier applied on top of UIScale. 1.0 = no change; below 1.0 makes the panel smaller, above 1.0 larger. Lets you shrink the auto scale without giving up auto-adaptation to your resolution.",
-                    new AcceptableValueRange<float>(0.5f, 2.0f)));
-            _cfgDebounce = _config.Bind("Timing", "GroupWindowSeconds", 0.75f,
+                    new AcceptableValueRange<float>(Hud.MinUiScaleMultiplier, Hud.MaxUiScaleMultiplier)));
+            _cfgDebounce = _config.Bind("Timing", "GroupWindowSeconds", Coordinator.DefaultDebounceSeconds,
                 new ConfigDescription(
                     "After the last missile order at a target, wait this many real seconds (with no new orders) before locking in the coordinated launch. Larger = easier to group several manual orders from one ship; smaller = snappier single attacks.",
                     new AcceptableValueRange<float>(0.05f, 5.0f)));
-            _cfgMaxWindow = _config.Bind("Timing", "MaxCollectSeconds", 6.0f,
+            _cfgMaxWindow = _config.Bind("Timing", "MaxCollectSeconds", Coordinator.DefaultMaxWindowSeconds,
                 new ConfigDescription(
                     "Hard cap (real seconds) on how long one target keeps collecting orders before it must lock in.",
                     new AcceptableValueRange<float>(0.25f, 20.0f)));
             _cfgVerbose = _config.Bind("Debug", "VerboseLogging", false,
                 "Log every queued and released launch.");
+            _cfgVerticalProfile = _config.Bind("Debug", "VerticalProfile", false,
+                "Research tool, off by default. Logs a 1s trace of every submarine's depth change " +
+                "and every aircraft's altitude change, with the hull parameters each model is " +
+                "expressed in, so climb and dive behaviour can be characterised. Order a depth or " +
+                "altitude change with no engagement and one manoeuvre becomes one labelled block " +
+                "in the log. Verbose by design; leave it off for normal play.");
             _cfgProfiling = _config.Bind("Debug", "Profiling", false,
                 "Log per-frame timing every 60 frames to diagnose performance issues.");
             _cfgEstimatorThreads = _config.Bind("Performance", "EstimatorThreads", -1,
@@ -269,18 +282,15 @@ namespace AutoTOT
             Coordinator.Active = _cfgDefaultOn.Value; // runtime toggle's starting state
 
             ApplyConfig();
-            _cfgEnabled.SettingChanged += (_, __) => ApplyConfig();
-            _cfgShowIndicator.SettingChanged += (_, __) => ApplyConfig();
-            _cfgToggleModifier.SettingChanged += (_, __) => ApplyConfig();
-            _cfgToggleKey.SettingChanged += (_, __) => ApplyConfig();
-            _cfgPanelKey.SettingChanged += (_, __) => ApplyConfig();
-            _cfgUiScale.SettingChanged += (_, __) => ApplyConfig();
-            _cfgUiScaleMultiplier.SettingChanged += (_, __) => ApplyConfig();
-            _cfgDebounce.SettingChanged += (_, __) => ApplyConfig();
-            _cfgMaxWindow.SettingChanged += (_, __) => ApplyConfig();
-            _cfgVerbose.SettingChanged += (_, __) => ApplyConfig();
-            _cfgProfiling.SettingChanged += (_, __) => ApplyConfig();
-            _cfgVerifySolve.SettingChanged += (_, __) => ApplyConfig();
+
+            // One file-level subscription rather than twelve per-entry ones. ApplyConfig re-reads
+            // every setting it owns, so which entry changed does not matter.
+            //
+            // This also fires for the two entries ApplyConfig deliberately does NOT read, and that
+            // is safe precisely because it does not read them: AutoModeOnStart seeds
+            // Coordinator.Active once above and must not re-arm mid-mission, and EstimatorThreads is
+            // read once because restarting a running pool would strand queued work.
+            _config.SettingChanged += (_, __) => ApplyConfig();
         }
 
         // Forwards uncaught Unity exceptions to the BepInEx log. Only LogType.Exception
@@ -300,12 +310,14 @@ namespace AutoTOT
             Coordinator.DebounceSeconds = _cfgDebounce.Value;
             Coordinator.MaxWindowSeconds = _cfgMaxWindow.Value;
             Coordinator.VerboseLog = _cfgVerbose.Value;
+            VerticalProfiler.Enabled = _cfgVerticalProfile.Value;
             Coordinator.ProfilingEnabled = _cfgProfiling.Value;
             FlightTime.VerifySolve = _cfgVerifySolve.Value;
             ShowIndicator = _cfgShowIndicator.Value;
             ToggleModifier = _cfgToggleModifier.Value;
             ToggleKey = _cfgToggleKey.Value;
             PanelKey = _cfgPanelKey.Value;
+            StrikeArmKey = _cfgStrikeArmKey.Value;
             UiScale = _cfgUiScale.Value;
             UiScaleMultiplier = _cfgUiScaleMultiplier.Value;
         }
@@ -328,7 +340,7 @@ namespace AutoTOT
 
                 if (enabled == false)
                 {
-                    Log.LogInfo("AutoTOT not enabled in the Mods menu — standing down.");
+                    Log.LogInfo("AutoTOT not enabled in the Mods menu ; standing down.");
                 }
                 else
                 {
@@ -344,7 +356,7 @@ namespace AutoTOT
         private sealed class Pump : MonoBehaviour
         {
             // A menu-open/pause briefly nulls _mainGameViewModel while the SAME mission keeps running.
-            // We must NOT Reset() on that transient — it wipes EngagementBoard + the flight tracker,
+            // We must NOT Reset() on that transient ; it wipes EngagementBoard + the flight tracker,
             // discarding still-in-flight missiles. Only reset once the mission has been absent for a
             // short debounce (a real exit stays absent; a menu/pause recovers next frame).
             private const float ExitDebounceSeconds = 0.5f;
@@ -361,7 +373,7 @@ namespace AutoTOT
 
                 if (inMission)
                 {
-                    _resetPending = false;   // mission (re)appeared — cancel any pending exit reset
+                    _resetPending = false;   // mission (re)appeared ; cancel any pending exit reset
                 }
                 else
                 {
@@ -374,6 +386,7 @@ namespace AutoTOT
                     if (_resetPending && (Time.unscaledTime - _absentSince) >= ExitDebounceSeconds)
                     {
                         Coordinator.Reset();
+                        VerticalProfiler.Reset();   // run numbering restarts with the mission
                         _resetPending = false;
                     }
                 }
@@ -384,6 +397,7 @@ namespace AutoTOT
                 try
                 {
                     Coordinator.Tick();
+                    VerticalProfiler.Tick(GameClock.SimNow());
                 }
                 catch (Exception e)
                 {

@@ -99,3 +99,6 @@ per-missile tuning.
 | `LookaheadMultiplier`, `MinLookaheadU` | 20 steps, 50 u | lookahead for proportional hold and node following |
 | `EvasiveBoostFraction` | 0.8 | evasive-target speed boost, mirroring the game's own estimator |
 | `MaxFlightTimeFallback` | 600 s | horizon when `_maxFlightTime` is unset |
+| `GravityKnPerMs` | 9.8 × 1.94384 | g in knots/s, for converting an `.ini` deceleration in g. Shared with the waypoint tier |
+| `MaxLaunchElevationDeg` | 90° | clamp on the elevation read off a launcher transform |
+| `SetAngleEpsilonDeg` | 0.01° | threshold for treating an `.ini` angle as set rather than left at its 0 default |

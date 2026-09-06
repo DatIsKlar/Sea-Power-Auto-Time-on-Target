@@ -161,7 +161,6 @@ namespace AutoTOT
         {
             const float KU = GameUnits.KnotsToUnityPerSecond;
             const float dt = IntegrationStepSim;
-            const float ZeroDensityAltU = 1f / 0.00163f;
             object[] thrustArgs = new object[4];
             object[] dragArgs = new object[10];
 

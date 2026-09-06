@@ -9,23 +9,8 @@ namespace AutoTOT
 {
     /// <summary>
     /// Runs the integration loop on worker threads so a burst of refreshes does not land on the
-    /// frame that asks for them.
-    ///
-    /// Why asynchronous rather than a parallel-for joined inside the tick: the game already runs
-    /// Unity IJobParallelFor batches and blocks on Complete(), so it occupies roughly (cores - 1)
-    /// job workers during the tick. A parallel-for draws from the .NET thread pool and would compete
-    /// with those for the same physical cores, and its speedup is bounded by SPARE cores, which is
-    /// exactly what a weak machine lacks. Queueing decouples from core count instead: a slow machine
-    /// gets its answers a few frames later rather than blocking the frame.
-    ///
-    /// The freshness cost is small against what the release path already tolerates. Measured release
-    /// staleness is 0.09 s average; a few frames is 50 to 150 ms.
-    ///
-    /// Ordering rules that keep this a single estimator:
-    ///  - Setup runs on the main thread (it reads transforms), workers only run the pure loop.
-    ///  - Only the main thread writes the cache, during Drain. Workers touch no shared mod state.
-    ///  - Solve is deterministic over its input, so an async value equals the synchronous one bit
-    ///    for bit. This changes WHEN a value is computed, never WHAT.
+    /// frame that asks for them. Setup on main thread, workers run the pure loop, only main thread
+    /// writes the cache. Solve is deterministic over its input. See docs/ARCHITECTURE.md "Async solver design".
     /// </summary>
     internal static partial class FlightTime
     {
@@ -48,7 +33,6 @@ namespace AutoTOT
         private static readonly HashSet<TofKey> _inFlight = new HashSet<TofKey>();
         private static readonly SemaphoreSlim _signal = new SemaphoreSlim(0);
         private static Thread[] _workers;
-        private static volatile bool _shutdown;
 
         /// <summary>
         /// Verification mode: solve every queued request a SECOND time on the main thread and compare.
@@ -86,7 +70,6 @@ namespace AutoTOT
                     "(EstimatorThreads = 0)");
                 return;
             }
-            _shutdown = false;
             WorkerCount = count;
             _workers = new Thread[count];
             for (int i = 0; i < count; i++)
@@ -109,23 +92,16 @@ namespace AutoTOT
                 $"({SystemInfo.processorCount} logical cores)");
         }
 
-        internal static void StopWorkers()
-        {
-            if (_workers == null) return;
-            _shutdown = true;
-            _signal.Release(_workers.Length);
-            _workers = null;
-            WorkerCount = 0;
-        }
-
+        // Runs until the process exits. The threads are IsBackground, so that is the only shutdown
+        // there has ever been: nothing calls for a pool stop, and stopping one mid-mission would
+        // strand queued work (see the note on EstimatorThreads in Bootstrap.LoadConfig).
         private static void WorkerLoop()
         {
-            while (!_shutdown)
+            while (true)
             {
                 try
                 {
                     _signal.Wait();
-                    if (_shutdown) return;
                     while (_pending.TryDequeue(out SolveRequest r))
                     {
                         IntegratedPhases ph = default;
@@ -134,13 +110,13 @@ namespace AutoTOT
                         ModelStats.LoopStarting();
                         r.Result = Solve(in r.Input, r.Ap, ref ph);
                         _done.Enqueue(r);
-                        if (_shutdown) return;
                     }
                 }
                 catch (Exception e)
                 {
                     // A worker must never die: the queue would fill and every refresh would stall.
-                    Bootstrap.Log.LogWarning($"[AutoTOT] solve worker: {e.GetType().Name}: {e.Message}");
+                    // The one log call in the mod that runs off the main thread; see ModLog's note.
+                    ModLog.Warn("solve worker", e);
                 }
             }
         }
@@ -152,18 +128,8 @@ namespace AutoTOT
         /// </summary>
         internal static bool RequestRefresh(ObjectBase unit, string ammoId, ObjectBase target)
         {
-            if (_workers == null || unit == null || target == null) return false;
-
-            Ammunition ammo = unit.getAmmunitionByName(ammoId);
-            AmmunitionParameters ap = ammo?._ap;
-            if (ap == null) return false;
-
-            TofKey key = new TofKey
-            {
-                UnitId = unit.GetInstanceID(),
-                AmmoFile = ap._ammunitionFileName,
-                TargetId = target.GetInstanceID(),
-            };
+            if (_workers == null) return false;
+            if (!TryKey(unit, ammoId, target, out AmmunitionParameters ap, out TofKey key)) return false;
             if (_inFlight.Contains(key)) return true;   // already queued; not a failure
 
             if (!TryBuildSolveInput(unit, ap, target, out SolveInput input, out _, emitDiag: false))
@@ -253,16 +219,7 @@ namespace AutoTOT
         internal static bool TryCached(ObjectBase unit, string ammoId, ObjectBase target, out float value)
         {
             value = 0f;
-            if (unit == null || target == null) return false;
-            Ammunition ammo = unit.getAmmunitionByName(ammoId);
-            AmmunitionParameters ap = ammo?._ap;
-            if (ap == null) return false;
-            TofKey key = new TofKey
-            {
-                UnitId = unit.GetInstanceID(),
-                AmmoFile = ap._ammunitionFileName,
-                TargetId = target.GetInstanceID(),
-            };
+            if (!TryKey(unit, ammoId, target, out _, out TofKey key)) return false;
             return _cache.TryGet(key, out value);
         }
     }

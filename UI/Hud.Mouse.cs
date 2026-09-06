@@ -4,7 +4,7 @@ using UnityEngine;
 namespace AutoTOT
 {
     /// <summary>
-    /// Hud (partial) — pointer handling: window resize and the game's mouse-over-UI capture,
+    /// Hud (partial) ; pointer handling: window resize and the game's mouse-over-UI capture,
     /// so clicks/drags on the panel never leak into the camera or world selection.
     /// </summary>
     internal sealed partial class Hud
@@ -15,7 +15,7 @@ namespace AutoTOT
 
         // Frame-based resize: driven by raw Input every frame (not IMGUI drag events, which stop
         // being delivered to the window the moment a fast cursor outruns its rect). Grab the grip
-        // on mouse-down, then track the global cursor until release — smooth at any speed.
+        // on mouse-down, then track the global cursor until release ; smooth at any speed.
         private void HandleResizeInput()
         {
             if (!_open) { _resizing = false; return; }
@@ -71,7 +71,7 @@ namespace AutoTOT
                 if (!_lastOverUi || anyDown)
                 {
                     // Hover-enter, or any mouse press while over: full setter (also fixes
-                    // NoesisView.EnableMouse). Rare — once per enter / per click.
+                    // NoesisView.EnableMouse). Rare ; once per enter / per click.
                     SetOverUi(true);
                 }
                 else if (anyHeld || _resizing)
@@ -115,9 +115,10 @@ namespace AutoTOT
             _lastOverUi = over;
             if (!Singleton<MouseControlState>.InstanceExists()) return;
             // InstanceExists can still report true while the singleton's internals are half torn
-            // down on mission end, so the game call itself can NRE — swallow it defensively.
+            // down on mission end, so the game call itself can NRE ; swallow it defensively.
             try { Singleton<MouseControlState>.Instance.setMouseIsOverUIWindow(over); }
-            catch { /* game state mid-teardown; nothing we can do, and nothing to leak */ }
+            // game state mid-teardown; nothing we can do, and nothing to leak
+            catch { }
         }
     }
 }

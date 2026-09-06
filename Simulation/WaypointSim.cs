@@ -10,10 +10,18 @@ namespace AutoTOT
     /// <summary>
     /// Ported waypoint-sim fallback (middle tier). Reconstructs the game's waypoint flight-plan
     /// via reflection and flies it with PN guidance + drag. See docs/plans/done/2026-09-02-waypoint-sim-port.md.
+    ///
+    /// BETA ONLY, by design. <see cref="EnsureLookup"/> is called from the beta branch of
+    /// <c>FlightTime.EnsureSimLookup</c> and nowhere else, so on the public branch this type is
+    /// never initialized, <see cref="Ready"/> stays false and <see cref="EndTime"/> no-ops. The
+    /// tier it serves is beta shots the grounded integrator declines.
     /// </summary>
     internal static class WaypointSim
     {
         private const float KU = GameUnits.KnotsToUnityPerSecond; // knots -> Unity units/s
+        // Pinned copies of Mathf.Rad2Deg and Mathf.PI/2, deliberately NOT replaced by the Unity
+        // constants: these differ from Unity's in the last digit, and both are read inside the step
+        // loop below, so swapping them could move a result. They are decompile-faithful values.
         private const float Rad2DegF = 57.29578f;
 
         private const float SimTimestep = 0.5f;
@@ -24,6 +32,22 @@ namespace AutoTOT
         private const float LoftHighSpeedMargin = 200f;
         private const float MinCloseApproachTime = 0.2f;
         private const float LoftCheckMinSimTime = 1f;
+
+        // Start re-estimating the intercept once the shot is this far into its first estimate
+        // (public Missile.cs:2446). Before that the seed from the analytical solver is the better
+        // number.
+        private const float InterceptReestimateFraction = 6f;
+
+        // Speed margin the game applies to the quadratic's a-term (public Missile.cs:2455). Shares
+        // its value with FlightTime.EvasiveBoostFraction by coincidence, not by meaning: that one
+        // scales a TARGET's speed, this one derates the MISSILE's. Kept separate so a change to
+        // either cannot travel to the other.
+        private const float InterceptSpeedMarginFactor = 0.8f;
+
+        // Cadence of the verbose wp-track line. Not TelemetryCadence: that one exists so the
+        // integrator's sim-track and the live track can be read against each other, and this trace
+        // is a third thing, sampled coarsely because a fallback-tier shot is not the subject.
+        private const float WpTrackLogIntervalSim = 15f;
 
         private static bool _lookedUp;
         internal static bool Ready { get; private set; }
@@ -48,21 +72,21 @@ namespace AutoTOT
         private static ConstructorInfo _ctorDistWp;      // DistanceToTargetWaypoint(float, bool)
         private static ConstructorInfo _ctorWaypoint;    // Waypoint(IWaypoint, Settings, Context)
 
-        // Fields — WaypointCreationContext.
+        // Fields ; WaypointCreationContext.
         private static FieldInfo _fCtxAp, _fCtxIsAir, _fCtxTerrain, _fCtxGroupLeader,
             _fCtxStartAngle, _fCtxPopUpDisabled, _fCtxLaunchAlt, _fCtxLoftOverride;
-        // Fields — WaypointConfig.
+        // Fields ; WaypointConfig.
         private static FieldInfo _fCfgDist, _fCfgSettings;
-        // Fields — Waypoint.
+        // Fields ; Waypoint.
         private static FieldInfo _fWpStatus, _fWpSettings;
-        // Fields — Status.
+        // Fields ; Status.
         private static FieldInfo _fStDesiredPos, _fStDone;
-        // Fields — Settings.
-        private static FieldInfo _fSetTargetSpeed, _fSetLoftHeight, _fSetPitchMode;
-        // Fields — Context.
+        // Fields ; Settings.
+        private static FieldInfo _fSetTargetSpeed, _fSetLoftHeight;
+        // Fields ; Context.
         private static FieldInfo _fCoGeo, _fCoUnity, _fCoVel, _fCoFlatVel, _fCoStall, _fCoMotor;
 
-        // --- Phase 2/3 (full loop port). Resolved best-effort; a miss leaves FullReady false so
+        // Phase 2/3 (full loop port). Resolved best-effort; a miss leaves FullReady false so
         // EndTime no-ops (spike/Ready unaffected). Wired as the middle fallback tier in
         // FlightTime.KinematicRaw (integrator -> WaypointSim.EndTime -> legacy EstimateShot); the
         // grounded integrator stays primary. All on MissileSimulator except the two seed methods.
@@ -139,7 +163,6 @@ namespace AutoTOT
 
                 _fSetTargetSpeed = _tWpSettings.GetField("TargetSpeedKnots", PI);
                 _fSetLoftHeight = _tWpSettings.GetField("LoftHeight", PI);
-                _fSetPitchMode = _tWpSettings.GetField("PitchMode", PI);
 
                 _fCoGeo = _tWpContext.GetField("GeoPosition", PI);
                 _fCoUnity = _tWpContext.GetField("UnityPosition", PI);
@@ -156,14 +179,14 @@ namespace AutoTOT
                 Ready = true;
 
                 // Phase 2 full-loop handles (additive; independent of the spike surface above).
-                Type ms = gameAsm.GetType("SeaPower.MissileSimulator");
+                Type ms = gameAsm.GetType(FlightTime.MissileSimulatorType);
                 if (ms != null)
                 {
                     _mComputePN = ms.GetMethod("ComputePN", PS, null,
                         new[] { typeof(Vector3), typeof(Vector3), typeof(Vector3), typeof(float) }, null);
-                    _mThrust = ms.GetMethod("CalculateThrustOverTime", PS, null,
+                    _mThrust = ms.GetMethod(FlightTime.ThrustMethodName, PS, null,
                         new[] { typeof(AmmunitionParameters), typeof(bool), typeof(float), typeof(float) }, null);
-                    _mDrag = ms.GetMethod("CalculateDrag", PS, null, new[]
+                    _mDrag = ms.GetMethod(FlightTime.DragMethodName, PS, null, new[]
                     {
                         typeof(float), typeof(float), typeof(float), typeof(float), typeof(float),
                         typeof(bool), typeof(float), typeof(float), typeof(float), typeof(float)
@@ -196,7 +219,7 @@ namespace AutoTOT
         {
             Ready = false;
             if (Coordinator.VerboseLog)
-                Bootstrap.Log.LogWarning($"[AutoTOT] wp-init: FAILED at {stage} resolution — spike disabled");
+                Bootstrap.Log.LogWarning($"[AutoTOT] wp-init: FAILED at {stage} resolution ; spike disabled");
         }
 
         private static MethodInfo FindStaticByNameCount(Type t, string name, int paramCount)
@@ -207,7 +230,7 @@ namespace AutoTOT
             return null;
         }
 
-        // Waypoint(IWaypoint wp, Settings settings, Context context) — pick the 3-arg ctor whose
+        // Waypoint(IWaypoint wp, Settings settings, Context context) ; pick the 3-arg ctor whose
         // 2nd/3rd params are Settings/Context (the other 3-arg ctor takes an ObjectBase 2nd param).
         private static ConstructorInfo FindWaypointCtor()
         {
@@ -222,7 +245,7 @@ namespace AutoTOT
 
         // Reconstruct CreateSimulationWaypoints (public Missile.cs:2320-2351) via reflection.
         private static bool TryBuildWaypoints(AmmunitionParameters ap, Vector3 launchPos, Vector3 targetPos,
-            float startAngleDeg, bool isAir, out IList waypoints, out object lastWp)
+            float startAngleDeg, out IList waypoints, out object lastWp)
         {
             waypoints = null; lastWp = null;
 
@@ -275,12 +298,6 @@ namespace AutoTOT
                 _mUpdateContext.Invoke(waypoints[i], new[] { ctx });
         }
 
-        private static float Flat(Vector3 a, Vector3 b)
-        {
-            float dx = a.x - b.x, dz = a.z - b.z;
-            return Mathf.Sqrt(dx * dx + dz * dz);
-        }
-
         // active.WpStatus.DesiredPosition.ToUnity()  (full Vector3).
         private static Vector3 ReadDesiredUnity(object waypoint)
         {
@@ -322,19 +339,11 @@ namespace AutoTOT
                 bool isAirUnit = unit.IsAirUnit;
                 float startVelocityKnots = Mathf.Max(unit._velocityInKnots, 0f);
 
-                // Evasive-target boost (public 2375-2383).
-                float targetSpeedMag = targetVelocityVector.magnitude;
-                if (targetSpeedMag > 0f && ap.AssumeEvasiveTarget(target))
-                {
-                    Vector3 fleeVec = targetPosition - launchPosition; fleeVec.y = 0f;
-                    if (fleeVec.sqrMagnitude > 1e-8f)
-                    {
-                        targetVelocityVector += fleeVec.normalized * (targetSpeedMag * FlightTime.EvasiveBoostFraction);
-                        targetVelocityVector = targetVelocityVector.normalized * Mathf.Min(targetVelocityVector.magnitude, targetSpeedMag);
-                    }
-                }
+                // Evasive-target boost (public 2375-2383), shared with the integrator's setup half.
+                FlightTime.ApplyEvasiveBoost(ap, target, launchPosition, targetPosition,
+                                             ref targetVelocityVector);
 
-                float flatDist = Flat(launchPosition, targetPosition);
+                float flatDist = GameMath.FlatDistance(launchPosition, targetPosition);
                 if (flatDist < MinFlatDist) return 0f;
                 float dragFactor = ap.GetDragFactor(isAirUnit);
                 float maxFlightTime = ap._maxFlightTime > 0f ? ap._maxFlightTime : FlightTime.MaxFlightTimeFallback;
@@ -352,7 +361,7 @@ namespace AutoTOT
                 // Build the game's waypoint plan (aim = lead position), startAngle = _maxLoftAngle.
                 float startAngleDeg = ap._maxLoftAngle;
                 Vector3 aim = targetPosition + targetVelocityVector * interceptTimeEst;
-                if (!TryBuildWaypoints(ap, launchPosition, aim, startAngleDeg, isAirUnit,
+                if (!TryBuildWaypoints(ap, launchPosition, aim, startAngleDeg,
                         out IList waypoints, out object lastWp))
                     return -1f;
 
@@ -363,12 +372,14 @@ namespace AutoTOT
                 float closestApproachDist = float.MaxValue;
                 float closestApproachTime = 0f;
                 float closingSpeed = 0f;
-                float decelPerStep = ap._deceleration * 9.8f * 1.94384f;
+                float decelPerStep = ap._deceleration * FlightTime.GravityKnPerMs;
                 Vector3 predTargetPos = targetPosition;
-                float flatDistToTarget = Flat(missilePos, predTargetPos);
+                float flatDistToTarget = GameMath.FlatDistance(missilePos, predTargetPos);
                 float altDelta = predTargetPos.y - missilePos.y;
-                float slantRange = Mathf.Sqrt(flatDistToTarget * flatDistToTarget + altDelta * altDelta);
+                float slantRange = GameMath.SlantFromFlat(flatDistToTarget, altDelta);
                 float navGain = ap._navigationGain;
+                // Mathf.PI / 180f rather than Mathf.Deg2Rad, for the same reason Rad2DegF above is
+                // pinned: this is the decompile's own expression and the two differ in the last bit.
                 float turnRateRad = ap._maxTurnRateDegrees * (Mathf.PI / 180f);
                 float launchRangeY = Mathf.Max(ap._launchRangesInUnity.y, 1f);
                 bool nonKin = ap.Kinematics == AmmunitionParameters.KinematicsLevel.None;
@@ -382,13 +393,13 @@ namespace AutoTOT
                     if (flatDistToTarget < closestApproachDist) { closestApproachDist = flatDistToTarget; closestApproachTime = simTime; }
 
                     // Re-estimate intercept time (public 2446-2476).
-                    if (simTime > interceptTimeEst / 6f)
+                    if (simTime > interceptTimeEst / InterceptReestimateFraction)
                     {
                         Vector3 targetOffset = predTargetPos - missilePos;
                         float estSpeedUnity = speedUnity;
                         if (simTime < ap.TotalBurnTime)
                             estSpeedUnity = Mathf.Max(estSpeedUnity, KU * (ap.TotalDeltaV / 2f + startVelocityKnots));
-                        float quadA = estSpeedUnity * estSpeedUnity * 0.8f - targetVelocityVector.sqrMagnitude;
+                        float quadA = estSpeedUnity * estSpeedUnity * InterceptSpeedMarginFactor - targetVelocityVector.sqrMagnitude;
                         float quadB = -2f * Vector3.Dot(targetOffset, targetVelocityVector);
                         float quadC = -targetOffset.sqrMagnitude;
                         float discriminant = quadB * quadB - 4f * quadA * quadC;
@@ -409,7 +420,7 @@ namespace AutoTOT
                     }
 
                     Vector3 leadPosition = targetPosition + targetVelocityVector * interceptTimeEst;
-                    float leadBlendFactor = Mathf.Clamp01(1f - Mathf.Pow(Flat(missilePos, leadPosition) / launchRangeY, 2f));
+                    float leadBlendFactor = Mathf.Clamp01(1f - Mathf.Pow(GameMath.FlatDistance(missilePos, leadPosition) / launchRangeY, 2f));
                     Vector3 wpInputPos = Vector3.Lerp(leadPosition, predTargetPos, 1f - leadBlendFactor);
                     Vector3 wpVelocity = direction * speedUnity;
                     bool motorBurning = simTime < boostEnd;
@@ -437,11 +448,11 @@ namespace AutoTOT
 
                     // Pitch toward the active waypoint's commanded position (public 2504-2507).
                     Vector3 waypointCmdPos = waypoints.Count > 0 ? ReadDesiredUnity(waypoints[0]) : leadPosition;
-                    float pitchRadCmd = Mathf.Clamp(Mathf.Atan2(waypointCmdPos.y - missilePos.y, Flat(waypointCmdPos, missilePos)), -HalfPi, HalfPi);
+                    float pitchRadCmd = Mathf.Clamp(Mathf.Atan2(waypointCmdPos.y - missilePos.y, GameMath.FlatDistance(waypointCmdPos, missilePos)), -HalfPi, HalfPi);
                     direction = new Vector3(horizHeading.x * Mathf.Cos(pitchRadCmd), Mathf.Sin(pitchRadCmd), horizHeading.z * Mathf.Cos(pitchRadCmd));
                     float pitchDegCmd = -pitchRadCmd * Rad2DegF;
 
-                    // Speed update — verbatim public branch (2508-2527).
+                    // Speed update ; verbatim public branch (2508-2527).
                     if (nonKin)
                     {
                         float tgtSpd = 0f;
@@ -468,7 +479,7 @@ namespace AutoTOT
                         { missilePos.y, speedUnity, SimTimestep, pitchDegCmd, dragFactor, motorBurning, predTargetPos.y, liftFactor, minVel, 0f });
                         velKnots = Mathf.Max(velKnots + thrust - drag, 0f);
                     }
-                    // Intercept detection (public 2532-2554) — return only the time.
+                    // Intercept detection (public 2532-2554) ; return only the time.
                     float speedUnityLoop = velKnots * KU;
                     if (slantRange > SqrEpsilon)
                     {
@@ -492,9 +503,9 @@ namespace AutoTOT
                             ? targetPosition + horizDisplacement / horizDispMag * Mathf.Sqrt(slantSq) + Vector3.up * negTargetAlt
                             : new Vector3(targetPosition.x, 0f, targetPosition.z);
                     }
-                    flatDistToTarget = Flat(missilePos, predTargetPos);
+                    flatDistToTarget = GameMath.FlatDistance(missilePos, predTargetPos);
                     altDelta = predTargetPos.y - missilePos.y;
-                    slantRange = Mathf.Sqrt(flatDistToTarget * flatDistToTarget + altDelta * altDelta);
+                    slantRange = GameMath.SlantFromFlat(flatDistToTarget, altDelta);
 
                     if (Coordinator.VerboseLog && emitDiag && simTime >= nextLog)
                     {
@@ -502,7 +513,7 @@ namespace AutoTOT
                             $"[AutoTOT] wp-track {ap._ammunitionFileName}#{unit.GetInstanceID()}: t+{simTime:0}s " +
                             $"spd {velKnots:0}kn alt {missilePos.y:0.0}u pitch {pitchDegCmd:0.0} cmdAlt {waypointCmdPos.y:0.0}u " +
                             $"flat {flatDistToTarget:0}u wps {waypoints.Count}");
-                        nextLog += 15f;
+                        nextLog += WpTrackLogIntervalSim;
                     }
 
                     // loftTooHigh escape + stall (public 2577-2604).
@@ -516,7 +527,7 @@ namespace AutoTOT
                         }
                         if (velKnots < minVel) break;
                     }
-                    if (nonKin && Flat(missilePos, launchPosition) > ap._launchRangesInUnity.y) break;
+                    if (nonKin && GameMath.FlatDistance(missilePos, launchPosition) > ap._launchRangesInUnity.y) break;
                 }
 
                 if (closestApproachTime < MinCloseApproachTime) return -1f;   // never closed
@@ -524,8 +535,7 @@ namespace AutoTOT
             }
             catch (Exception e)
             {
-                if (Coordinator.VerboseLog)
-                    Bootstrap.Log.LogWarning($"[AutoTOT] wp-track: EndTime exception {e.GetType().Name}: {e.Message}");
+                ModLog.VerboseWarn("wp-track: EndTime exception", e);
                 return -1f;
             }
         }

@@ -5,8 +5,8 @@ namespace AutoTOT
 {
     /// <summary>
     /// Small TTL cache clocked by <see cref="Time.unscaledTime"/> (real seconds, unaffected by
-    /// game pause / time compression). Used on per-frame UI paths — flight-time ETAs and launcher
-    /// facts — where recomputing every frame causes visible stutter. Positions and loadouts barely
+    /// game pause / time compression). Used on per-frame UI paths ; flight-time ETAs and launcher
+    /// facts ; where recomputing every frame causes visible stutter. Positions and loadouts barely
     /// move within the TTL window, so a short cache is lossless in practice.
     ///
     /// Eviction mirrors the original hand-rolled caches: when the entry count exceeds the
@@ -39,9 +39,9 @@ namespace AutoTOT
         /// <summary>Live (non-expired) value for the key, if any.</summary>
         public bool TryGet(TKey key, out TValue value)
         {
-            if (_map.TryGetValue(key, out Entry hit) && (Time.unscaledTime - hit.StampUnscaled) < _ttlSeconds)
+            if (_map.TryGetValue(key, out Entry entry) && (Time.unscaledTime - entry.StampUnscaled) < _ttlSeconds)
             {
-                value = hit.Value;
+                value = entry.Value;
                 _hits++;
                 return true;
             }

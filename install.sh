@@ -38,7 +38,23 @@ cp bin/Release/AutoTOT.dll dist/AutoTOT/AutoTOT.dll
 DEST="$GAME_DIR/Sea Power_Data/StreamingAssets/AutoTOT"
 echo ">> installing to: $DEST"
 mkdir -p "$DEST"
-cp dist/AutoTOT/_info.ini "$DEST/_info.ini"
-cp dist/AutoTOT/AutoTOT.dll "$DEST/AutoTOT.dll"
+
+# Install by atomic rename, never by writing the destination in place.
+#
+# A running game has the mod DLL memory-mapped. `cp` opens the destination with
+# O_TRUNC and rewrites it, so the live process's mapping starts returning garbage
+# metadata: Mono then reports nonsense type names and "Method has zero rva" from
+# whatever it JITs next, which looks exactly like a mod bug and is not one.
+# rename(2) swaps the directory entry instead and leaves the old inode alone, so a
+# running game keeps working on the old copy and picks the new one up on restart.
+install_atomic() {
+    src="$1"; dst="$2"
+    tmp="$(dirname "$dst")/.$(basename "$dst").new.$$"
+    cp "$src" "$tmp"
+    mv -f "$tmp" "$dst"
+}
+
+install_atomic dist/AutoTOT/_info.ini "$DEST/_info.ini"
+install_atomic dist/AutoTOT/AutoTOT.dll "$DEST/AutoTOT.dll"
 
 echo ">> done. Enable 'Auto Time-on-Target' in the Mods menu, then restart the game."

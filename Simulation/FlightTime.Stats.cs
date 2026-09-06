@@ -1,9 +1,12 @@
 ﻿using System;
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using System.Threading;
 
 namespace AutoTOT
 {
+    // NOTE: despite the filename, this is NOT a partial of FlightTime. The other five
+    // FlightTime.*.cs files are; this one declares ModelStats, and is named for the subsystem it
+    // instruments rather than the type it holds.
     /// <summary>
     /// Cost counters for the estimator itself, so a slow frame can be attributed to something more
     /// specific than "the flight estimate was slow".
@@ -20,8 +23,6 @@ namespace AutoTOT
         internal enum Tier { Integrator, Waypoint, MaxRangePrecise, Failed }
 
         internal static bool Enabled;
-
-        private static readonly double MsPerTick = 1000.0 / Stopwatch.Frequency;
 
         internal static int Sims;              // integrator runs started
         internal static long Steps;            // integration steps executed across those runs
@@ -52,7 +53,7 @@ namespace AutoTOT
         {
             if (!Enabled) return;
             _loopStart = Stopwatch.GetTimestamp();
-            double ms = (_loopStart - _setupStart) * MsPerTick;
+            double ms = (_loopStart - _setupStart) * CoordinatorProfiler.MsPerTick;
             lock (_sync) SetupMs += ms;
         }
 
@@ -71,7 +72,7 @@ namespace AutoTOT
         internal static void LoopDone(int steps)
         {
             if (!Enabled) return;
-            double ms = (Stopwatch.GetTimestamp() - _loopStart) * MsPerTick;
+            double ms = (Stopwatch.GetTimestamp() - _loopStart) * CoordinatorProfiler.MsPerTick;
             lock (_sync) { LoopMs += ms; Steps += steps; }
         }
 
