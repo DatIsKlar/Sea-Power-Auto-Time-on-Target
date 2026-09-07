@@ -286,6 +286,43 @@ namespace AutoTOT
         /// <summary>True while orders are being collected into one multi-target strike.</summary>
         internal static bool StrikeArmed => _strikeBatch != null;
 
+        /// <summary>
+        /// The orders collected into the armed strike from the game's own interface, as the same
+        /// <see cref="Shot"/> shape the panel stages. The planner lists these beside its own rows:
+        /// a count alone ("3 in-game") does not tell the player WHICH orders were caught, which is
+        /// the only thing that confirms the one they just issued is in the strike.
+        /// </summary>
+        internal static void CollectStrikeIntents(List<Shot> into)
+        {
+            into.Clear();
+            Batch b = _strikeBatch;
+            if (b == null) return;
+            for (int i = 0; i < b.Items.Count; i++)
+            {
+                Intent it = b.Items[i];
+                if (it.Unit == null || it.Target == null) continue;
+                into.Add(new Shot { Unit = it.Unit, AmmoId = it.AmmoId, Salvo = it.Shots, Target = it.Target });
+            }
+        }
+
+        /// <summary>
+        /// Drop every collected order aimed at one target. The planner's per-target "remove" acts on
+        /// the whole group the player sees, and half of that group can be orders the coordinator
+        /// caught from the game; leaving those behind made the button look like it had failed.
+        /// Returns how many were removed.
+        /// </summary>
+        internal static int RemoveStrikeIntents(ObjectBase target)
+        {
+            Batch b = _strikeBatch;
+            if (b == null || target == null) return 0;
+            int before = b.Items.Count;
+            b.Items.RemoveAll(it => it.Target == target);
+            int removed = before - b.Items.Count;
+            if (removed > 0)
+                Bootstrap.Log.LogInfo($"[AutoTOT] strike: dropped {removed} collected order(s) at {UnitNaming.SafeName(target)}.");
+            return removed;
+        }
+
         /// <summary>Orders held in the armed strike (0 when nothing is armed).</summary>
         internal static int StrikeCount => _strikeBatch?.Items.Count ?? 0;
 
@@ -403,7 +440,22 @@ namespace AutoTOT
             ObjectBase unit, string ammoId, ObjectBase target,
             bool autoAttack, bool isFormationAttack, int shots, int priority)
         {
-            if (!Enabled || !Active) return false; // master off, or toggled off -> fire normally
+            if (!Enabled) return false;            // master off -> fire normally
+            // Auto-coordination off is a statement about ORDINARY orders, not about an armed
+            // strike: arming one is an explicit request to collect what you order next, so it
+            // collects on its own. Gating it behind Active made the strike hotkey look broken
+            // unless auto happened to be on, a dependency nothing in the UI stated.
+            if (!Active && _strikeBatch == null)
+            {
+                // D2 (alt-h-not-collecting): an order that reaches the launcher while the panel
+                // believes a strike is armed is the whole bug, and it leaves no trace today. This
+                // fires only for orders this gate actually turns away, so it is not chatty.
+                Bootstrap.Log.LogInfo(
+                    $"[AutoTOT] not collected: auto off and no strike armed " +
+                    $"({UnitNaming.SafeName(unit)} -> {UnitNaming.SafeName(target)}, {ammoId} x{shots}, " +
+                    $"auto={autoAttack}).");
+                return false;
+            }
             if (autoAttack) return false;          // only player-issued orders
             if (unit == null || target == null) return false;
             if (!unit.IsPlayerObject) return false;
@@ -451,6 +503,12 @@ namespace AutoTOT
         /// <summary>Clears all coordinator state. Called on mission end to prevent stale data.</summary>
         internal static void Reset()
         {
+            // D1 (alt-h-not-collecting): a reset drops an armed strike, and the only trace of it was
+            // verbose-gated. If the panel says a strike is armed while the coordinator holds none,
+            // this is where it went.
+            if (_strikeBatch != null)
+                Bootstrap.Log.LogInfo($"[AutoTOT] strike discarded by coordinator reset " +
+                                      $"({_strikeBatch.Items.Count} held order(s)).");
             _openBatches.Clear();
             _strikeBatch = null;
             _resetGeneration++;

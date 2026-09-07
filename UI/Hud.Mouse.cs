@@ -37,6 +37,38 @@ namespace AutoTOT
             }
         }
 
+        // Frame-based window drag, for the same reason the resize is frame-based, plus one more:
+        // IMGUI's own GUI.DragWindow only moves the panel while OnGUI receives mouse events, and
+        // with one of the game's menus open those stop arriving. The panel then cannot be moved off
+        // whatever it is covering, which is exactly when moving it matters.
+        private void HandleDragInput()
+        {
+            if (_resizing) { _dragging = false; return; }
+
+            float s = EffectiveScale();
+            Vector2 m = new Vector2(Input.mousePosition.x / s, (Screen.height - Input.mousePosition.y) / s);
+
+            if (Input.GetMouseButtonDown(0))
+            {
+                var bar = new Rect(_win.x, _win.y, _win.width, HeaderH);
+                // Window-local, because that is the space the title bar's controls were laid out in.
+                Vector2 local = m - new Vector2(_win.x, _win.y);
+                bool onControl = _chevRectWin.Contains(local) || _helpRectWin.Contains(local);
+                if (bar.Contains(m) && !onControl)
+                {
+                    _dragging = true;
+                    _dragOffset = local;
+                }
+            }
+            if (!Input.GetMouseButton(0)) { _dragging = false; return; }
+
+            if (_dragging)
+            {
+                _win.x = m.x - _dragOffset.x;
+                _win.y = m.y - _dragOffset.y;
+            }
+        }
+
         // Tell the game the mouse is over UI while the cursor is on our panel.
         // Latch through a held drag so fast window moves never briefly unblock the camera.
         private void UpdateMouseCapture()
@@ -62,7 +94,7 @@ namespace AutoTOT
             }
             if (!anyHeld) _mouseDownOverUi = false;
 
-            bool over = overNow || (anyHeld && _mouseDownOverUi) || _resizing;
+            bool over = overNow || (anyHeld && _mouseDownOverUi) || _resizing || _dragging;
 
             // _isMouseOverUIWindow is a SINGLE global flag the game also writes from its own
             // edge-triggered UI hit-testing (DM.cs, the test UIs), so it can be cleared mid-drag.

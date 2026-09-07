@@ -710,7 +710,7 @@ The panel shows:
 - **Header**: chevron toggle, title "TIME-ON-TARGET", live engagement summary
   `"● {tgts} tgt / {rounds} msl"`, AUTO status.
 - **Selection header**: TARGET row (fogged label or "click an enemy contact to set target"),
-  SHOOTERS row (anchor name or "click one of your ships") with "+ SHIP" and "+ FORMATION",
+  SELECTED row (anchor name or "click one of your units") with "+ UNIT" and "+ FORMATION",
   each reading "✓ HELD" when the roster already holds everything it would add
   (`Hud.FormationFullyHeld`); SHOOTERS (n) roster line with CLEAR; TARGET row (fogged label
   or "click an enemy contact to set target"); one status line stating the pending action or

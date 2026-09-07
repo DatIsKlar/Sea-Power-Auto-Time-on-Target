@@ -13,13 +13,24 @@ namespace AutoTOT
     {
         private const float SelectionLabelW = 80f;   // TARGET / SHOOTERS label column
         private const float ClearButtonW = 70f;      // CLEAR, on both lists
-        private const float AddShipButtonW = 100f;   // + SHIP / ✓ HELD
+        private const float AddUnitButtonW = 100f;   // + UNIT / ✓ HELD
         private const float AddFormationButtonW = 130f;  // + FORMATION / ✓ HELD
         private const float HelpButtonW = 76f;       // ? KEYS, in the title bar
         // Secondary commit-row buttons. They share a width so the row reads as one set of
         // alternatives to the primary above it, and three of them fit inside MinWindowW.
         private const float SecondaryButtonW = 122f;
         private const float SecondaryButtonH = 28f;
+        // Salvo stepper. Both buttons and the count keep ONE width whatever the held modifier
+        // prints on them, otherwise the whole group jumps sideways the moment Shift goes down.
+        private const float StepButtonW = 42f, SalvoCountW = 42f;
+        // The strike list gets at most this share of the window height, and never less than
+        // StrikeListMinH. Expressing it as a fraction is what keeps the shooter list and the strike
+        // list usable together at any window size; a fixed pixel height would starve one of them at
+        // the extremes. It only claims the height its own content needs, so a one-order strike
+        // stays a one-line list.
+        private const float StrikeListShare = 0.5f;
+        private const float StrikeListMinH = 2f * RowHeight;
+        private const float StrikeOrderLineH = 18f;   // one condensed order line
         // Checkbox prefixes. The unchecked one is spaces of matching width so the label does not
         // shift sideways when a row is toggled.
         private const string CheckedPrefix = "\u2713 ", UncheckedPrefix = "  ";
@@ -30,8 +41,8 @@ namespace AutoTOT
             // The name gets whatever the two buttons leave, on ONE line. Wrapping here pushed a
             // long ship name up into the row above.
             GUILayout.BeginHorizontal(GUILayout.Height(RowHeight));
-            GUILayout.Label("SHOOTERS", _hdr, GUILayout.Width(SelectionLabelW));
-            GUILayout.Label(_anchor != null ? UnitNaming.SafeName(_anchor) : "click one of your ships",
+            GUILayout.Label("SELECTED", _hdr, GUILayout.Width(SelectionLabelW));
+            GUILayout.Label(_anchor != null ? UnitNaming.SafeName(_anchor) : "click one of your units",
                             _rowOneLine, GUILayout.ExpandWidth(true));
 
             // Two buttons rather than one button and a mode. Each names the noun it adds, and each
@@ -40,14 +51,14 @@ namespace AutoTOT
             bool haveAnchor = _anchor != null && !_anchor.IsDestroyed;
             bool shipHeld = haveAnchor && _group.Contains(_anchor);
             GUI.enabled = haveAnchor && !shipHeld;
-            if (GUILayout.Button(shipHeld ? "✓ HELD" : "+ SHIP", _btn,
-                                 GUILayout.Width(AddShipButtonW), GUILayout.Height(RowHeight)))
+            if (GUILayout.Button(shipHeld ? "✓ HELD" : "+ UNIT", _btnSecondary,
+                                 GUILayout.Width(AddUnitButtonW), GUILayout.Height(RowHeight)))
                 AddSelectionToGroup(wholeFormation: false);
 
             bool haveFormation = haveAnchor && _anchor.Formation != null;
             bool formationHeld = haveFormation && FormationFullyHeld(_anchor);
             GUI.enabled = haveFormation && !formationHeld;
-            if (GUILayout.Button(formationHeld ? "✓ HELD" : "+ FORMATION", _btn,
+            if (GUILayout.Button(formationHeld ? "✓ HELD" : "+ FORMATION", _btnSecondary,
                                  GUILayout.Width(AddFormationButtonW), GUILayout.Height(RowHeight)))
                 AddSelectionToGroup(wholeFormation: true);
             GUI.enabled = true;
@@ -61,7 +72,7 @@ namespace AutoTOT
                 GUILayout.BeginHorizontal(GUILayout.Height(RowHeight));
                 GUILayout.Label($"SHOOTERS ({_group.Count})", _hdr, GUILayout.Width(SelectionLabelW + 40f));
                 GUI.color = Accent;
-                GUILayout.Label("from any formation; click a ship anywhere, then + SHIP",
+                GUILayout.Label("from any formation; click a unit anywhere, then + UNIT",
                                 _rowOneLine, GUILayout.ExpandWidth(true));
                 GUI.color = Color.white;
                 if (GUILayout.Button("CLEAR", _btnDanger, GUILayout.Width(ClearButtonW), GUILayout.Height(RowHeight)))
@@ -107,63 +118,148 @@ namespace AutoTOT
 
             GUILayout.BeginHorizontal(GUILayout.Height(RowHeight));
             GUI.color = col;
-            GUILayout.Label(msg, _rowOneLine, GUILayout.ExpandWidth(true));
+            // Sized to its text, not expanded: an expanding label takes the whole row and leaves
+            // the collecting notice parked wherever that label happens to end, instead of on the
+            // panel's right edge where the flexible space below puts it.
+            GUILayout.Label(msg, _rowOneLine, GUILayout.ExpandWidth(false));
+            GUILayout.FlexibleSpace();
             // Collecting in-game orders is a mode, not a hint, so it belongs on the status line
             // whenever it is on and nowhere at all when it is off.
             if (Coordinator.StrikeArmed)
             {
                 GUI.color = Accent;
                 GUILayout.Label($"● collecting your in-game orders too ({Coordinator.StrikeCount} held); {StrikeHint()} to stop",
-                                _rowOneLine);
+                                _rowOneLine, GUILayout.ExpandWidth(false));
             }
             GUI.color = Color.white;
             GUILayout.EndHorizontal();
         }
+
+        // The hotkey list, as rows rather than one run-on line: a key column and a description
+        // column. Run together, the keys and the phrases they belong to wrapped into each other and
+        // there was no telling which description went with which key.
+        private static readonly string[] HelpDescriptions =
+        {
+            "hide the panel",
+            "auto-coordinate normal group orders",
+            "collect the orders you issue in-game into the strike",
+            "fire the staged strike",
+            "hold while stepping a salvo: +/- 10 (Shift) or 5 (Ctrl)",
+        };
+
+        private static string[] HelpKeys() => new[]
+        {
+            HideHint(), ToggleHint(), StrikeHint(), FireHint(), "Shift / Ctrl",
+        };
+
+        private const float HelpKeyColumnW = 96f;   // widest configured combo plus air
 
         // The hotkey list, shown only while the ? in the title bar is toggled on.
         private void DrawHelpOverlay()
         {
             DrawDivider();
-            GUI.color = TextDim;
-            GUILayout.Label($"{HideHint()}  hide the panel        " +
-                            $"{ToggleHint()}  auto-coordinate normal group orders        " +
-                            $"{StrikeHint()}  collect in-game orders into the strike", _hdr);
-            GUILayout.Label("salvo  ·  Shift steps by 10, Ctrl by 5", _hdr);
-            GUI.color = Color.white;
+            GUILayout.Space(2f);
+            string[] keys = HelpKeys();
+            for (int i = 0; i < keys.Length; i++)
+            {
+                GUILayout.BeginHorizontal(GUILayout.Height(HelpLineH));
+                GUI.color = TextMain;
+                GUILayout.Label(keys[i], _rowSmall, GUILayout.Width(HelpKeyColumnW));
+                GUI.color = TextDim;
+                GUILayout.Label(HelpDescriptions[i], _rowSmall, GUILayout.ExpandWidth(true));
+                GUI.color = Color.white;
+                GUILayout.EndHorizontal();
+            }
+            GUILayout.Space(2f);
             DrawDivider();
         }
 
-        // The title bar ; always visible, draggable, carries the collapse toggle and auto status.
-        private void DrawHeader()
+        /// <summary>
+        /// Height the overlay needs, dividers included. One row per key, so this is exact and does
+        /// not depend on how the text happens to wrap.
+        /// </summary>
+        private float HelpOverlayHeight()
         {
-            GUILayout.BeginHorizontal(GUILayout.Height(HeaderH));
-            if (GUILayout.Button(_open ? "▾" : "▸", _chev, GUILayout.Width(26), GUILayout.Height(HeaderH)))
-                _open = !_open;
-            GUILayout.Label("TIME-ON-TARGET", _title, GUILayout.Height(HeaderH));
-            GUILayout.FlexibleSpace();
-            // The hotkeys live behind this, so they are findable without being repeated on a hint
-            // line every frame. Outlined rather than bare: a glyph drawn in a label style reads as
-            // part of the title, not as something to press.
-            GUI.color = _showHelp ? Accent : Color.white;
-            if (GUILayout.Button("? KEYS", _btnSecondary,
-                                 GUILayout.Width(HelpButtonW), GUILayout.Height(HeaderH - 6f)))
-                _showHelp = !_showHelp;
+            EnsureStyles();
+            return HelpDescriptions.Length * HelpLineH + 2f * DividerH + 8f;
+        }
+
+        private const float HelpLineH = 20f;
+
+        private const float DividerH = 3f;
+
+        /// <summary>
+        /// The title bar ; always visible, draggable, carries the collapse toggle and auto status.
+        ///
+        /// Drawn at explicit rects rather than with auto-layout. The painted strip runs to the
+        /// window's top edge, so it is taller than the layout row that sits inside the window
+        /// padding, and anything centred in that row is centred on the wrong box. Every item here
+        /// is instead centred on the strip's own mid-line, which is what the eye measures against.
+        /// </summary>
+        private void DrawHeader(Rect strip)
+        {
+            // One mid-line for the whole bar. Each item gets a full-height rect on it, and the
+            // styles' Middle* alignment then centres the glyphs inside those rects.
+            float y = strip.center.y - HeaderH * 0.5f;
+            float left = strip.x + 6f, right = strip.xMax - 10f;
+
+            var chevRect = new Rect(left, y, 26f, HeaderH);
+            _chevRectWin = chevRect;
+            if (GUI.Button(chevRect, _open ? "\u25be" : "\u25b8", _chev)) _open = !_open;
+
+            // AUTO, and the live engagement count when there is one, are measured and laid out from
+            // the right edge inwards so neither depends on how wide the title happens to be.
+            string autoText = Coordinator.Active ? "\u25cf AUTO" : "\u25cb AUTO";
+            float autoW = _hdrCenterV.CalcSize(new GUIContent(autoText)).x + 2f;
+            var autoRect = new Rect(right - autoW, y, autoW, HeaderH);
+            GUI.color = Coordinator.Active ? Accent : TextDim;
+            GUI.Label(autoRect, autoText, _hdrCenterV);
             GUI.color = Color.white;
-            GUILayout.FlexibleSpace();
-            // Live engagement count ; visible even while minimized.
+            right = autoRect.x - 8f;
+
+            // Strike state, in the same shape as AUTO and next to it. Collecting orders is a mode
+            // the player can leave running with the panel collapsed, and a mode with no indicator
+            // is a mode you forget you are in.
+            int staged = _strike.Count + Coordinator.StrikeCount;
+            if (Coordinator.StrikeArmed || staged > 0)
+            {
+                string strikeText = Coordinator.StrikeArmed
+                    ? $"\u25cf STRIKE {staged}"
+                    : $"\u25cb STRIKE {staged}";
+                float strikeW = _hdrCenterV.CalcSize(new GUIContent(strikeText)).x + 2f;
+                GUI.color = Coordinator.StrikeArmed ? Warn : TextDim;
+                GUI.Label(new Rect(right - strikeW, y, strikeW, HeaderH), strikeText, _hdrCenterV);
+                GUI.color = Color.white;
+                right -= strikeW + 8f;
+            }
+
             int rounds = 0, tgts = _salvos.Count;
             foreach (var e in _salvos) rounds += e.Queued + e.InFlight;
             if (tgts > 0)
             {
+                string live = $"\u25cf {tgts} tgt / {rounds} msl";
+                float liveW = _hdrCenterV.CalcSize(new GUIContent(live)).x + 2f;
                 GUI.color = TargetCol;
-                GUILayout.Label($"● {tgts} tgt / {rounds} msl", _hdr, GUILayout.Height(HeaderH));
-                GUILayout.Space(8);
+                GUI.Label(new Rect(right - liveW, y, liveW, HeaderH), live, _hdrCenterV);
+                GUI.color = Color.white;
+                right -= liveW + 8f;
             }
-            GUI.color = Coordinator.Active ? Accent : TextDim;
-            GUILayout.Label(Coordinator.Active ? "● AUTO" : "○ AUTO", _hdr, GUILayout.Height(HeaderH));
+
+            // The hotkeys live behind this, so they are findable without being repeated on a hint
+            // line every frame. Outlined rather than bare: a glyph drawn in a label style reads as
+            // part of the title, not as something to press. Centred in the bar, then pushed left if
+            // a long status on the right would otherwise overlap it.
+            float helpX = Mathf.Min(strip.center.x - HelpButtonW * 0.5f, right - HelpButtonW);
+            var helpRect = new Rect(helpX, y + 2f, HelpButtonW, HeaderH - 4f);
+            _helpRectWin = helpRect;
+            GUI.color = _showHelp ? Accent : Color.white;
+            if (GUI.Button(helpRect, "? KEYS", _btnHelp)) _showHelp = !_showHelp;
             GUI.color = Color.white;
-            GUILayout.Space(4);
-            GUILayout.EndHorizontal();
+
+            // The title takes what is left between the chevron and whatever is nearest on its right.
+            float titleX = chevRect.xMax + 4f;
+            GUI.Label(new Rect(titleX, y, Mathf.Max(0f, helpRect.x - 8f - titleX), HeaderH),
+                      "TIME-ON-TARGET", _title);
         }
 
         // Held modifier grows the salvo step so large launchers fill faster.
@@ -227,10 +323,11 @@ namespace AutoTOT
             // it matters. The full key list lives behind the ? in the title bar.
             int step = SalvoStep();
             string minus = step > 1 ? $"–{step}" : "–", plus = step > 1 ? $"+{step}" : "+";
-            float stepW = step > 1 ? 44f : 30f;
-            if (GUILayout.Button(minus, _btn, GUILayout.Width(stepW))) _salvo[key] = Mathf.Max(1, _salvo[key] - step);
-            GUILayout.Label($"{_salvo[key]}", _row, GUILayout.Width(28));
-            if (GUILayout.Button(plus, _btn, GUILayout.Width(stepW))) _salvo[key] = Mathf.Min(r.Count, _salvo[key] + step);
+            if (GUILayout.Button(minus, _btnStep, GUILayout.Width(StepButtonW), GUILayout.Height(RowHeight)))
+                _salvo[key] = Mathf.Max(1, _salvo[key] - step);
+            GUILayout.Label($"{_salvo[key]}", _rowCenter, GUILayout.Width(SalvoCountW), GUILayout.Height(RowHeight));
+            if (GUILayout.Button(plus, _btnStep, GUILayout.Width(StepButtonW), GUILayout.Height(RowHeight)))
+                _salvo[key] = Mathf.Min(r.Count, _salvo[key] + step);
             GUI.enabled = true;
             GUILayout.EndHorizontal();
 
@@ -261,15 +358,23 @@ namespace AutoTOT
             }
 
             // Fire-control channel limit. A radio-command round that cannot join a group holds one
-            // channel for its whole flight, so the salvo above is already clamped to what the boat
-            // can guide at once. Say so, otherwise the shorter maximum looks like a bug.
+            // channel for its whole flight, so the salvo picker clamps the row to what the boat can
+            // guide at once (Hud.cs, CachedEngageRows). A limit the player is nowhere near is noise
+            // on every row of every ship, so this fires only when the player is AT the cap.
+            //
+            // It used to test `_salvo[key] > cap`, which is unreachable: the + button clamps to
+            // r.Count and r.Count is already Min(available, cap), so the salvo can never exceed the
+            // cap and this warning never once appeared. The slider simply stopped at the cap and
+            // said nothing. `>=` is the condition that makes a binding limit visible, which is the
+            // whole point of the line.
             if (r.InRange && _checked[key])
             {
                 int cap = LauncherFactsSource.GuidanceChannelCap(ship, r.AmmoId);
-                if (cap < int.MaxValue)
+                if (cap < int.MaxValue && _salvo[key] >= cap)
                 {
                     GUI.color = Warn;
-                    GUILayout.Label($"     ⚠ {cap} guidance channel(s) : salvo capped, rounds are guided one per channel", _row);
+                    GUILayout.Label($"     ⚠ {cap} guidance channel(s): capped at {cap} per target, " +
+                                    "rounds are guided one per channel", _row);
                     GUI.color = Color.white;
                 }
 
@@ -392,6 +497,25 @@ namespace AutoTOT
             }
         }
 
+        // One staged order: shooter, missile and round count, small and dim so a long strike stays
+        // scannable. Collected orders carry a marker naming where they came from.
+        private void DrawStrikeOrderLine(Coordinator.Shot sh, bool fromGame)
+        {
+            GUILayout.BeginHorizontal(GUILayout.Height(StrikeOrderLineH));
+            GUI.color = TextDim;
+            GUILayout.Space(16f);
+            GUILayout.Label($"{UnitNaming.SafeName(sh.Unit)}  ·  {sh.AmmoId} x{Mathf.Max(1, sh.Salvo)}",
+                            _rowSmall, GUILayout.ExpandWidth(false));
+            if (fromGame)
+            {
+                GUI.color = Accent;
+                GUILayout.Label("  in-game order", _rowSmall, GUILayout.ExpandWidth(false));
+            }
+            GUI.color = Color.white;
+            GUILayout.FlexibleSpace();
+            GUILayout.EndHorizontal();
+        }
+
         /// <summary>True if another listed engagement shares this strike id.</summary>
         private bool SharesStrike(int strikeId)
         {
@@ -403,6 +527,28 @@ namespace AutoTOT
 
         private readonly List<ObjectBase> _strikeTargetScratch = new List<ObjectBase>();
 
+        /// <summary>
+        /// Height the whole strike section will occupy: its header row plus the scrolling list.
+        /// The shooter list above is sized as the rest of the budget, so this is what keeps the two
+        /// in proportion at any window size.
+        ///
+        /// The list asks only for the height its CURRENT contents need, so collapsing the breakdown
+        /// hands the slack to the shooter list above rather than leaving an empty box. The commit
+        /// row below stays put either way, because the two lists share one fixed budget: the strike
+        /// section is anchored to the bottom of that budget and grows upward into it.
+        /// </summary>
+        private float StrikeSectionHeight()
+        {
+            if (_strike.Count == 0 && !Coordinator.StrikeArmed) return 0f;
+            CollectStrikeTargets(_strikeTargetScratch);
+            int totalOrders = _strike.Count + CollectedOrders().Count;
+            if (totalOrders == 0) return RowHeight * 2f;   // header plus the "nothing staged" line
+
+            float wanted = _strikeTargetScratch.Count * RowHeight +
+                           (_strikeDetail ? totalOrders * StrikeOrderLineH : 0f) + 4f;
+            return RowHeight + Mathf.Min(wanted, Mathf.Max(StrikeListMinH, _listsAvailH * StrikeListShare));
+        }
+
         // The staged multi-target strike: one group per target, each removable, directly above the
         // commit row that fires them. The list and the button that acts on it belong together.
         private void DrawStagedStrike()
@@ -411,11 +557,18 @@ namespace AutoTOT
             if (_strike.Count == 0 && !armed) return;
 
             CollectStrikeTargets(_strikeTargetScratch);
+            List<Coordinator.Shot> collected = CollectedOrders();
+            int totalOrders = _strike.Count + collected.Count;
 
             DrawDivider();
             GUILayout.BeginHorizontal(GUILayout.Height(RowHeight));
-            GUILayout.Label(_strike.Count > 0
-                ? $"STRIKE  ·  {_strikeTargetScratch.Count} target(s), {_strike.Count} order(s)"
+            // The chevron collapses the per-order breakdown, not the list: the target lines and
+            // their counts stay, so the strike is still readable at a glance while collapsed.
+            if (GUILayout.Button(_strikeDetail ? "▾" : "▸", _chev,
+                                 GUILayout.Width(20), GUILayout.Height(RowHeight)))
+                _strikeDetail = !_strikeDetail;
+            GUILayout.Label(totalOrders > 0
+                ? $"STRIKE  ·  {_strikeTargetScratch.Count} target(s), {totalOrders} order(s)"
                 : "STRIKE", _hdr);
             GUILayout.FlexibleSpace();
             if (GUILayout.Button("CLEAR", _btnDanger, GUILayout.Width(ClearButtonW), GUILayout.Height(RowHeight)))
@@ -425,33 +578,64 @@ namespace AutoTOT
             }
             GUILayout.EndHorizontal();
 
-            if (_strike.Count == 0)
+            if (totalOrders == 0)
             {
                 GUI.color = TextDim;
-                GUILayout.Label("   nothing staged from the panel yet; pick missiles and press + TARGET", _row);
+                GUILayout.Label("   nothing staged yet; pick missiles and press + TARGET, " +
+                                "or order a strike in the game and it is collected here", _row);
                 GUI.color = Color.white;
                 return;
             }
 
+            // Height the list would like: one row per target, plus its orders when expanded. Capped
+            // at a share of the window, so beyond that the list scrolls instead of growing.
+            float listH = StrikeSectionHeight() - RowHeight;
+
+            PushScrollSkin();
+            _strikeScroll = GUILayout.BeginScrollView(_strikeScroll, GUILayout.Height(listH));
+
             foreach (ObjectBase t in _strikeTargetScratch)
             {
-                GUILayout.BeginHorizontal();
+                GUILayout.BeginHorizontal(GUILayout.Height(RowHeight));
                 GUI.color = TargetCol;
                 GUILayout.Label(FoggedLabel(t), _rowOneLine, GUILayout.Width(210));
                 GUI.color = TextMain;
 
-                int ships = 0, rounds = 0;
+                int orders = 0, rounds = 0;
                 foreach (Coordinator.Shot sh in _strike)
-                    if (sh.Target == t) { ships++; rounds += Mathf.Max(1, sh.Salvo); }
-                GUILayout.Label($"{ships} order(s)  ·  {rounds} round(s)", _row);
+                    if (sh.Target == t) { orders++; rounds += Mathf.Max(1, sh.Salvo); }
+                foreach (Coordinator.Shot sh in collected)
+                    if (sh.Target == t) { orders++; rounds += Mathf.Max(1, sh.Salvo); }
+                GUILayout.Label($"{orders} order(s)  ·  {rounds} round(s)", _row);
                 GUI.color = Color.white;
 
                 GUILayout.FlexibleSpace();
                 ObjectBase removing = t;   // captured by the closure below, so it must not be the loop variable
-                if (GUILayout.Button("remove", _btn, GUILayout.Width(70)))
+                // Only the panel's own rows can be taken back out; an order the game has already
+                // accepted is held by the coordinator, and CLEAR is the way to drop those.
+                // Removes the whole group the player is looking at, staged rows and collected
+                // in-game orders alike. Anything else makes the button lie about what it acts on.
+                if (GUILayout.Button("remove", _btnSmall, GUILayout.Width(64), GUILayout.Height(RowHeight)))
+                {
                     _strike.RemoveAll(sh => sh.Target == removing);
+                    Coordinator.RemoveStrikeIntents(removing);
+                }
                 GUILayout.EndHorizontal();
+
+                // What each order actually fires, one condensed line apiece. The count above says
+                // how much is committed; these say which shooter and which missile, which is what
+                // tells the player the order they just gave is the one that got caught.
+                if (_strikeDetail)
+                {
+                    foreach (Coordinator.Shot sh in _strike)
+                        if (sh.Target == t) DrawStrikeOrderLine(sh, fromGame: false);
+                    foreach (Coordinator.Shot sh in collected)
+                        if (sh.Target == t) DrawStrikeOrderLine(sh, fromGame: true);
+                }
             }
+
+            GUILayout.EndScrollView();
+            PopScrollSkin();
         }
 
         /// <summary>
@@ -472,9 +656,11 @@ namespace AutoTOT
             GUILayout.BeginHorizontal();
             if (strikeIsPrimary)
             {
-                string held = Coordinator.StrikeCount > 0 ? $" + {Coordinator.StrikeCount} in-game" : "";
+                // Both halves are listed above as one strike, so the button counts them as one too.
+                string held = Coordinator.StrikeCount > 0 ? $" ({Coordinator.StrikeCount} in-game)" : "";
                 if (GUILayout.Button(
-                        $"FIRE STRIKE  ·  {_strikeTargetScratch.Count} target(s), {_strike.Count} order(s){held}",
+                        $"FIRE STRIKE ({FireHint()})  ·  {_strikeTargetScratch.Count} target(s), " +
+                        $"{_strike.Count + Coordinator.StrikeCount} order(s){held}",
                         _fire, GUILayout.Height(FireButtonHeight)))
                 {
                     Coordinator.FireStrike(_strike);
@@ -578,7 +764,7 @@ namespace AutoTOT
 
         private void DrawDivider()
         {
-            var r = GUILayoutUtility.GetRect(1, 3);
+            var r = GUILayoutUtility.GetRect(1, DividerH);
             GUI.color = new Color(Border.r, Border.g, Border.b, 0.5f);
             GUI.DrawTexture(new Rect(r.x, r.y + 1, r.width, 1), Texture2D.whiteTexture);
             GUI.color = Color.white;

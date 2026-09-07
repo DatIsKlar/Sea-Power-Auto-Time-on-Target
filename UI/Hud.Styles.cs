@@ -39,6 +39,21 @@ namespace AutoTOT
         // label grows the row taller than the layout reserved for it and the second line then
         // draws over the row above.
         private GUIStyle _rowOneLine;
+        // Centred variants. The salvo count sits between two steppers and has to read as their
+        // centre; the title-bar status labels have to sit on the same centre line as the button
+        // between them, which a left-aligned label at a different font size does not.
+        private GUIStyle _rowCenter, _hdrCenterV;
+        // Condensed list line, for the per-order breakdown under a strike target.
+        private GUIStyle _rowSmall;
+        // In-list "remove". Same ghost role as _btn, at list-text size: it acts on one row and
+        // should not out-weigh the row it acts on.
+        private GUIStyle _btnSmall;
+        // The title bar's help button: _btnSecondary sized to the full header height, with its
+        // vertical padding dropped so the text centres in that box instead of riding high.
+        private GUIStyle _btnHelp;
+        // The salvo steppers, at body size so a row's -, count and missile name are one line of
+        // text rather than a large control bolted onto a small label.
+        private GUIStyle _btnStep;
         private GUIStyle _scrollThumb, _scrollTrack, _hScrollThumb, _hScrollTrack;
         private Texture2D _panelTex, _headerTex, _fireTex, _btnTex, _btnHoverTex;
         private Texture2D _scrollThumbTex, _scrollTrackTex, _menuHoverTex, _transparentTex;
@@ -123,12 +138,17 @@ namespace AutoTOT
             {
                 fontStyle = FontStyle.Normal, fontSize = FontSizeTitle, alignment = TextAnchor.MiddleLeft,
                 padding = new RectOffset(4, 4, 0, 0),
+                // Title-bar items carry no vertical margin. The default label margin made this
+                // label claim HeaderH+8, so the whole bar grew and every fixed-height item in it
+                // (the chevron, ? KEYS, AUTO) top-aligned instead of sharing a centre line.
+                margin = new RectOffset(0, 0, 0, 0),
             };
             _title.normal.textColor = TextMain;
 
             _chev = new GUIStyle(GUI.skin.label)
             {
                 fontStyle = FontStyle.Bold, fontSize = FontSizeControl, alignment = TextAnchor.MiddleCenter,
+                margin = new RectOffset(0, 0, 0, 0),
             };
             _chev.normal.textColor = TextDim;
             _chev.hover.textColor = TextMain;
@@ -140,6 +160,19 @@ namespace AutoTOT
             _row.normal.textColor = TextMain;
 
             _rowOneLine = new GUIStyle(_row) { wordWrap = false, clipping = TextClipping.Clip };
+            // Margin zeroed for the same reason as _btn: it sits between two steppers on a
+            // fixed-height row and must not make that row taller than they are.
+            _rowCenter  = new GUIStyle(_row) { alignment = TextAnchor.MiddleCenter,
+                                               margin = new RectOffset(0, 0, 0, 0) };
+            _rowSmall   = new GUIStyle(_row) { fontSize = FontSizeSmall, wordWrap = false,
+                                               clipping = TextClipping.Clip,
+                                               margin = new RectOffset(0, 0, 0, 0) };
+            // Never wraps. These labels are drawn at a rect measured with CalcSize, and a fraction
+            // of a pixel lost to the panel's scale matrix is enough to make a wrapping label break
+            // "○ AUTO" onto two lines.
+            _hdrCenterV = new GUIStyle(_hdr) { alignment = TextAnchor.MiddleCenter,
+                                               wordWrap = false, clipping = TextClipping.Clip,
+                                               margin = new RectOffset(0, 0, 0, 0) };
 
             _ship = new GUIStyle(GUI.skin.label) { fontStyle = FontStyle.Bold, fontSize = FontSizeTitle };
             _ship.normal.textColor = TextMain;
@@ -148,7 +181,10 @@ namespace AutoTOT
             _btn = new GUIStyle()
             {
                 fontStyle = FontStyle.Bold, fontSize = FontSizeControl, alignment = TextAnchor.MiddleCenter,
-                border = new RectOffset(0, 0, 0, 0), margin = new RectOffset(1, 1, 1, 1),
+                // No vertical margin. A 1px margin top and bottom makes a Height(RowHeight) button
+                // claim RowHeight+2, which grows the row past every fixed-height item beside it;
+                // those then top-align and the steppers sit a couple of pixels low.
+                border = new RectOffset(0, 0, 0, 0), margin = new RectOffset(1, 1, 0, 0),
                 padding = new RectOffset(0, 0, 0, 0),
             };
             SetStates(_btn, _transparentTex, _btnHoverTex, _btnTex, _transparentTex, TextMain, TextMain);
@@ -201,6 +237,10 @@ namespace AutoTOT
             };
             SetStates(_btnSecondary, _outlineTex, _outlineHoverTex, _outlineHoverTex, _outlineTex,
                       TextMain, Color.white);
+
+            _btnSmall = new GUIStyle(_btn) { fontStyle = FontStyle.Normal, fontSize = FontSizeBody };
+            _btnHelp = new GUIStyle(_btnSecondary) { padding = new RectOffset(8, 8, 0, 0) };
+            _btnStep = new GUIStyle(_btn) { fontSize = FontSizeBody };
 
             // Destructive: empties a list. Flat and dim at rest so it never competes with a commit
             // button, amber on hover so the consequence is stated before the click.

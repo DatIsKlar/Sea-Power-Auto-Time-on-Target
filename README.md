@@ -138,6 +138,7 @@ The `dist/AutoTOT/` folder is exactly what you'd upload as a Steam Workshop item
 | **Alt+G** | Show/hide the TOT planner panel (fully hidden, tab and all) |
 | **Alt+T** | Toggle auto-coordination on/off |
 | **Alt+H** | Arm/disarm multi-target strike collection |
+| **Alt+F** | Fire the staged strike (works with the panel hidden) |
 
 Both use the configurable modifier (`ToggleModifier`; set to `None` for single-key). The **?**
 in the panel's title bar lists the keys as configured, along with the salvo-stepper modifiers.
@@ -160,14 +161,15 @@ queued/in-flight counts, a synced arrival countdown, and the ±arrival spread.
 
 ### Shooter roster
 
-The shooter list normally follows your last-selected ship. The SHOOTERS row carries two buttons:
-**+ SHIP** holds the selected ship in a persistent **roster**, and **+ FORMATION** holds every
-missile-armed ship in its formation. Either one reads **✓ HELD** once there is nothing left for it
-to add, so you can tell at a glance whether the ship you just clicked is already in.
+The shooter list normally follows your last-selected unit. The SELECTED row carries two buttons:
+**+ UNIT** holds the selected unit (ship, submarine or aircraft) in a persistent **roster**, and
+**+ FORMATION** holds every missile-armed unit in its formation. Either one reads **✓ HELD** once
+there is nothing left for it to add, so you can tell at a glance whether the unit you just clicked
+is already in.
 
-The roster is not limited to one formation, and it survives selection changes. Click a ship
-anywhere, press **+ SHIP**, click the next one and repeat, until you have every shooter you want;
-then pick a target. A **SHOOTERS (n)** line reports what is held, each ship has a **remove**, and
+The roster is not limited to one formation, and it survives selection changes. Click a unit
+anywhere, press **+ UNIT**, click the next one and repeat, until you have every shooter you want;
+then pick a target. A **SHOOTERS (n)** line reports what is held, each unit has a **remove**, and
 **CLEAR** empties it. With no target selected the rows still list every missile aboard, so salvo
 sizes can be set in advance. An empty roster means the panel follows the single selected ship.
 
@@ -181,7 +183,8 @@ becomes the panel's single green commit button and **FIRE THIS TARGET** stays av
 it, so a pop-up threat can still be engaged without disturbing the plan. There is no collection window: a
 staged strike waits as long as you need.
 
-Press **Alt+H** to also collect the orders you issue in the game's own interface. While
+Press **Alt+H** to also collect the orders you issue in the game's own interface. This does
+not need auto-coordination (Alt+T) on: arming a strike collects on its own. While
 that is on, every missile order you give is held, whatever its target, and joins the same
 strike; **FIRE STRIKE** commits the staged picks and the collected orders together, and
 **CLEAR** discards both. Rows sharing a strike are marked with a ◆ in the ENGAGEMENTS
@@ -289,6 +292,7 @@ All settings take effect live when edited (BepInEx reloads the file; no restart 
 | Interface | `ToggleKey` | `T` | Key (with modifier) to arm/disarm auto-coordination. |
 | Interface | `OpenPanelKey` | `G` | Key (with modifier) to open/close the planner panel. |
 | Interface | `StrikeArmKey` | `H` | Key (with modifier) to arm/disarm multi-target strike collection. |
+| Interface | `FireStrikeKey` | `F` | Key (with modifier) to fire the staged strike, panel open or not. |
 | Interface | `UIScale` | `0` | Panel scale factor; `0` = auto with screen height (4K gets a larger panel), else an explicit multiplier (0–4). |
 | Interface | `UIScaleMultiplier` | `1.0` | Fine-trim on top of `UIScale` (0.5–2.0), so you can shrink the auto scale without giving it up. |
 | Timing | `GroupWindowSeconds` | `0.75` | Quiet gap (real s) after the last order before the batch locks in. |

@@ -34,6 +34,7 @@ namespace AutoTOT
         internal static KeyCode ToggleKey = KeyCode.T;   // arm/disarm auto mode
         internal static KeyCode PanelKey = KeyCode.G;    // open/close the planner
         internal static KeyCode StrikeArmKey = KeyCode.H; // arm/disarm multi-target strike collection
+        internal static KeyCode FireStrikeKey = KeyCode.F; // fire the staged strike without opening the panel
         internal static float UiScale = 0f;              // 0 = auto (scale to screen height)
         internal static float UiScaleMultiplier = 1f;    // fine-tune on top of UiScale
 
@@ -46,6 +47,7 @@ namespace AutoTOT
         private static ConfigEntry<KeyCode> _cfgToggleKey;
         private static ConfigEntry<KeyCode> _cfgPanelKey;
         private static ConfigEntry<KeyCode> _cfgStrikeArmKey;
+        private static ConfigEntry<KeyCode> _cfgFireStrikeKey;
         private static ConfigEntry<float> _cfgUiScale;
         private static ConfigEntry<float> _cfgUiScaleMultiplier;
         private static ConfigEntry<float> _cfgDebounce;
@@ -235,6 +237,9 @@ namespace AutoTOT
                 "Key (with ToggleModifier) that arms or disarms multi-target strike collection. " +
                 "While armed, every missile order you issue is held, whatever its target, until you " +
                 "fire the strike from the planner panel; all of it then lands at the same moment.");
+            _cfgFireStrikeKey = _config.Bind("Interface", "FireStrikeKey", KeyCode.F,
+                "Key (with ToggleModifier) that fires the staged strike. It works with the panel " +
+                "hidden, so a strike built earlier can be launched without opening anything.");
             _cfgUiScale = _config.Bind("Interface", "UIScale", 0f,
                 new ConfigDescription(
                     "Scale factor for the planner panel and its text. 0 = auto (scales with screen height, so 4K screens get a larger panel). Otherwise an explicit multiplier, e.g. 1.5 or 2.0.",
@@ -327,6 +332,7 @@ namespace AutoTOT
             ToggleKey = _cfgToggleKey.Value;
             PanelKey = _cfgPanelKey.Value;
             StrikeArmKey = _cfgStrikeArmKey.Value;
+            FireStrikeKey = _cfgFireStrikeKey.Value;
             UiScale = _cfgUiScale.Value;
             UiScaleMultiplier = _cfgUiScaleMultiplier.Value;
         }

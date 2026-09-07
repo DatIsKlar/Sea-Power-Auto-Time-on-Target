@@ -78,6 +78,25 @@ namespace AutoTOT
         private int _groupShareFrame = -1;
 
         private Vector2 _scroll;
+        // The strike list scrolls on its own, so a long strike cannot push the shooter list off the
+        // panel. Its height is a share of the window (see StrikeListShare), which keeps the two
+        // lists in the same proportion at every window size.
+        private Vector2 _strikeScroll;
+        // The per-order breakdown under each strike target, collapsible: it is the confirmation the
+        // player wants while building a strike and noise once the strike is built.
+        private bool _strikeDetail = true;
+        // Frame-based title-bar drag (see Hud.Mouse.cs). The rects are window-local and are
+        // published by DrawHeader so a press on the chevron or on ? KEYS is a click, not a drag.
+        private bool _dragging;
+        private Vector2 _dragOffset;
+        private Rect _chevRectWin, _helpRectWin;
+        // Vertical budget shared by the two lists, measured from the panel itself rather than
+        // guessed: _listsTopY is where the shooter list starts and _belowListsH is everything drawn
+        // under the strike section (commit rows, engagements, footer). Both are sampled on Repaint
+        // and used on the NEXT frame, so the Layout and Repaint passes of any one frame always see
+        // the same numbers, which IMGUI requires.
+        private float _listsTopY, _belowListsH = 180f;
+        private float _listsAvailH = 200f;   // last computed budget; the strike section reads it
         private Rect _win = new Rect(0, 0, DefaultWindowW, DefaultWindowH);
         private float _expandedW = DefaultWindowW, _expandedH = DefaultWindowH;
         private bool _placed;
@@ -87,6 +106,9 @@ namespace AutoTOT
         private bool _mouseDownOverUi;
 
         private const float CollapsedH = 34f;
+        // Room for the key list under the title bar while the panel is collapsed; measured from the
+        // text itself (see HelpOverlayHeight), because the lines wrap differently at every panel
+        // width and with every set of configured key names.
         private const float HeaderH = 30f;
 
         // Window geometry.
@@ -145,6 +167,7 @@ namespace AutoTOT
             if (!InMission())
             {
                 _resizing = false;
+                _dragging = false;
                 SetOverUi(false);
                 return;
             }
@@ -159,6 +182,7 @@ namespace AutoTOT
                 Bootstrap.Log.LogInfo($"[AutoTOT] auto-coordination {(Coordinator.Active ? "ON" : "OFF")}");
             }
             if (modOk && Input.GetKeyDown(Bootstrap.StrikeArmKey)) ToggleStrikeArmed();
+            if (modOk && Input.GetKeyDown(Bootstrap.FireStrikeKey)) FireStrikeNow();
 
             // A mission end clears the coordinator, and with it every unit the staged strike points
             // at. Checked here rather than in OnGUI so the list cannot be rendered stale for a frame.
@@ -178,10 +202,12 @@ namespace AutoTOT
             if (!_visible)
             {
                 _resizing = false;
+                _dragging = false;
                 SetOverUi(false);
                 return;
             }
 
+            HandleDragInput();
             HandleResizeInput();
             UpdateMouseCapture();
         }
@@ -257,7 +283,8 @@ namespace AutoTOT
             }
 
             _win.width = _expandedW;
-            _win.height = _open ? _expandedH : CollapsedH;
+            _win.height = _open ? _expandedH
+                                : CollapsedH + (_showHelp ? HelpOverlayHeight() : 0f);
 
             Matrix4x4 prevMatrix = GUI.matrix;
             GUI.matrix = Matrix4x4.TRS(Vector3.zero, Quaternion.identity, new Vector3(s, s, 1f));
@@ -303,10 +330,20 @@ namespace AutoTOT
                 _rowCacheFrame = frame;
             }
 
-            // Lighter title strip across the top, like the game's own panel headers.
-            GUI.DrawTexture(new Rect(1, 1, _win.width - 2, HeaderH + 3), _headerTex);
-            DrawHeader();
-            if (!_open) { GUI.DragWindow(new Rect(0, 0, 100000, CollapsedH)); return; }
+            // Lighter title strip across the top, like the game's own panel headers. The strip runs
+            // from the window's top edge to the bottom of the row the layout reserves for it, and
+            // DrawHeader centres its contents on that same rect, so the bar reads as one box.
+            Rect headerRow = GUILayoutUtility.GetRect(0f, HeaderH, GUILayout.ExpandWidth(true));
+            var strip = new Rect(1f, 1f, _win.width - 2f, headerRow.yMax - 1f);
+            GUI.DrawTexture(strip, _headerTex);
+            DrawHeader(strip);
+            if (!_open)
+            {
+                // The key list is the one part of the panel worth reading while it is shut, so the
+                // ? KEYS toggle keeps working here instead of silently doing nothing.
+                if (_showHelp) DrawHelpOverlay();
+                return;
+            }
 
             DrawDivider();
             GUILayout.Space(4);
@@ -328,20 +365,23 @@ namespace AutoTOT
                 _pruneCounter = 0;
                 PruneCheckSalvo();
             }
-            // Apply our scrollbar styling only around our own scroll view, then restore ; so we
-            // never restyle other mods' IMGUI (BepInEx console etc.) via the shared GUI.skin.
-            GUIStyle prevVBar = GUI.skin.verticalScrollbar, prevVThumb = GUI.skin.verticalScrollbarThumb;
-            GUIStyle prevHBar = GUI.skin.horizontalScrollbar, prevHThumb = GUI.skin.horizontalScrollbarThumb;
-            GUI.skin.verticalScrollbar = _scrollTrack;
-            GUI.skin.verticalScrollbarThumb = _scrollThumb;
-            GUI.skin.horizontalScrollbar = _hScrollTrack;
-            GUI.skin.horizontalScrollbarThumb = _hScrollThumb;
+            // Split the leftover height between the shooter list and the strike list. Both get an
+            // explicit height, so neither can starve the other: an expanding view collapses to one
+            // row the moment the window is short, which is exactly what a fixed-height strike list
+            // beneath it used to cause.
+            Rect topProbe = GUILayoutUtility.GetRect(0f, 0f, GUILayout.ExpandWidth(true));
+            if (Event.current.type == EventType.Repaint) _listsTopY = topProbe.y;
+            _listsAvailH = Mathf.Max(2f * RowHeight,
+                                     _win.height - _listsTopY - _belowListsH - ResizeGripClearance);
+            float shooterH = Mathf.Max(RowHeight, _listsAvailH - StrikeSectionHeight());
 
-            _scroll = GUILayout.BeginScrollView(_scroll, GUILayout.ExpandHeight(true));
+            PushScrollSkin();
+
+            _scroll = GUILayout.BeginScrollView(_scroll, GUILayout.Height(shooterH));
             if (shooters.Count == 0)
                 GUILayout.Label(_group.Count > 0
-                    ? "No shooters held. Click one of your ships, then + SHIP."
-                    : "No missile-armed ships selected. Click one of your ships, or + SHIP to hold a roster.",
+                    ? "No shooters held. Click one of your units, then + UNIT."
+                    : "No missile-armed units selected. Click one of your units, or + UNIT to hold a roster.",
                     _row);
 
             RecomputeGroupSharing(shooters);
@@ -353,7 +393,7 @@ namespace AutoTOT
                 GUILayout.BeginHorizontal();
                 GUILayout.Label(UnitNaming.SafeName(ship), _ship);
                 GUILayout.FlexibleSpace();
-                if (_group.Count > 0 && GUILayout.Button("remove", _btn, GUILayout.Width(70)))
+                if (_group.Count > 0 && GUILayout.Button("remove", _btnSmall, GUILayout.Width(64)))
                     _group.Remove(ship);
                 GUILayout.EndHorizontal();
                 bool any = false;
@@ -368,14 +408,14 @@ namespace AutoTOT
             }
             GUILayout.EndScrollView();
 
-            GUI.skin.verticalScrollbar = prevVBar;
-            GUI.skin.verticalScrollbarThumb = prevVThumb;
-            GUI.skin.horizontalScrollbar = prevHBar;
-            GUI.skin.horizontalScrollbarThumb = prevHThumb;
+            PopScrollSkin();
 
             // The staged list sits directly above the button that commits it. Staging needs exactly
             // what firing needs: a target and at least one checked row.
             DrawStagedStrike();
+
+            // Everything from here down is the chrome the budget above has to leave room for.
+            Rect belowProbe = GUILayoutUtility.GetRect(0f, 0f, GUILayout.ExpandWidth(true));
             DrawCommitRow(shooters, haveTarget && AnyChecked(shooters));
 
             // Live, post-launch state. It reports what is already in the air rather than what is
@@ -395,8 +435,34 @@ namespace AutoTOT
             GUILayout.Space(ResizeGripClearance);   // settings is the bottom row now: keep it clear of the grip
             GUILayout.EndHorizontal();
 
+            Rect endProbe = GUILayoutUtility.GetRect(0f, 0f, GUILayout.ExpandWidth(true));
+            if (Event.current.type == EventType.Repaint)
+                _belowListsH = Mathf.Max(0f, endProbe.y - belowProbe.y);
+
             DrawResizeGrip();
-            GUI.DragWindow(new Rect(0, 0, 100000, HeaderH));
+        }
+
+        // Our scrollbar styling is applied only around our own scroll views and then restored, so
+        // we never restyle other mods' IMGUI (the BepInEx console and so on) via the shared skin.
+        // Both the shooter list and the strike list need it, hence the pair.
+        private GUIStyle _prevVBar, _prevVThumb, _prevHBar, _prevHThumb;
+
+        private void PushScrollSkin()
+        {
+            _prevVBar = GUI.skin.verticalScrollbar; _prevVThumb = GUI.skin.verticalScrollbarThumb;
+            _prevHBar = GUI.skin.horizontalScrollbar; _prevHThumb = GUI.skin.horizontalScrollbarThumb;
+            GUI.skin.verticalScrollbar = _scrollTrack;
+            GUI.skin.verticalScrollbarThumb = _scrollThumb;
+            GUI.skin.horizontalScrollbar = _hScrollTrack;
+            GUI.skin.horizontalScrollbarThumb = _hScrollThumb;
+        }
+
+        private void PopScrollSkin()
+        {
+            GUI.skin.verticalScrollbar = _prevVBar;
+            GUI.skin.verticalScrollbarThumb = _prevVThumb;
+            GUI.skin.horizontalScrollbar = _prevHBar;
+            GUI.skin.horizontalScrollbarThumb = _prevHThumb;
         }
 
         private List<ObjectBase> GetShooters()
@@ -661,9 +727,12 @@ namespace AutoTOT
             }
             if (v == null) return "Unknown contact";   // not on our plot -> reveal nothing
 
+            // Keep the track number on a classified contact too. Two contacts of the same class
+            // share a name, and the number is the only thing that tells the player which of them
+            // the panel is aimed at.
             if (v.Class.HasValue)
             {
-                try { return v.Object.Name.Value; } catch { return $"Contact {v.Id}"; }
+                try { return $"[{v.Id}] {v.Object.Name.Value}"; } catch { return $"Contact {v.Id}"; }
             }
             string s = $"Contact {v.Id}";
             try { if (v.HasSignalInfo()) s += "; " + v.IncomingSignalInfo(); } catch { }
@@ -672,6 +741,27 @@ namespace AutoTOT
 
         // Human-readable form of the configured strike-arm combo, for the panel hint.
         private static string StrikeHint() => Combo(Bootstrap.StrikeArmKey);
+
+        private static string FireHint() => Combo(Bootstrap.FireStrikeKey);
+
+        /// <summary>
+        /// Fire whatever the strike holds, from the hotkey. Same commit the panel's FIRE STRIKE
+        /// button makes, so a strike built earlier can be launched with the panel hidden; a hidden
+        /// panel is a normal way to play, and having to open one to press a button you already
+        /// decided on is a delay the shot cannot always afford.
+        /// </summary>
+        private void FireStrikeNow()
+        {
+            int held = _strike.Count + Coordinator.StrikeCount;
+            if (held == 0)
+            {
+                Bootstrap.Log.LogInfo("[AutoTOT] fire-strike pressed with nothing staged.");
+                return;
+            }
+            Bootstrap.Log.LogInfo($"[AutoTOT] firing strike from hotkey: {held} order(s).");
+            Coordinator.FireStrike(_strike);
+            _strike.Clear();
+        }
 
         private void ToggleStrikeArmed()
         {
@@ -755,11 +845,30 @@ namespace AutoTOT
         }
 
         /// <summary>Distinct targets in the staged strike, in the order they were first staged.</summary>
+        // Targets in the whole strike: the panel's staged rows first, then any target that only the
+        // collected in-game orders name. Both halves fire together, so both belong in the list and
+        // in the counts on the commit button.
         private void CollectStrikeTargets(List<ObjectBase> into)
         {
             into.Clear();
             foreach (Coordinator.Shot s in _strike)
                 if (s.Target != null && !into.Contains(s.Target)) into.Add(s.Target);
+            foreach (Coordinator.Shot s in CollectedOrders())
+                if (s.Target != null && !into.Contains(s.Target)) into.Add(s.Target);
+        }
+
+        // Orders the coordinator has caught from the game's own interface, refreshed once a frame.
+        private readonly List<Coordinator.Shot> _collected = new List<Coordinator.Shot>();
+        private int _collectedFrame = -1;
+
+        private List<Coordinator.Shot> CollectedOrders()
+        {
+            if (_collectedFrame != Time.frameCount)
+            {
+                _collectedFrame = Time.frameCount;
+                Coordinator.CollectStrikeIntents(_collected);
+            }
+            return _collected;
         }
 
         private static string FormatTime(float sec)
