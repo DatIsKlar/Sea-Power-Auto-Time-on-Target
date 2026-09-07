@@ -201,7 +201,7 @@ namespace AutoTOT
                 FullReady = _mComputePN != null && _mThrust != null && _mDrag != null &&
                             _mAccelTimes != null && _mAnalytical != null && _mSimple != null;
 
-                if (Coordinator.VerboseLog)
+                if (Coordinator.TraceFlightModel)
                     Bootstrap.Log.LogInfo(
                         $"[AutoTOT] wp-init: waypoint surface resolved (Ready=True, fullLoop={FullReady}; " +
                         $"pn {_mComputePN != null}, thrust {_mThrust != null}, drag {_mDrag != null}, " +
@@ -210,7 +210,7 @@ namespace AutoTOT
             catch (Exception e)
             {
                 Ready = false;
-                if (Coordinator.VerboseLog)
+                if (Coordinator.TraceFlightModel)
                     Bootstrap.Log.LogWarning($"[AutoTOT] wp-init: exception resolving waypoint surface: {e.Message}");
             }
         }
@@ -218,7 +218,7 @@ namespace AutoTOT
         private static void LogInitFail(string stage)
         {
             Ready = false;
-            if (Coordinator.VerboseLog)
+            if (Coordinator.TraceFlightModel)
                 Bootstrap.Log.LogWarning($"[AutoTOT] wp-init: FAILED at {stage} resolution ; spike disabled");
         }
 
@@ -507,7 +507,7 @@ namespace AutoTOT
                     altDelta = predTargetPos.y - missilePos.y;
                     slantRange = GameMath.SlantFromFlat(flatDistToTarget, altDelta);
 
-                    if (Coordinator.VerboseLog && emitDiag && simTime >= nextLog)
+                    if (Coordinator.TraceFlightModel && emitDiag && simTime >= nextLog)
                     {
                         Bootstrap.Log.LogInfo(
                             $"[AutoTOT] wp-track {ap._ammunitionFileName}#{unit.GetInstanceID()}: t+{simTime:0}s " +

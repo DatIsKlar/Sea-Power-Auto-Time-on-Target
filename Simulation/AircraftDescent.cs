@@ -1,6 +1,7 @@
 using System;
 using System.Text;
 using SeaPower;
+using UnityEngine;
 
 namespace AutoTOT
 {
@@ -38,8 +39,6 @@ namespace AutoTOT
     {
         private const float StepSim = 0.05f;
         private const int MaxSteps = 20000;         // ~17 min of sim; a real descent is under a minute
-        internal const float UnityToMetres = 67.200066f;
-        internal const float FeetPerUnity = 220.47266f;
         private const float PullOutGuardMetres = 5f;               // game's own |err| guard
         private const float MinPitchRateDeg = 0.1f;                // game's own turnSpeed.x guard
 
@@ -78,7 +77,7 @@ namespace AutoTOT
         internal static bool TryEstimate(State s, out float seconds, StringBuilder trace)
         {
             seconds = 0f;
-            if (!Finite(s.AltitudeU) || !Finite(s.GateAltU) || !Finite(s.CommandAltU) || s.Mach <= 0f ||
+            if (!GameMath.IsFinite(s.AltitudeU) || !GameMath.IsFinite(s.GateAltU) || !GameMath.IsFinite(s.CommandAltU) || s.Mach <= 0f ||
                 s.PitchRateDeg <= 0f || s.DescentLimitDeg <= 0f || s.ThresholdAltU <= 0f) return false;
             if (s.GateAltU >= s.AltitudeU) return false;     // already inside the band
             // Commanded no lower than the ceiling: the aircraft is not descending far enough to get
@@ -94,7 +93,7 @@ namespace AutoTOT
                 if (alt <= s.GateAltU) { seconds = t; return true; }
                 float err = s.CommandAltU - alt;               // negative while descending
 
-                float taper = Clamp(err / s.ThresholdAltU, -1f, 1f);
+                float taper = Mathf.Clamp(err / s.ThresholdAltU, -1f, 1f);
                 float tasU = TrueAirspeedU(s.Mach, alt);
                 float vsp = (float)Math.Sin(pitch * Math.PI / 180.0) * tasU;
 
@@ -103,21 +102,21 @@ namespace AutoTOT
                 // past that it commands a climb. This is what stops it flying through the altitude.
                 if (Math.Abs(vsp) > 1e-6f)
                 {
-                    float n6 = vsp * UnityToMetres / 9.8f;                    // s to arrest at 1g
+                    float n6 = vsp * GameUnits.MetersPerUnity / 9.8f;                    // s to arrest at 1g
                     float n7 = (n6 < 0f) ? (s.MaxG - 1f) : (s.MinG - 1f);     // available g margin
                     float n8 = (Math.Abs(n7) > 0.001f) ? Math.Abs(n6 / n7) : float.PositiveInfinity;
                     if (s.PitchRateDeg > MinPitchRateDeg) n8 += Math.Abs(pitch) / s.PitchRateDeg;
                     float n9 = err / vsp;                                     // s to the target
-                    if (n9 > 0.001f && Math.Abs(err) * UnityToMetres > PullOutGuardMetres)
+                    if (n9 > 0.001f && Math.Abs(err) * GameUnits.MetersPerUnity > PullOutGuardMetres)
                     {
-                        float b = Math.Sign(err) * Clamp(2f - n8 / n9, -1f, 1f);
+                        float b = Math.Sign(err) * Mathf.Clamp(2f - n8 / n9, -1f, 1f);
                         taper = (err < 0f) ? Math.Max(taper, b) : Math.Min(taper, b);
                     }
                 }
 
                 float want = s.DescentLimitDeg * taper;   // limit is positive; the taper carries the sign
                 float step = s.PitchRateDeg * StepSim;
-                pitch += Clamp(want - pitch, -step, step);
+                pitch += Mathf.Clamp(want - pitch, -step, step);
 
                 float tasNow = TrueAirspeedU(s.Mach, alt);
                 float rateU = (float)Math.Sin(pitch * Math.PI / 180.0) * tasNow;
@@ -127,8 +126,8 @@ namespace AutoTOT
                 if (trace != null && t >= nextSample)
                 {
                     nextSample += TelemetryCadence.SampleIntervalSim;
-                    trace.Append($" t+{t:0}s {alt * FeetPerUnity:0}ft p{pitch:0.0} " +
-                                 $"r{rateU * FeetPerUnity:0.00}ft/s tas {tasNow * FeetPerUnity * 0.592484f:0}kn;");
+                    trace.Append($" t+{t:0}s {alt * GameUnits.UnityToFeet:0}ft p{pitch:0.0} " +
+                                 $"r{rateU * GameUnits.UnityToFeet:0.00}ft/s tas {tasNow * GameUnits.UnityToFeet * 0.592484f:0}kn;");
                 }
             }
             return false;
@@ -136,9 +135,6 @@ namespace AutoTOT
 
         /// <summary>True airspeed in unity units per second, from the held Mach and the atmosphere.</summary>
         private static float TrueAirspeedU(float mach, float altU)
-            => mach * Atmosphere.SpeedOfSound(altU * UnityToMetres) / UnityToMetres;
-
-        private static bool Finite(float v) => !float.IsNaN(v) && !float.IsInfinity(v);
-        private static float Clamp(float v, float lo, float hi) => v < lo ? lo : (v > hi ? hi : v);
+            => mach * Atmosphere.SpeedOfSound(altU * GameUnits.MetersPerUnity) / GameUnits.MetersPerUnity;
     }
 }

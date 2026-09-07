@@ -1,4 +1,4 @@
-﻿using System.Collections.Generic;
+using System.Collections.Generic;
 using SeaPower;
 using UnityEngine;
 
@@ -12,51 +12,125 @@ namespace AutoTOT
     internal sealed partial class Hud
     {
         private const float SelectionLabelW = 80f;   // TARGET / SHOOTERS label column
-        private const float FormationToggleW = 170f; // whole-formation checkbox column
-        private const float StrikeButtonW = 110f;    // ADD TO STRIKE / CLEAR button column
-        private const float GroupButtonW = 70f;      // + ADD / CLEAR shooter-group buttons
+        private const float ClearButtonW = 70f;      // CLEAR, on both lists
+        private const float AddShipButtonW = 100f;   // + SHIP / ✓ HELD
+        private const float AddFormationButtonW = 130f;  // + FORMATION / ✓ HELD
+        private const float HelpButtonW = 76f;       // ? KEYS, in the title bar
+        // Secondary commit-row buttons. They share a width so the row reads as one set of
+        // alternatives to the primary above it, and three of them fit inside MinWindowW.
+        private const float SecondaryButtonW = 122f;
+        private const float SecondaryButtonH = 28f;
         // Checkbox prefixes. The unchecked one is spaces of matching width so the label does not
         // shift sideways when a row is toggled.
         private const string CheckedPrefix = "\u2713 ", UncheckedPrefix = "  ";
 
-        // TARGET / SHOOTERS rows at the top of the expanded panel.
+        // SHOOTERS then TARGET, in the order the player works: pick who shoots, then what at.
         private void DrawSelectionHeader(bool haveTarget)
         {
+            // The name gets whatever the two buttons leave, on ONE line. Wrapping here pushed a
+            // long ship name up into the row above.
+            GUILayout.BeginHorizontal(GUILayout.Height(RowHeight));
+            GUILayout.Label("SHOOTERS", _hdr, GUILayout.Width(SelectionLabelW));
+            GUILayout.Label(_anchor != null ? UnitNaming.SafeName(_anchor) : "click one of your ships",
+                            _rowOneLine, GUILayout.ExpandWidth(true));
+
+            // Two buttons rather than one button and a mode. Each names the noun it adds, and each
+            // says when its work is already done, so clicking a ship that is already held gives an
+            // answer instead of looking like nothing happened.
+            bool haveAnchor = _anchor != null && !_anchor.IsDestroyed;
+            bool shipHeld = haveAnchor && _group.Contains(_anchor);
+            GUI.enabled = haveAnchor && !shipHeld;
+            if (GUILayout.Button(shipHeld ? "✓ HELD" : "+ SHIP", _btn,
+                                 GUILayout.Width(AddShipButtonW), GUILayout.Height(RowHeight)))
+                AddSelectionToGroup(wholeFormation: false);
+
+            bool haveFormation = haveAnchor && _anchor.Formation != null;
+            bool formationHeld = haveFormation && FormationFullyHeld(_anchor);
+            GUI.enabled = haveFormation && !formationHeld;
+            if (GUILayout.Button(formationHeld ? "✓ HELD" : "+ FORMATION", _btn,
+                                 GUILayout.Width(AddFormationButtonW), GUILayout.Height(RowHeight)))
+                AddSelectionToGroup(wholeFormation: true);
+            GUI.enabled = true;
+            GUILayout.EndHorizontal();
+
+            // The shooter roster, when there is one. It replaces the current selection as the
+            // shooter list, so say so plainly: otherwise clicking another ship and seeing the list
+            // not change reads as the panel having stopped tracking the selection.
+            if (_group.Count > 0)
+            {
+                GUILayout.BeginHorizontal(GUILayout.Height(RowHeight));
+                GUILayout.Label($"SHOOTERS ({_group.Count})", _hdr, GUILayout.Width(SelectionLabelW + 40f));
+                GUI.color = Accent;
+                GUILayout.Label("from any formation; click a ship anywhere, then + SHIP",
+                                _rowOneLine, GUILayout.ExpandWidth(true));
+                GUI.color = Color.white;
+                if (GUILayout.Button("CLEAR", _btnDanger, GUILayout.Width(ClearButtonW), GUILayout.Height(RowHeight)))
+                    _group.Clear();
+                GUILayout.EndHorizontal();
+            }
+
             GUILayout.BeginHorizontal(GUILayout.Height(RowHeight));
             GUILayout.Label("TARGET", _hdr, GUILayout.Width(SelectionLabelW));
             GUI.color = haveTarget ? TargetCol : TargetMissing;
             GUILayout.Label(haveTarget ? TargetLabel() : "click an enemy contact to set target", _rowOneLine);
             GUI.color = Color.white;
             GUILayout.EndHorizontal();
+        }
 
-            // The name gets whatever the fixed-width checkbox leaves, on ONE line. Wrapping here
-            // pushed a long ship name up into the TARGET row above.
-            GUILayout.BeginHorizontal(GUILayout.Height(RowHeight));
-            GUILayout.Label("SHOOTERS", _hdr, GUILayout.Width(SelectionLabelW));
-            GUILayout.Label(_anchor != null ? Name(_anchor) : "click one of your ships",
-                            _rowOneLine, GUILayout.ExpandWidth(true));
-            _wholeFormation = DrawCheckbox(_wholeFormation, "whole formation", FormationToggleW);
-            GUI.enabled = _anchor != null && !_anchor.IsDestroyed;
-            if (GUILayout.Button("+ ADD", _btn, GUILayout.Width(GroupButtonW), GUILayout.Height(RowHeight)))
-                AddSelectionToGroup();
-            GUI.enabled = true;
-            GUILayout.EndHorizontal();
+        /// <summary>
+        /// One line stating what the commit buttons will do, or why they are greyed. A disabled
+        /// button that gives no reason is the panel refusing to say which of two preconditions is
+        /// missing, and both are one click away from being met.
+        /// </summary>
+        private void DrawStatusLine(List<ObjectBase> shooters, bool haveTarget)
+        {
+            int ships = 0, rounds = 0;
+            foreach (ObjectBase ship in shooters)
+                foreach (Row r in CachedEngageRows(ship))
+                {
+                    if (!r.InRange) continue;
+                    string key = Key(ship, r.AmmoId);
+                    if (!_checked.TryGetValue(key, out bool on) || !on) continue;
+                    rounds += Mathf.Min(_salvo.TryGetValue(key, out int sv) ? sv : 1, r.Count);
+                    ships++;
+                }
 
-            // The strike group, when there is one. It replaces the current selection as the shooter
-            // list, so say so plainly: otherwise clicking another ship and seeing the list not change
-            // reads as the panel having stopped tracking the selection.
-            if (_group.Count > 0)
+            string msg;
+            Color col;
+            if (!haveTarget)      { msg = "select an enemy contact to fire"; col = TargetMissing; }
+            else if (rounds == 0) { msg = "tick at least one missile"; col = Warn; }
+            else
             {
-                GUILayout.BeginHorizontal(GUILayout.Height(RowHeight));
-                GUILayout.Label("GROUP", _hdr, GUILayout.Width(SelectionLabelW));
-                GUI.color = Accent;
-                GUILayout.Label($"{_group.Count} ship(s) held; + ADD brings the current selection in",
-                                _rowOneLine, GUILayout.ExpandWidth(true));
-                GUI.color = Color.white;
-                if (GUILayout.Button("CLEAR", _btn, GUILayout.Width(GroupButtonW), GUILayout.Height(RowHeight)))
-                    _group.Clear();
-                GUILayout.EndHorizontal();
+                msg = $"{ships} order(s)  ·  {rounds} round(s) ready for {TargetLabel()}";
+                col = Accent;
             }
+
+            GUILayout.BeginHorizontal(GUILayout.Height(RowHeight));
+            GUI.color = col;
+            GUILayout.Label(msg, _rowOneLine, GUILayout.ExpandWidth(true));
+            // Collecting in-game orders is a mode, not a hint, so it belongs on the status line
+            // whenever it is on and nowhere at all when it is off.
+            if (Coordinator.StrikeArmed)
+            {
+                GUI.color = Accent;
+                GUILayout.Label($"● collecting your in-game orders too ({Coordinator.StrikeCount} held); {StrikeHint()} to stop",
+                                _rowOneLine);
+            }
+            GUI.color = Color.white;
+            GUILayout.EndHorizontal();
+        }
+
+        // The hotkey list, shown only while the ? in the title bar is toggled on.
+        private void DrawHelpOverlay()
+        {
+            DrawDivider();
+            GUI.color = TextDim;
+            GUILayout.Label($"{HideHint()}  hide the panel        " +
+                            $"{ToggleHint()}  auto-coordinate normal group orders        " +
+                            $"{StrikeHint()}  collect in-game orders into the strike", _hdr);
+            GUILayout.Label("salvo  ·  Shift steps by 10, Ctrl by 5", _hdr);
+            GUI.color = Color.white;
+            DrawDivider();
         }
 
         // The title bar ; always visible, draggable, carries the collapse toggle and auto status.
@@ -67,9 +141,13 @@ namespace AutoTOT
                 _open = !_open;
             GUILayout.Label("TIME-ON-TARGET", _title, GUILayout.Height(HeaderH));
             GUILayout.FlexibleSpace();
-            // Hint in the otherwise-empty middle of the title bar: which key hides the panel.
-            GUI.color = TextDim;
-            GUILayout.Label($"{HideHint()} to hide", _hdr, GUILayout.Height(HeaderH));
+            // The hotkeys live behind this, so they are findable without being repeated on a hint
+            // line every frame. Outlined rather than bare: a glyph drawn in a label style reads as
+            // part of the title, not as something to press.
+            GUI.color = _showHelp ? Accent : Color.white;
+            if (GUILayout.Button("? KEYS", _btnSecondary,
+                                 GUILayout.Width(HelpButtonW), GUILayout.Height(HeaderH - 6f)))
+                _showHelp = !_showHelp;
             GUI.color = Color.white;
             GUILayout.FlexibleSpace();
             // Live engagement count ; visible even while minimized.
@@ -145,9 +223,14 @@ namespace AutoTOT
             GUI.color = Color.white;
             
             GUILayout.FlexibleSpace();
-            if (GUILayout.Button("–", _btn, GUILayout.Width(30))) _salvo[key] = Mathf.Max(1, _salvo[key] - SalvoStep());
+            // The steppers state their own step size while a modifier is held, which is the moment
+            // it matters. The full key list lives behind the ? in the title bar.
+            int step = SalvoStep();
+            string minus = step > 1 ? $"–{step}" : "–", plus = step > 1 ? $"+{step}" : "+";
+            float stepW = step > 1 ? 44f : 30f;
+            if (GUILayout.Button(minus, _btn, GUILayout.Width(stepW))) _salvo[key] = Mathf.Max(1, _salvo[key] - step);
             GUILayout.Label($"{_salvo[key]}", _row, GUILayout.Width(28));
-            if (GUILayout.Button("+", _btn, GUILayout.Width(30))) _salvo[key] = Mathf.Min(r.Count, _salvo[key] + SalvoStep());
+            if (GUILayout.Button(plus, _btn, GUILayout.Width(stepW))) _salvo[key] = Mathf.Min(r.Count, _salvo[key] + step);
             GUI.enabled = true;
             GUILayout.EndHorizontal();
 
@@ -247,7 +330,13 @@ namespace AutoTOT
         private void DrawEngagements()
         {
             DrawDivider();
-            GUILayout.Label("ENGAGEMENTS", _hdr);
+            GUILayout.BeginHorizontal(GUILayout.Height(RowHeight));
+            if (GUILayout.Button(_engagementsOpen ? "▾" : "▸", _chev, GUILayout.Width(20), GUILayout.Height(RowHeight)))
+                _engagementsOpen = !_engagementsOpen;
+            GUILayout.Label(_salvos.Count > 0 ? $"ENGAGEMENTS ({_salvos.Count})" : "ENGAGEMENTS", _hdr);
+            GUILayout.EndHorizontal();
+            if (!_engagementsOpen) return;
+
             if (_salvos.Count == 0)
             {
                 GUI.color = TextDim;
@@ -314,37 +403,41 @@ namespace AutoTOT
 
         private readonly List<ObjectBase> _strikeTargetScratch = new List<ObjectBase>();
 
-        // The staged multi-target strike: one group per target, each removable, above the buttons.
+        // The staged multi-target strike: one group per target, each removable, directly above the
+        // commit row that fires them. The list and the button that acts on it belong together.
         private void DrawStagedStrike()
         {
             bool armed = Coordinator.StrikeArmed;
             if (_strike.Count == 0 && !armed) return;
 
+            CollectStrikeTargets(_strikeTargetScratch);
+
             DrawDivider();
-            GUILayout.BeginHorizontal();
-            GUILayout.Label("STRIKE", _hdr);
+            GUILayout.BeginHorizontal(GUILayout.Height(RowHeight));
+            GUILayout.Label(_strike.Count > 0
+                ? $"STRIKE  ·  {_strikeTargetScratch.Count} target(s), {_strike.Count} order(s)"
+                : "STRIKE", _hdr);
             GUILayout.FlexibleSpace();
-            GUI.color = armed ? Accent : TextDim;
-            GUILayout.Label(armed
-                ? $"● COLLECTING in-game orders ({Coordinator.StrikeCount} held) ; {StrikeHint()} to stop"
-                : $"○ not collecting ; {StrikeHint()} to collect in-game orders too", _hdr);
-            GUI.color = Color.white;
+            if (GUILayout.Button("CLEAR", _btnDanger, GUILayout.Width(ClearButtonW), GUILayout.Height(RowHeight)))
+            {
+                _strike.Clear();
+                Coordinator.CancelStrike();
+            }
             GUILayout.EndHorizontal();
 
             if (_strike.Count == 0)
             {
                 GUI.color = TextDim;
-                GUILayout.Label("   nothing staged from the panel yet ; pick missiles and press ADD TO STRIKE", _row);
+                GUILayout.Label("   nothing staged from the panel yet; pick missiles and press + TARGET", _row);
                 GUI.color = Color.white;
                 return;
             }
 
-            CollectStrikeTargets(_strikeTargetScratch);
             foreach (ObjectBase t in _strikeTargetScratch)
             {
                 GUILayout.BeginHorizontal();
                 GUI.color = TargetCol;
-                GUILayout.Label(FoggedLabel(t), _row, GUILayout.Width(210));
+                GUILayout.Label(FoggedLabel(t), _rowOneLine, GUILayout.Width(210));
                 GUI.color = TextMain;
 
                 int ships = 0, rounds = 0;
@@ -361,31 +454,63 @@ namespace AutoTOT
             }
         }
 
-        // FIRE STRIKE / CLEAR. Drawn under the normal fire row so the single-target flow stays
-        // exactly where it was and the strike controls only appear once something is staged.
-        private void DrawStrikeActions()
+        /// <summary>
+        /// The commit row. Exactly ONE solid green button is ever on screen, and it is whichever
+        /// commit the player is currently building: the staged strike if anything is staged, the
+        /// target in front of them otherwise. Direct fire stays available either way, because a
+        /// pop-up threat is a legitimate reason to shoot without disturbing the plan; it just stops
+        /// being the headline action.
+        /// </summary>
+        private void DrawCommitRow(List<ObjectBase> shooters, bool canFire)
         {
-            if (_strike.Count == 0 && !Coordinator.StrikeArmed) return;
-
             CollectStrikeTargets(_strikeTargetScratch);
-            int total = _strike.Count + Coordinator.StrikeCount;
-            if (total == 0) return;
+            bool strikeIsPrimary = _strike.Count + Coordinator.StrikeCount > 0;
 
             GUILayout.Space(4);
+
+            // The primary, first and alone on its row.
             GUILayout.BeginHorizontal();
-            string held = Coordinator.StrikeCount > 0 ? $" + {Coordinator.StrikeCount} in-game" : "";
-            if (GUILayout.Button(
-                    $"FIRE STRIKE ({_strikeTargetScratch.Count} target(s), {_strike.Count} order(s){held})",
-                    _fire, GUILayout.Height(FireButtonHeight)))
+            if (strikeIsPrimary)
             {
-                Coordinator.FireStrike(_strike);
-                _strike.Clear();
+                string held = Coordinator.StrikeCount > 0 ? $" + {Coordinator.StrikeCount} in-game" : "";
+                if (GUILayout.Button(
+                        $"FIRE STRIKE  ·  {_strikeTargetScratch.Count} target(s), {_strike.Count} order(s){held}",
+                        _fire, GUILayout.Height(FireButtonHeight)))
+                {
+                    Coordinator.FireStrike(_strike);
+                    _strike.Clear();
+                }
             }
-            if (GUILayout.Button("CLEAR", _fireNow, GUILayout.Height(FireButtonHeight), GUILayout.Width(StrikeButtonW)))
+            else
             {
-                _strike.Clear();
-                Coordinator.CancelStrike();
+                GUI.enabled = canFire;
+                if (GUILayout.Button("FIRE THIS TARGET", _fire, GUILayout.Height(FireButtonHeight)))
+                    FireSelected(shooters, coordinated: true);
+                GUI.enabled = true;
             }
+            GUILayout.Space(ResizeGripClearance);
+            GUILayout.EndHorizontal();
+
+            // The alternatives, outlined, on the row below.
+            GUILayout.Space(2);
+            GUILayout.BeginHorizontal();
+            GUI.enabled = canFire;
+            if (GUILayout.Button("+ TARGET", _btnSecondary,
+                                 GUILayout.Width(SecondaryButtonW), GUILayout.Height(SecondaryButtonH)))
+                AddSelectionToStrike(shooters);
+
+            // Demoted, not removed: firing the target in front of you must stay one click away even
+            // while a strike is staged.
+            if (strikeIsPrimary &&
+                GUILayout.Button("FIRE THIS TARGET", _btnSecondary,
+                                 GUILayout.Width(SecondaryButtonW + 30f), GUILayout.Height(SecondaryButtonH)))
+                FireSelected(shooters, coordinated: true);
+
+            if (GUILayout.Button("FIRE NOW (no sync)", _btnSecondary,
+                                 GUILayout.Width(SecondaryButtonW + 30f), GUILayout.Height(SecondaryButtonH)))
+                FireSelected(shooters, coordinated: false);
+            GUI.enabled = true;
+            GUILayout.FlexibleSpace();
             GUILayout.Space(ResizeGripClearance);
             GUILayout.EndHorizontal();
         }

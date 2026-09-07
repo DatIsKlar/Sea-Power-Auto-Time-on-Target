@@ -1,4 +1,4 @@
-﻿using System.Collections.Generic;
+using System.Collections.Generic;
 using SeaPower;
 using SeapowerUI;
 using UnityEngine;
@@ -6,9 +6,9 @@ using UnityEngine;
 namespace AutoTOT
 {
     /// <summary>
-    /// On-screen planner. Remembers your last-selected friendly ship (the "anchor",
-    /// with a This-ship / Whole-formation toggle) and your last-selected enemy as the
-    /// target. Lists each shooter's missiles with live flight-time readouts and lets
+    /// On-screen planner. Remembers your last-selected friendly ship (the "anchor") and your
+    /// last-selected enemy as the target. The anchor can be held in a persistent shooter roster,
+    /// one hull or one formation at a time, drawn from as many formations as you like. Lists each shooter's missiles with live flight-time readouts and lets
     /// you fire a hand-picked set as a coordinated Time-on-Target strike.
     ///
     /// Split across four partial files:
@@ -27,7 +27,12 @@ namespace AutoTOT
         private ObjectBase _anchor;      // last selected friendly unit
         private ObjectBase _target;      // last selected enemy unit (real object, for firing)
         private Vehicle _targetVehicle;  // the enemy contact, for fog-of-war-correct display
-        private bool _wholeFormation;
+        // ENGAGEMENTS reports what is already in the air, so it sits below the planning controls and
+        // can be folded away entirely while a strike is being built.
+        private bool _engagementsOpen = true;
+        // The hotkey list, behind a ? in the title bar: discoverable once rather than shouted every
+        // frame from a hint line.
+        private bool _showHelp;
 
         private readonly Dictionary<string, bool> _checked = new Dictionary<string, bool>();
         private readonly Dictionary<string, int> _salvo = new Dictionary<string, int>();
@@ -86,7 +91,9 @@ namespace AutoTOT
 
         // Window geometry.
         private const float DefaultWindowW = 540f, DefaultWindowH = 520f;
-        private const float MinWindowW = 420f, MinWindowH = 320f;   // enforced while resizing
+        private const float MinWindowW = 480f, MinWindowH = 320f;   // enforced while resizing;
+                                                            // MinWindowW must hold the three
+                                                            // secondary commit buttons in a row
         private const float InitialTopMargin = 40f;                  // first-paint placement
         private const float InitialSideMargin = 8f;
         private const float OffscreenMargin = 60f;                   // px the window always keeps on screen
@@ -110,15 +117,17 @@ namespace AutoTOT
         // so the planner neither draws nor eats mouse input there.
         private static bool InMission() => Globals._mainGameViewModel != null;
 
-        // Human-readable form of the configured hide combo (e.g. "Alt+G", or just "G" with no modifier).
-        private static string HideHint()
+        // Human-readable form of a configured combo (e.g. "Alt+G", or just "G" with no modifier).
+        private static string Combo(KeyCode key)
         {
-            string key = Bootstrap.PanelKey.ToString();
-            if (Bootstrap.ToggleModifier == KeyCode.None) return key;
+            if (Bootstrap.ToggleModifier == KeyCode.None) return key.ToString();
             string mod = Bootstrap.ToggleModifier.ToString()
                 .Replace("Left", "").Replace("Right", "");   // "LeftAlt" -> "Alt"
             return mod + "+" + key;
         }
+
+        private static string HideHint() => Combo(Bootstrap.PanelKey);
+        private static string ToggleHint() => Combo(Bootstrap.ToggleKey);
 
         // Uniform UI scale for the whole panel. 0 in config = auto: 1x at 1080p, ~2x at 2160p.
         // Shared by OnGUI (GUI.matrix) and the Update-path input handlers (Hud.Mouse.cs), which
@@ -158,6 +167,11 @@ namespace AutoTOT
                 _strikeGeneration = Coordinator.ResetGeneration;
                 _strike.Clear();
                 _group.Clear();
+                // Unity reuses instance IDs after destruction, so a ship that threw while building
+                // its rows in one mission could inherit the ID of a healthy ship in the next and be
+                // silently dropped from the panel. The set exists only to stop one log line per
+                // frame within a mission, so a mission boundary is the right place to forget it.
+                _rowErrorLogged.Clear();
             }
 
             // While hidden, draw nothing and release any input capture so the camera is free.
@@ -188,6 +202,7 @@ namespace AutoTOT
             {
                 _panelTex, _headerTex, _fireTex, _btnTex, _btnHoverTex,
                 _scrollThumbTex, _scrollTrackTex, _menuHoverTex, _transparentTex,
+                _outlineTex, _outlineHoverTex,
             })
                 if (t != null) Object.Destroy(t);
         }
@@ -296,18 +311,16 @@ namespace AutoTOT
             DrawDivider();
             GUILayout.Space(4);
 
+            if (_showHelp) DrawHelpOverlay();
+
             bool haveTarget = _target != null && !_target.IsDestroyed;
             DrawSelectionHeader(haveTarget);
 
+            List<ObjectBase> shooters = GetShooters();
+
             GUILayout.Space(4);
             DrawDivider();
-
-            GUI.color = TextDim;
-            GUILayout.Label($"salvo ±:  Shift +10  ·  Ctrl +5      ADD TO STRIKE stages this target " +
-                            $"for a multi-target strike  ·  {StrikeHint()} collects in-game orders too", _hdr);
-            GUI.color = Color.white;
-
-            List<ObjectBase> shooters = GetShooters();
+            DrawStatusLine(shooters, haveTarget);
 
             // Periodically prune destroyed ships from _checked/_salvo to prevent unbounded growth.
             if (++_pruneCounter >= SelectionPruneIntervalFrames)
@@ -327,8 +340,8 @@ namespace AutoTOT
             _scroll = GUILayout.BeginScrollView(_scroll, GUILayout.ExpandHeight(true));
             if (shooters.Count == 0)
                 GUILayout.Label(_group.Count > 0
-                    ? "Strike group is empty. Click one of your ships, then ADD SHOOTERS."
-                    : "No missile-armed ships selected. Click one of your ships, or ADD SHOOTERS to build a group.",
+                    ? "No shooters held. Click one of your ships, then + SHIP."
+                    : "No missile-armed ships selected. Click one of your ships, or + SHIP to hold a roster.",
                     _row);
 
             RecomputeGroupSharing(shooters);
@@ -338,7 +351,7 @@ namespace AutoTOT
                 ObjectBase ship = shooters[si];
                 GUILayout.Space(3);
                 GUILayout.BeginHorizontal();
-                GUILayout.Label(Name(ship), _ship);
+                GUILayout.Label(UnitNaming.SafeName(ship), _ship);
                 GUILayout.FlexibleSpace();
                 if (_group.Count > 0 && GUILayout.Button("remove", _btn, GUILayout.Width(70)))
                     _group.Remove(ship);
@@ -360,11 +373,18 @@ namespace AutoTOT
             GUI.skin.horizontalScrollbar = prevHBar;
             GUI.skin.horizontalScrollbarThumb = prevHThumb;
 
+            // The staged list sits directly above the button that commits it. Staging needs exactly
+            // what firing needs: a target and at least one checked row.
+            DrawStagedStrike();
+            DrawCommitRow(shooters, haveTarget && AnyChecked(shooters));
+
+            // Live, post-launch state. It reports what is already in the air rather than what is
+            // being built, so it goes below everything that builds.
             DrawEngagements();
             DrawDivider();
 
             GUILayout.BeginHorizontal();
-            bool auto = DrawCheckbox(Coordinator.Active, "Also auto-coordinate normal group orders (Alt+T)");
+            bool auto = DrawCheckbox(Coordinator.Active, $"Also auto-coordinate normal group orders ({ToggleHint()})");
             if (auto != Coordinator.Active)
             {
                 Coordinator.Active = auto;
@@ -372,26 +392,8 @@ namespace AutoTOT
             }
             GUILayout.FlexibleSpace();
             DrawScaleControl();
+            GUILayout.Space(ResizeGripClearance);   // settings is the bottom row now: keep it clear of the grip
             GUILayout.EndHorizontal();
-
-            DrawStagedStrike();
-
-            GUILayout.Space(4);
-            bool canFire = haveTarget && AnyChecked(shooters);
-            GUILayout.BeginHorizontal();
-            GUI.enabled = canFire;
-            if (GUILayout.Button("FIRE : TIME ON TARGET", _fire, GUILayout.Height(FireButtonHeight)))
-                FireSelected(shooters, coordinated: true);
-            // Staging needs exactly what firing needs: a target and at least one checked row.
-            if (GUILayout.Button("ADD TO\nSTRIKE", _fireNow, GUILayout.Height(FireButtonHeight), GUILayout.Width(StrikeButtonW)))
-                AddSelectionToStrike(shooters);
-            if (GUILayout.Button("FIRE NOW\n(no sync)", _fireNow, GUILayout.Height(FireButtonHeight), GUILayout.Width(100)))
-                FireSelected(shooters, coordinated: false);
-            GUI.enabled = true;
-            GUILayout.Space(ResizeGripClearance);   // keep the last button out from under the grip
-            GUILayout.EndHorizontal();
-
-            DrawStrikeActions();
 
             DrawResizeGrip();
             GUI.DragWindow(new Rect(0, 0, 100000, HeaderH));
@@ -417,19 +419,10 @@ namespace AutoTOT
 
             if (_anchor == null || _anchor.IsDestroyed) return _shootersCache;
 
-            if (_wholeFormation && _anchor.Formation != null)
-            {
-                foreach (Station st in _anchor.Formation.Stations)
-                {
-                    ObjectBase u = st?.UnitObject;
-                    if (IsMissileShip(u) && !_shootersCache.Contains(u)) _shootersCache.Add(u);
-                }
-                if (IsMissileShip(_anchor) && !_shootersCache.Contains(_anchor)) _shootersCache.Add(_anchor);
-            }
-            else if (IsMissileShip(_anchor))
-            {
-                _shootersCache.Add(_anchor);
-            }
+            // No roster means "follow the selection", and the selection is one ship. Shooting with
+            // more than one hull goes through the roster, which is the only place the panel keeps
+            // a shooter list; there is no second, invisible way to assemble one.
+            if (IsMissileShip(_anchor)) _shootersCache.Add(_anchor);
             return _shootersCache;
         }
 
@@ -544,7 +537,7 @@ namespace AutoTOT
                 list.Clear();
                 if (_rowErrorLogged.Add(id))
                     Bootstrap.Log.LogError(
-                        $"[AutoTOT] engage rows failed for {Name(ship)}; listing it as carrying " +
+                        $"[AutoTOT] engage rows failed for {UnitNaming.SafeName(ship)}; listing it as carrying " +
                         $"nothing. This ship is excluded until the mission ends.\n{e}");
             }
             _rowCache[id] = list;
@@ -647,11 +640,6 @@ namespace AutoTOT
 
         private static string Key(ObjectBase u, string ammoId) => u.GetInstanceID() + "|" + ammoId;
 
-        private static string Name(ObjectBase u)
-        {
-            try { return u.getUIDAndName(); } catch { return u.name; }
-        }
-
         private string TargetLabel() => FoggedLabel(_target, _targetVehicle);
 
         // Fog-of-war-correct label for any object: friendly objects show their name; enemies show
@@ -663,7 +651,7 @@ namespace AutoTOT
             if (o == null) return "-";
             if (o.IsPlayerObject)
             {
-                try { return o.Name.Value; } catch { return Name(o); }
+                try { return o.Name.Value; } catch { return UnitNaming.SafeName(o); }
             }
 
             Vehicle v = known;
@@ -683,12 +671,7 @@ namespace AutoTOT
         }
 
         // Human-readable form of the configured strike-arm combo, for the panel hint.
-        private static string StrikeHint()
-        {
-            string key = Bootstrap.StrikeArmKey.ToString();
-            if (Bootstrap.ToggleModifier == KeyCode.None) return key;
-            return Bootstrap.ToggleModifier.ToString().Replace("Left", "").Replace("Right", "") + "+" + key;
-        }
+        private static string StrikeHint() => Combo(Bootstrap.StrikeArmKey);
 
         private void ToggleStrikeArmed()
         {
@@ -724,15 +707,16 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// Add the current selection to the strike group: the selected ship, or every missile-armed
-        /// ship in its formation when the whole-formation toggle is on. No target is needed, which is
-        /// the point: the group is what you assemble first, then aim.
+        /// Add the current selection to the shooter roster: just the selected ship, or every
+        /// missile-armed ship in its formation. Which one is the caller's choice, not a mode read
+        /// off the panel. No target is needed, which is the point: the roster is what you assemble
+        /// first, then aim, and it is not limited to one formation.
         /// </summary>
-        private void AddSelectionToGroup()
+        private void AddSelectionToGroup(bool wholeFormation)
         {
             if (_anchor == null || _anchor.IsDestroyed) return;
 
-            if (_wholeFormation && _anchor.Formation != null)
+            if (wholeFormation && _anchor.Formation != null)
             {
                 foreach (Station st in _anchor.Formation.Stations)
                 {
@@ -742,6 +726,32 @@ namespace AutoTOT
             }
             if (IsMissileShip(_anchor) && !_group.Contains(_anchor)) _group.Add(_anchor);
             _strikeGeneration = Coordinator.ResetGeneration;
+        }
+
+        /// <summary>
+        /// True when every ship + FORMATION would add is already in the roster. Tested against
+        /// IsMissileShip for the same reason AddSelectionToGroup filters on it: a formation's
+        /// non-missile hulls are never added, so counting them would leave the button reading
+        /// "+ FORMATION" forever with nothing left to add.
+        /// </summary>
+        private bool FormationFullyHeld(ObjectBase anchor)
+        {
+            if (anchor?.Formation == null) return false;
+            bool any = false;
+            foreach (Station st in anchor.Formation.Stations)
+            {
+                ObjectBase u = st?.UnitObject;
+                if (!IsMissileShip(u)) continue;
+                any = true;
+                if (!_group.Contains(u)) return false;
+            }
+            // AddSelectionToGroup also adds the anchor itself, whether or not it holds a station.
+            if (IsMissileShip(anchor))
+            {
+                any = true;
+                if (!_group.Contains(anchor)) return false;
+            }
+            return any;
         }
 
         /// <summary>Distinct targets in the staged strike, in the order they were first staged.</summary>

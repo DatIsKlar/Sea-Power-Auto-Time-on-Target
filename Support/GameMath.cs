@@ -37,6 +37,13 @@ namespace AutoTOT
         /// </summary>
         internal const float MinFlatSqrMagnitude = 1e-4f;
 
+        /// <summary>
+        /// True when <paramref name="v"/> is a real number. The ascent and descent solvers both
+        /// guard their reflected game reads with this before feeding them into a step loop, where a
+        /// NaN would propagate silently through every subsequent step.
+        /// </summary>
+        internal static bool IsFinite(float v) => !float.IsNaN(v) && !float.IsInfinity(v);
+
         /// <summary>The vector projected onto the horizontal plane.</summary>
         internal static Vector3 Flatten(Vector3 v)
         {
@@ -85,6 +92,21 @@ namespace AutoTOT
         /// </summary>
         internal static float FlatFromSlant(float slant, float altDelta)
             => Mathf.Sqrt(Mathf.Max(slant * slant - altDelta * altDelta, 0f));
+
+        /// <summary>
+        /// Pitch read off a transform's local euler angles, normalized from Unity's 0..360 range
+        /// into -180..180 so a nose-down attitude reads negative.
+        ///
+        /// Note the sign convention this inherits from the game: for aircraft the game's pitch is
+        /// NEGATIVE in a climb. Callers that want a hull-relative pitch for a submarine want
+        /// <c>Submarine.getPitch()</c> instead, which is a different quantity; see the
+        /// specialisation in VerticalProfiler.
+        /// </summary>
+        internal static float PitchDeg(Transform t)
+        {
+            float x = t.localEulerAngles.x;
+            return (x > 180f) ? x - 360f : x;
+        }
 
         /// <summary>
         /// Elevation of a direction above the horizontal, in degrees. Clamps before the asin, so a

@@ -82,8 +82,20 @@ namespace AutoTOT
             Interlocked.Increment(ref Stalls);
         }
 
+        /// <summary>
+        /// Which tier answered most recently. Written unconditionally, unlike the counters, because
+        /// the anchor-slide diagnostic needs it whether or not profiling is enabled and one enum
+        /// store is not a cost worth gating.
+        ///
+        /// Last-writer-wins across threads: the step loop can run on a worker, so this is only
+        /// meaningful when read immediately after a SYNCHRONOUS estimate on the same thread. That is
+        /// how <see cref="Coordinator"/> reads it, and it is diagnostic only, never a timing input.
+        /// </summary>
+        internal static Tier LastTier { get; private set; } = Tier.Failed;
+
         internal static void TierUsed(Tier t)
         {
+            LastTier = t;
             if (!Enabled) return;
             Interlocked.Increment(ref _tier[(int)t]);
         }

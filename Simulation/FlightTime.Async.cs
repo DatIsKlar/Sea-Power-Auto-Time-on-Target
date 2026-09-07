@@ -161,12 +161,23 @@ namespace AutoTOT
 
                 if (VerifySolve) VerifyAgainstMainThread(r);
 
-                if (r.Result > MinValidSeconds)
+                // Same plausibility bound the synchronous path applies. Without it a worker can
+                // publish an impossible flight time under a live key, and every caller for the next
+                // half second is handed it as fact.
+                bool implausible = r.Unit != null && !r.Unit.IsDestroyed &&
+                                   r.Target != null && !r.Target.IsDestroyed &&
+                                   IsImplausible(r.Result, r.Unit, r.Ap, r.Target);
+                if (r.Result > MinValidSeconds && !implausible)
                 {
                     _cache.Set(r.Key, r.Result);
                     ModelStats.TierUsed(ModelStats.Tier.Integrator);
                     continue;
                 }
+                if (implausible)
+                    Bootstrap.Log.LogWarning(
+                        $"[AutoTOT] estimate-rejected {r.AmmoId} (worker): {r.Result:0.00}s against " +
+                        $"a straight-line floor of " +
+                        $"{StraightLineFloorSeconds(r.Unit, r.Ap, r.Target):0.0}s. Not cached.");
 
                 // The loop declined. The remaining tiers need ObjectBase, so they can only run here.
                 // Rare on the beta branch, where the integrator answers every call.

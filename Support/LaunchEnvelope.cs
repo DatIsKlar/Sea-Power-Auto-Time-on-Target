@@ -49,8 +49,8 @@ namespace AutoTOT
             {
                 // Already able to fire. Say so, because a silent 0 here is indistinguishable from a
                 // model that declined, and that cost a test run once.
-                trace?.Append($" in band: {alt * AircraftDescent.FeetPerUnity:0}ft is at or below " +
-                              $"gate {hi * AircraftDescent.FeetPerUnity:0}ft, no descent needed |");
+                trace?.Append($" in band: {alt * GameUnits.UnityToFeet:0}ft is at or below " +
+                              $"gate {hi * GameUnits.UnityToFeet:0}ft, no descent needed |");
                 return 0f;
             }
 
@@ -76,7 +76,7 @@ namespace AutoTOT
                 GateAltU = hi,
                 CommandAltU = cmdAlt,
                 Mach = mach,
-                PitchDeg = -PitchDeg(air),            // euler is nose-down positive; the model is climb positive
+                PitchDeg = -GameMath.PitchDeg(air.transform),            // euler is nose-down positive; the model is climb positive
                 PitchRateDeg = p._maxTurnRates.x,
                 // The COMBAT pair, deliberately, even though air._inCombat reads false right here.
                 // GetDesiredPitch selects on _inCombat, and the aircraft is not in combat at commit:
@@ -95,12 +95,12 @@ namespace AutoTOT
             // same for both platforms. The in-combat flag is here because GetDesiredPitch selects
             // BOTH the pitch limit and the taper threshold on it, while this model always seeds the
             // out-of-combat pair; a run that logs inCombat True is telling us the seed is wrong.
-            trace?.Append($" from {alt * AircraftDescent.FeetPerUnity:0}ft to gate {hi * AircraftDescent.FeetPerUnity:0}ft " +
-                          $"(taper ref {cmdAlt * AircraftDescent.FeetPerUnity:0}ft, " +
-                          $"desired {air.DesiredAltitude.Value * AircraftDescent.FeetPerUnity:0}ft, " +
-                          $"band floor {lo * AircraftDescent.FeetPerUnity:0}ft), " +
+            trace?.Append($" from {alt * GameUnits.UnityToFeet:0}ft to gate {hi * GameUnits.UnityToFeet:0}ft " +
+                          $"(taper ref {cmdAlt * GameUnits.UnityToFeet:0}ft, " +
+                          $"desired {air.DesiredAltitude.Value * GameUnits.UnityToFeet:0}ft, " +
+                          $"band floor {lo * GameUnits.UnityToFeet:0}ft), " +
                           $"mach {mach:0.00}, pitch {st.PitchDeg:0.0}, limit {st.DescentLimitDeg:0.0}deg, " +
-                          $"threshold {st.ThresholdAltU * AircraftDescent.FeetPerUnity:0}ft, " +
+                          $"threshold {st.ThresholdAltU * GameUnits.UnityToFeet:0}ft, " +
                           $"inCombat {air._inCombat} (combat pair seeded regardless) |");
             return AircraftDescent.TryEstimate(st, out float seconds, trace) ? seconds : 0f;
         }
@@ -120,6 +120,35 @@ namespace AutoTOT
             public float TasKn;
             public float PitchDeg;     // positive = climb, matching GetDesiredPitch
             public bool AboveGate;     // still held out of its launch band
+
+            // D4 of docs/plans/open/anchor-liveness.md. The launcher sat in WaitingForRoll for the
+            // whole of a 296s wait and roll was the one quantity nothing recorded, so a state named
+            // after the aircraft's attitude could not be checked against that attitude.
+            public float RollDeg;      // bank, positive = right wing down
+            public float HeadingDeg;   // true heading
+            public float BearingDeg;   // bearing to target, same reference as HeadingDeg
+            public float OffBoreDeg;   // target relative to the nose, signed, -180..180
+            public float RangeKm;      // slant range to target
+
+            // D10 of docs/plans/open/anchor-liveness.md. The game's OWN pitch terms, read from
+            // MotionController rather than derived from the transform, because these are the exact
+            // values EngageSurfaceContact tests to decide whether the aircraft may fire. Logging
+            // them beside our own PitchDeg is also what pins down the sign convention between the
+            // two, which no run has established and which any pitch-aware fix depends on.
+            public bool  HasMotion;      // false when the controller could not be read
+            public float McPitchAngle;   // MotionController.PitchAngle
+            public float McPitchRate;    // MotionController.PitchRate
+            public float McPitchError;   // MotionController.PitchError
+            public bool  McDirectPoint;  // MotionController._directPoint
+
+            // D12 of docs/plans/open/anchor-liveness.md. The 2026-09-07f trace shows the aircraft
+            // level at its commanded mach and then pitching up 38 degrees IMMEDIATELY AFTER its first
+            // round, which is a manoeuvre the engagement triggers rather than a climb toward a cruise
+            // altitude. The user reports that at 20,000ft it does none of this and fires both rounds
+            // together. These two fields are what the game's own attack state machine drives, so they
+            // are what says whether the climb is commanded and by what.
+            public float DesiredAltFt;   // ObjectBase.DesiredAltitude, the commanded altitude
+            public bool  InDiveAttack;   // Aircraft._inDiveAttackMode
         }
 
         /// <summary>
@@ -137,17 +166,70 @@ namespace AutoTOT
             if (hi <= lo) return false;
 
             float altU = air.transform.position.y;
-            float sos = Atmosphere.SpeedOfSound(altU * AircraftDescent.UnityToMetres);
+            float sos = Atmosphere.SpeedOfSound(altU * GameUnits.MetersPerUnity);
             ISpeedCommand sc = air.SpeedCommand?.Value;
 
-            s.AltFt = altU * AircraftDescent.FeetPerUnity;
-            s.GateFt = hi * AircraftDescent.FeetPerUnity;
+            s.AltFt = altU * GameUnits.UnityToFeet;
+            s.GateFt = hi * GameUnits.UnityToFeet;
             s.TasKn = Mathf.Abs(air._velocityInKnots);
-            s.Mach = (sos > 0f) ? s.TasKn * 0.514444f / sos : 0f;
+            s.Mach = (sos > 0f) ? s.TasKn * GameUnits.KnotsToMs / sos : 0f;
             s.CmdMach = (sc != null) ? sc.SpeedInMach : float.NaN;
-            s.PitchDeg = -PitchDeg(air);
+            s.PitchDeg = -GameMath.PitchDeg(air.transform);
             s.AboveGate = altU > hi;
+            s.RollDeg = RollDeg(air);
+            s.HeadingDeg = air.transform.eulerAngles.y;
+            // Guarded rather than trusted: Motioncontroller is swapped out at runtime
+            // (SetFlightPhysicsModel) and is null on an aircraft that is not yet flying.
+            try
+            {
+                MotionController mc = air.Motioncontroller;
+                if (mc != null)
+                {
+                    s.HasMotion = true;
+                    s.McPitchAngle = mc.PitchAngle;
+                    s.McPitchRate = mc.PitchRate;
+                    s.McPitchError = mc.PitchError;
+                    s.McDirectPoint = mc._directPoint;
+                }
+            }
+            catch { s.HasMotion = false; }
+            try
+            {
+                s.DesiredAltFt = air.DesiredAltitude.Value * GameUnits.UnityToFeet;
+                s.InDiveAttack = air._inDiveAttackMode;
+            }
+            catch { s.DesiredAltFt = float.NaN; }
+            s.BearingDeg = float.NaN;
+            s.OffBoreDeg = float.NaN;
+            s.RangeKm = float.NaN;
             return true;
+        }
+
+        /// <summary>
+        /// Fills the target-relative half of <see cref="AirSnapshot"/>, which the snapshot itself
+        /// cannot do because it does not take a target. Separate so the existing single-argument
+        /// callers keep working and pay nothing.
+        /// </summary>
+        internal static void AddTargetGeometry(ref AirSnapshot s, ObjectBase unit, ObjectBase target)
+        {
+            if (unit == null || target == null || target.IsDestroyed
+                || unit.transform == null || target.transform == null) return;
+            Vector3 to = target.transform.position - unit.transform.position;
+            s.RangeKm = to.magnitude * GameUnits.MetersPerUnity / 1000f;
+            Vector3 flat = new Vector3(to.x, 0f, to.z);
+            if (flat.sqrMagnitude <= 1e-8f) return;
+            s.BearingDeg = Quaternion.LookRotation(flat).eulerAngles.y;
+            float rel = s.BearingDeg - s.HeadingDeg;
+            while (rel > 180f) rel -= 360f;
+            while (rel < -180f) rel += 360f;
+            s.OffBoreDeg = rel;
+        }
+
+        /// <summary>Bank angle, signed, positive with the right wing down.</summary>
+        private static float RollDeg(Aircraft air)
+        {
+            float z = air.transform.localEulerAngles.z;
+            return (z > 180f) ? z - 360f : z;
         }
 
         /// <summary>Held Mach: the commanded value where there is one, else what it is doing now.</summary>
@@ -155,14 +237,8 @@ namespace AutoTOT
         {
             ISpeedCommand sc = air.SpeedCommand?.Value;
             if (sc != null && sc.SpeedInMach > 0.01f) return sc.SpeedInMach;
-            float sos = Atmosphere.SpeedOfSound(air.transform.position.y * AircraftDescent.UnityToMetres);
-            return (sos > 0f) ? Mathf.Abs(air._velocityInKnots) * 0.514444f / sos : 0f;
-        }
-
-        private static float PitchDeg(Aircraft air)
-        {
-            float x = air.transform.localEulerAngles.x;
-            return (x > 180f) ? x - 360f : x;
+            float sos = Atmosphere.SpeedOfSound(air.transform.position.y * GameUnits.MetersPerUnity);
+            return (sos > 0f) ? Mathf.Abs(air._velocityInKnots) * GameUnits.KnotsToMs / sos : 0f;
         }
 
         /// <summary>

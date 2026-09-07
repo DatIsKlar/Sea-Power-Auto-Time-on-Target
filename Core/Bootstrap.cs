@@ -21,7 +21,7 @@ namespace AutoTOT
 
         // Mod version. Keep in sync with AutoTOT.csproj <Version> and the [ACPlugin]
         // attribute in AnchorChainEntry.cs (which references this constant).
-        internal const string Version = "0.1.4";
+        internal const string Version = "0.1.5";
 
         internal static ManualLogSource Log = BepInEx.Logging.Logger.CreateLogSource("AutoTOT");
         public static Harmony Harmony { get; private set; }
@@ -51,6 +51,7 @@ namespace AutoTOT
         private static ConfigEntry<float> _cfgDebounce;
         private static ConfigEntry<float> _cfgMaxWindow;
         private static ConfigEntry<bool> _cfgVerbose;
+        private static ConfigEntry<bool> _cfgTraceFlightModel;
         private static ConfigEntry<bool> _cfgVerticalProfile;
         private static ConfigEntry<bool> _cfgProfiling;
         private static ConfigEntry<int> _cfgEstimatorThreads;
@@ -252,6 +253,13 @@ namespace AutoTOT
                     new AcceptableValueRange<float>(0.25f, 20.0f)));
             _cfgVerbose = _config.Bind("Debug", "VerboseLogging", false,
                 "Log every queued and released launch.");
+            _cfgTraceFlightModel = _config.Bind("Debug", "TraceFlightModel", false,
+                "Research tool, off by default. Logs the flight-model internals behind every " +
+                "estimate: the integrator's step trace, the waypoint sim, per-missile telemetry, " +
+                "launch geometry and the stage transitions, plus the estimate-vs-actual gap. Use it " +
+                "when a flight time looks wrong. It is roughly ten times the volume of ordinary " +
+                "verbose logging and runs extra sims per round, so leave it off for normal play " +
+                "and for coordination debugging, which VerboseLogging already covers.");
             _cfgVerticalProfile = _config.Bind("Debug", "VerticalProfile", false,
                 "Research tool, off by default. Logs a 1s trace of every submarine's depth change " +
                 "and every aircraft's altitude change, with the hull parameters each model is " +
@@ -310,6 +318,7 @@ namespace AutoTOT
             Coordinator.DebounceSeconds = _cfgDebounce.Value;
             Coordinator.MaxWindowSeconds = _cfgMaxWindow.Value;
             Coordinator.VerboseLog = _cfgVerbose.Value;
+            Coordinator.TraceFlightModel = _cfgTraceFlightModel.Value;
             VerticalProfiler.Enabled = _cfgVerticalProfile.Value;
             Coordinator.ProfilingEnabled = _cfgProfiling.Value;
             FlightTime.VerifySolve = _cfgVerifySolve.Value;

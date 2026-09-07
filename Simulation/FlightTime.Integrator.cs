@@ -244,7 +244,7 @@ namespace AutoTOT
                     // Re-emitted whenever the rail moves, so the formula above is measured rather
                     // than assumed.
                     string railKey = unit.GetInstanceID() + "/" + (ap._ammunitionFileName ?? "?");
-                    if (Coordinator.VerboseLog && vwp != null)
+                    if (Coordinator.TraceFlightModel && vwp != null)
                     {
                         try
                         {
@@ -265,7 +265,12 @@ namespace AutoTOT
                                 string E(Transform tr) => tr == null ? "n/a"
                                     : GameMath.ElevationDeg(tr.forward).ToString("0.0") + "°";
                                 Bootstrap.Log.LogInfo(
-                                    $"[AutoTOT] launch-rail {ap._ammunitionFileName}: " +
+                                    // D8 of docs/plans/open/anchor-liveness.md: the sim stamp. This
+                                    // trace is the best available proxy for a manoeuvring aircraft's
+                                    // heading through a launch wait, and without a time it cannot be
+                                    // lined up against envelope-track or engage-state.
+                                    $"[AutoTOT] launch-rail {ap._ammunitionFileName} " +
+                                    $"at sim {GameClock.SimNow():0.0}: " +
                                     $"gunObj {E(railGun)}, containerBase {E(railBase)}, mount {E(railMount)}, " +
                                     $"fixedRail {fixedRail}, predicted {predictedPitch:0.0}°, " +
                                 $"railAz {railAzTxt}, " +
@@ -408,8 +413,12 @@ namespace AutoTOT
 
         private static float IntegratedEndTimeCore(ObjectBase unit, AmmunitionParameters ap,
             ObjectBase target, out IntegratedPhases phases, bool emitDiag)
+            => IntegratedEndTimeCore(unit, ap, target, out phases, emitDiag, default);
+
+        private static float IntegratedEndTimeCore(ObjectBase unit, AmmunitionParameters ap,
+            ObjectBase target, out IntegratedPhases phases, bool emitDiag, in LaunchState launch)
         {
-            if (!TryBuildSolveInput(unit, ap, target, out SolveInput input, out phases, emitDiag))
+            if (!TryBuildSolveInput(unit, ap, target, out SolveInput input, out phases, emitDiag, launch))
                 return -1f;
             ModelStats.SetupDone();
             return Solve(in input, ap, ref phases);
@@ -423,6 +432,18 @@ namespace AutoTOT
         /// </summary>
         internal static bool TryBuildSolveInput(ObjectBase unit, AmmunitionParameters ap,
             ObjectBase target, out SolveInput input, out IntegratedPhases phases, bool emitDiag)
+            => TryBuildSolveInput(unit, ap, target, out input, out phases, emitDiag, default);
+
+        /// <summary>
+        /// As above, with an optional <see cref="LaunchState"/> override. When one is supplied the
+        /// setup answers for the shot as it ACTUALLY left the rail (position, speed and rail
+        /// bearing at that instant) rather than for a hypothetical shot from the platform's current
+        /// position. Everything downstream of the setup is unchanged: the same step loop runs on the
+        /// same immutable input, which is the point of this seam.
+        /// </summary>
+        internal static bool TryBuildSolveInput(ObjectBase unit, AmmunitionParameters ap,
+            ObjectBase target, out SolveInput input, out IntegratedPhases phases, bool emitDiag,
+            in LaunchState launch)
         {
             input = default;
             phases = default;
@@ -434,7 +455,7 @@ namespace AutoTOT
                 bool nonKin = ap.Kinematics == AmmunitionParameters.KinematicsLevel.None;
                 if (!nonKin && _dragMethod == null) return false;
 
-                Vector3 launchPos = unit.transform.position;
+                Vector3 launchPos = launch.Valid ? launch.PosU : unit.transform.position;
                 Vector3 targetPos = target.transform.position;
                 Vector3 targetVel = target._velocityVecInUnity;
                 bool isAir = unit.IsAirUnit;
@@ -442,7 +463,8 @@ namespace AutoTOT
                 ApplyEvasiveBoost(ap, target, launchPos, targetPos, ref targetVel);
 
                 float dragFactor = ap.GetDragFactor(isAir);
-                float startVelKnots = Mathf.Max(unit._velocityInKnots, 0f);
+                float startVelKnots = Mathf.Max(launch.Valid ? launch.VelKnots
+                                                             : unit._velocityInKnots, 0f);
                 float maxFlight = ap._maxFlightTime > 0f ? ap._maxFlightTime : MaxFlightTimeFallback;
                 float targetAlt0 = Mathf.Max(targetPos.y, 0f);
 
@@ -521,6 +543,12 @@ namespace AutoTOT
                         GameMath.TryFlatDirection(unit.transform.forward, out launchHeading);
                     }
                 }
+                // A recorded launch bearing wins over the live rail: the rail has since turned with
+                // the platform, and the bearing this shot actually flew off is the one that decides
+                // how far off-boresight it started. Only for a fixed rail, so a ship's trainable
+                // mount (which aims at the target, heading zero) is untouched.
+                if (launch.Valid && fixedRail && launch.HeadingFlat.sqrMagnitude > 1e-8f)
+                    launchHeading = launch.HeadingFlat;
                 // Attitude carried ACROSS steps for the coupled turn: rebuilding it each step would
                 // refund the budget spent on roll and silently restore the independent-limit rate.
                 // Re-seeded (roll zero) on any step that does not take the coupled branch.
@@ -548,7 +576,7 @@ namespace AutoTOT
                     catch { altNodes = null; }
                 }
                 float nextSample = NoseOverIntervalSim;
-                bool trackDiag = Coordinator.VerboseLog && emitDiag;
+                bool trackDiag = Coordinator.TraceFlightModel && emitDiag;
                 string ammoLabel = ap._ammunitionFileName ?? "?";
                 if (trackDiag)
                     Bootstrap.Log.LogInfo($"[AutoTOT] sim-launch {ammoLabel}: launchPitch " +

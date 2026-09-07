@@ -18,7 +18,6 @@ namespace AutoTOT
         private const float SampleIntervalSim = 1f;
         private const float SettleFeet = 3f;      // commanded vs actual, below this it has arrived
         private const int SettleSamples = 3;      // consecutive settled samples before closing a run
-        private const float UnityToFeet = 220.47266f;
 
         // Opening a run and closing one are different questions, so they use different thresholds.
         // Aircraft hold altitude to within a few feet and never sit exactly on the commanded value,
@@ -81,8 +80,8 @@ namespace AutoTOT
         {
             // Depth is positive-down for boats, altitude positive-up for aircraft. Keep each in the
             // sign the platform is normally discussed in so the log reads naturally.
-            float nowFt = (isSub ? -u.transform.position.y : u.transform.position.y) * UnityToFeet;
-            float cmdFt = (isSub ? -u.DesiredAltitude.Value : u.DesiredAltitude.Value) * UnityToFeet;
+            float nowFt = (isSub ? -u.transform.position.y : u.transform.position.y) * GameUnits.UnityToFeet;
+            float cmdFt = (isSub ? -u.DesiredAltitude.Value : u.DesiredAltitude.Value) * GameUnits.UnityToFeet;
 
             int id = u.GetInstanceID();
             if (!_tracks.TryGetValue(id, out Track t)) { t = new Track(); _tracks[id] = t; }
@@ -124,7 +123,7 @@ namespace AutoTOT
             t.LastSim = simNow; t.LastFt = nowFt;
 
             Bootstrap.Log.LogInfo(
-                $"[AutoTOT] vprof #{t.Run} {LaunchDiagnostics.SafeName(u)}: t+{simNow - t.StartSim:0.0}s " +
+                $"[AutoTOT] vprof #{t.Run} {UnitNaming.SafeName(u)}: t+{simNow - t.StartSim:0.0}s " +
                 $"{(isSub ? "depth" : "alt")} {nowFt:0}ft -> {cmdFt:0}ft, rate {rate:+0.00;-0.00}ft/s, " +
                 $"pitch {PitchDeg(u):0.0}, spd {u._velocityInKnots:0.0}kn" +
                 (snap ? " SNAP" : "") + Extra(u, isSub));
@@ -147,7 +146,7 @@ namespace AutoTOT
             string dir = isSub ? (moved > 0f ? "dive" : "ascend")
                                : (moved > 0f ? "climb" : "descend");
             Bootstrap.Log.LogInfo(
-                $"[AutoTOT] vprof #{t.Run} {LaunchDiagnostics.SafeName(u)}: DONE {dir} " +
+                $"[AutoTOT] vprof #{t.Run} {UnitNaming.SafeName(u)}: DONE {dir} " +
                 $"{t.StartFt:0}ft -> {nowFt:0}ft ({Mathf.Abs(moved):0}ft) in {span:0.0}s, " +
                 $"mean {(span > 0f ? Mathf.Abs(moved) / span : 0f):0.00}ft/s, " +
                 $"peak {Mathf.Abs(t.PeakRate):0.00}ft/s, {why}, " +
@@ -161,7 +160,7 @@ namespace AutoTOT
         {
             if (isSub) return SubMaxPlausibleFtPerSec;
             if (u is Aircraft air && air.Ap != null && air.Ap._maxClimbRate > 0f)
-                return air.Ap._maxClimbRate * 0.0148809375f * UnityToFeet * SnapMarginFactor;
+                return air.Ap._maxClimbRate * 0.0148809375f * GameUnits.UnityToFeet * SnapMarginFactor;
             return float.MaxValue;
         }
 
@@ -169,21 +168,20 @@ namespace AutoTOT
         private static float PitchDeg(ObjectBase u)
         {
             if (u is Submarine sub) return sub.getPitch();
-            float x = u.transform.localEulerAngles.x;
-            return (x > 180f) ? x - 360f : x;
+            return GameMath.PitchDeg(u.transform);
         }
 
         private static string Extra(ObjectBase u, bool isSub)
         {
             if (isSub && u is Submarine sub)
-                return $", tanks {sub._currentDepthChangeUsingTanks * UnityToFeet:+0.00;-0.00}ft/s";
+                return $", tanks {sub._currentDepthChangeUsingTanks * GameUnits.UnityToFeet:+0.00;-0.00}ft/s";
             if (!isSub && u is Aircraft air && air.Ap != null)
             {
                 // The game's atmosphere and drag helpers take metres and m/s. InducedDrag is
                 // 2W^2/(rho*v^2*pi*b^2*0.75), which is only dimensionally consistent in SI, so the
                 // knots conversion below is required rather than cosmetic.
-                const float FeetToMetres = 0.3048f, KnotsToMetresPerSec = 0.514444f;
-                float altM = u.transform.position.y * UnityToFeet * FeetToMetres;
+                const float KnotsToMetresPerSec = GameUnits.KnotsToMs;
+                float altM = u.transform.position.y * GameUnits.MetersPerUnity;
                 float rho = Atmosphere.Density(altM) / Atmosphere.Density(0f);
                 string lapse = TryUnary(_thrustLapse, air.Ap, altM, out float tl) ? $", lapse {tl:0.000}" : "";
                 string ind = TryBinary(_inducedDrag, air.Ap, u._velocityInKnots * KnotsToMetresPerSec, altM, out float dr)
@@ -324,10 +322,10 @@ namespace AutoTOT
             if (isSub && u is Submarine sub && sub.SP != null)
             {
                 Bootstrap.Log.LogInfo(
-                    $"[AutoTOT] vprof-card {LaunchDiagnostics.SafeName(u)} SUB: " +
-                    $"periscope {sub.SP._periscopeDepth * UnityToFeet:0}ft, " +
-                    $"maxTanks {sub.SP._maxDepthChangeUsingTanks * UnityToFeet:0.00}ft/s, " +
-                    $"ballastAccel {sub.SP._ballastTankChangeRate * UnityToFeet:0.0000}ft/s2, " +
+                    $"[AutoTOT] vprof-card {UnitNaming.SafeName(u)} SUB: " +
+                    $"periscope {sub.SP._periscopeDepth * GameUnits.UnityToFeet:0}ft, " +
+                    $"maxTanks {sub.SP._maxDepthChangeUsingTanks * GameUnits.UnityToFeet:0.00}ft/s, " +
+                    $"ballastAccel {sub.SP._ballastTankChangeRate * GameUnits.UnityToFeet:0.0000}ft/s2, " +
                     $"maxPitch {sub.SP._maxPitchAngle:0.0}deg, pitchRate {sub.SP._pitchChangeRate:0.0}deg/s, " +
                     $"maxSpdSubmerged {sub.SP._maxForwardVelocitySubmergedInKnots:0.0}kn");
                 return;
@@ -336,21 +334,21 @@ namespace AutoTOT
             {
                 AircraftParameters ap = air.Ap;
                 Bootstrap.Log.LogInfo(
-                    $"[AutoTOT] vprof-card {LaunchDiagnostics.SafeName(u)} AIR: " +
-                    $"maxClimbRate {ap._maxClimbRate:0.00} ({ap._maxClimbRate * 0.0148809375f * UnityToFeet:0.0}ft/s), " +
+                    $"[AutoTOT] vprof-card {UnitNaming.SafeName(u)} AIR: " +
+                    $"maxClimbRate {ap._maxClimbRate:0.00} ({ap._maxClimbRate * 0.0148809375f * GameUnits.UnityToFeet:0.0}ft/s), " +
                     $"engines {ap._engineCount}, maxWetThrust {ap._maxWetThrust:0}, mass {ap.Mass:0}, " +
                     $"presetAlts [{PresetFeet(ap)}], wingSpan {ap._wingSpan:0.0}, " +
                     // Descent is governed by these, NOT by the climb energy equation
                     // (FixedWingFlightPhysics.cs:760), which is why descents run far faster.
                     $"climbPitch {ap._maxOutOfCombatClimbPitch:0.0}/{ap._maxCombatClimbPitch:0.0} (cruise/combat), " +
-                    $"thresholdAlt {ap._outOfCombatThresholdAltitude * UnityToFeet:0}/{ap._inCombatThresholdAltitude * UnityToFeet:0}ft, " +
+                    $"thresholdAlt {ap._outOfCombatThresholdAltitude * GameUnits.UnityToFeet:0}/{ap._inCombatThresholdAltitude * GameUnits.UnityToFeet:0}ft, " +
                     $"G {ap._minG:0.0}..{ap._maxG:0.0}, " +
                     $"descentPitch {ap._maxOutOfCombatDescentPitch:0.0}/{ap._maxCombatDescentPitch:0.0} (cruise/combat), " +
                     $"physicsApproximation {GameTime.IsPhysicsApproximationEnabled()}");
                 return;
             }
             Bootstrap.Log.LogInfo(
-                $"[AutoTOT] vprof-card {LaunchDiagnostics.SafeName(u)} HELO: " +
+                $"[AutoTOT] vprof-card {UnitNaming.SafeName(u)} HELO: " +
                 $"physicsApproximation {GameTime.IsPhysicsApproximationEnabled()}");
         }
 
@@ -362,7 +360,7 @@ namespace AutoTOT
             for (int i = 0; i < p.Length; i++)
             {
                 if (i > 0) sb.Append(' ');
-                sb.Append($"{p[i] * UnityToFeet:0}");
+                sb.Append($"{p[i] * GameUnits.UnityToFeet:0}");
             }
             return sb.ToString();
         }

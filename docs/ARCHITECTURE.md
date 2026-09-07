@@ -43,7 +43,7 @@ Two entry paths feed the same pipeline:
 - **Planner panel** (Alt+G): `Coordinator.FireCoordinated` builds the same
   Intent/Schedule structures directly from hand-picked shots, bypassing the
   collection window.
-- **Armed strike** (Alt+H, or the panel's ADD TO STRIKE / FIRE STRIKE): one
+- **Armed strike** (Alt+H, or the panel's + TARGET / FIRE STRIKE): one
   batch that spans any number of targets and commits only when the player
   fires it. Both entry paths above feed it while it is armed.
 
@@ -68,7 +68,7 @@ the target object reference, or, while a strike is armed, to the single
 
 ### Re-validation at fire time
 
-`Fire` (Coordinator.cs) re-checks that the unit and target are still
+`Fire` (Coordinator.Release.cs) re-checks that the unit and target are still
 alive before issuing the deferred launch. If either is null or destroyed, the
 order is silently dropped. This handles the case where a held order's shooter
 or target dies during the stagger.
@@ -190,7 +190,7 @@ LEADING edge), so the full-span trailing-edge assumption over-predicts and the s
 
 ## Release formula
 
-`ReleaseDueLaunches` (Coordinator.cs) evaluates every scheduled item every tick.
+`ReleaseDueLaunches` (Coordinator.Release.cs) evaluates every scheduled item every tick.
 The release condition is:
 
 ```
@@ -215,7 +215,7 @@ Terms:
   expected value (half) can be taken.
 - **`groupDelay`**: the group-drag term above (0 for independent salvos).
 - **`lookahead`**: `0.5 * simStep`, where `simStep = simNow - _lastReleaseSimNow`
-  (Coordinator.cs). `simStep` is measured in sim time, so pause adds no lookahead.
+  (Coordinator.Release.cs). `simStep` is measured in sim time, so pause adds no lookahead.
   `_lastReleaseSimNow` is reset to `-1f` on `Reset()` (Coordinator.cs), so the first
   post-reset tick computes no lookahead.
 
@@ -492,7 +492,7 @@ piece of code may be reached from a worker.
   is the worker's catch-all in `FlightTime.Async.cs`, which must report rather than die silently; a
   worker exception during a verbose run can interleave with main-thread lines.
 
-**Safe anywhere:** pure `Mathf` and `Vector3` arithmetic. `GameMath` and `TelemetryCadence` hold
+**Safe anywhere:** pure `Mathf` and `Vector3` arithmetic. `GameMath`, `GameUnits` and `TelemetryCadence` hold
 nothing else, deliberately, so they can be shared with the loop.
 
 Four ordering rules follow from this and keep the split to a single estimator:
@@ -549,12 +549,12 @@ First sighting of a friendly missile object in `_listOfAllWeapons` is the detect
 (LaunchDiagnostics.cs). The timestamp attributed to the launch is the game's own
 `WeaponBase._launchTime` (LaunchDiagnostics.cs), not the mod's observation time.
 
-`CreditLaunch` (LaunchDiagnostics.cs) matches the launched missile to an open
+`CreditLaunch` (LaunchDiagnostics.Expectations.cs) matches the launched missile to an open
 expectation: linear scan for the first expectation with `Launched < Requested`, matching
 `Unit`, `Target`, and `AmmoFile` (the resolved `_ammunitionFileName`). On match:
 `Launched++`, `LastLaunchSim = w._launchTime`. If the expectation is linked to an anchor
 (`Linked != null && Linked.IsAnchor && !Linked.RippleDone`), append `w._launchTime` to
-`Linked.LaunchTimes` (LaunchDiagnostics.cs). This is the only writer of the
+`Linked.LaunchTimes` (LaunchDiagnostics.Expectations.cs). This is the only writer of the
 anchor's `LaunchTimes` list.
 
 ### Impact reporting
@@ -570,8 +570,8 @@ because the board row is pruned on death.
 
 ### Expectation registration
 
-`RegisterExpectation` (LaunchDiagnostics.cs) is called from `Coordinator.Fire`
-after the order is issued (Coordinator.cs). It computes:
+`RegisterExpectation` (LaunchDiagnostics.Expectations.cs) is called from `Coordinator.Fire`
+after the order is issued (Coordinator.Release.cs). It computes:
 
 ```
 ripple    = (shots - 1) * interval + Max(0, Waves - 1) * reload
@@ -579,11 +579,11 @@ waveTail  = (Waves - 1) * (AnchorShots * interval + reload)   when Waves > 1, el
 DeadlineSim = GameClock.SimNow() + ripple + waveTail + ExpectationMarginSim (10 s)
 ```
 
-`Linked` is set to the anchor's `Scheduled` entry only for anchors (LaunchDiagnostics.cs).
+`Linked` is set to the anchor's `Scheduled` entry only for anchors (LaunchDiagnostics.Expectations.cs).
 
 ### Adaptive deadline
 
-`FinalizeExpectations` (LaunchDiagnostics.cs) is called every tick. The measured cadence is
+`FinalizeExpectations` (LaunchDiagnostics.Expectations.cs) is called every tick. The measured cadence is
 `(last − first) / (count − 1)` from the anchor's `LaunchTimes` (once count ≥ 2). The adaptive
 deadline is `since + Max(4 * interval, 30 s) + WaveTailSim`, and it only ever extends.
 
@@ -604,7 +604,7 @@ being worked through.
 
 ### Shortfall detection
 
-Close-out (LaunchDiagnostics.cs): `done = Launched >= Requested`. If not done and
+Close-out (LaunchDiagnostics.Expectations.cs): `done = Launched >= Requested`. If not done and
 `simNow < DeadlineSim`, keep waiting. Otherwise: if `Launched >= Requested`, log "order
 complete" (VerboseLog only). Else compute `targetGone` / `shooterGone`. If the shooter is
 alive, gather `ready`/`reserve`/`inventory`. Severity split: if `targetGone || shooterGone`,
@@ -674,7 +674,7 @@ Snapshot scratch buffers are reused every call to avoid per-frame allocation: `_
   Called every coordinator tick while an anchor ripple is live, once per target in the
   anchor's `BoardTargets` (Coordinator.cs).
 - `MarkFired(target)` (EngagementBoard.cs): stamps `FiredAtSim = GameClock.SimNow()`.
-  Called from `Coordinator.Fire` (Coordinator.cs).
+  Called from `Coordinator.Fire` (Coordinator.Release.cs).
 - `Drop(target)` (EngagementBoard.cs): removes the row only if the target never
   fired (`!HasFired`). Called from `Coordinator.DropImpactDataIfUnscheduled` (Coordinator.cs).
 
@@ -710,16 +710,23 @@ The panel shows:
 - **Header**: chevron toggle, title "TIME-ON-TARGET", live engagement summary
   `"● {tgts} tgt / {rounds} msl"`, AUTO status.
 - **Selection header**: TARGET row (fogged label or "click an enemy contact to set target"),
-  SHOOTERS row (anchor name or "click one of your ships"), "whole formation" checkbox.
+  SHOOTERS row (anchor name or "click one of your ships") with "+ SHIP" and "+ FORMATION",
+  each reading "✓ HELD" when the roster already holds everything it would add
+  (`Hud.FormationFullyHeld`); SHOOTERS (n) roster line with CLEAR; TARGET row (fogged label
+  or "click an enemy contact to set target"); one status line stating the pending action or
+  the blocker (`Hud.DrawStatusLine`).
 - **Missile rows**: per ship, per ammo: checkbox, ammo name, count, ETA, range, salvo
   stepper (–/+), reload warning if `WillNeedReload`. The stepper's increment comes from
   `SalvoStep()` (Hud.Render.cs), which reads `Event.current` modifiers: Shift → ±10,
   Ctrl → ±5, else ±1. The result is clamped `Mathf.Max(1, …)` / `Mathf.Min(r.Count, …)`
-  so it lands on the launcher cell count. A dim hint line above the list advertises it.
+  so it lands on the launcher cell count. The steppers relabel themselves ("–10" / "+10")
+  while a modifier is held; the full key list is behind "? KEYS" in the title bar.
 - **ENGAGEMENTS section**: per target: fogged label, status (`"{Queued} queued"`,
   `"{InFlight} in flight"`, `"anchoring {AnchorLaunched}/{AnchorTotal}"`), arrival
   countdown (multi-wave or single-wave with ± spread).
-- **Fire buttons**: "FIRE — TIME ON TARGET" (coordinated), "FIRE NOW\n(no sync)"
+- **Fire buttons**: one primary, "FIRE STRIKE" when anything is staged and
+  "FIRE THIS TARGET" otherwise, with "+ TARGET", the demoted "FIRE THIS TARGET" and
+  "FIRE NOW (no sync)" outlined on the row below
   (uncoordinated).
 
 #### Fog-of-war-correct labels
@@ -860,7 +867,10 @@ Sources live in five folders by concern: `Core/` (pipeline + lifecycle),
 | `Core/AnchorChainEntry.cs` | AnchorChain entry point (`[ACPlugin]`) |
 | `Core/Bootstrap.cs` | Mod-menu gate, config, Harmony patching + DOTS shield install, pump/HUD lifecycle, Unity-exception forwarding |
 | `Core/Patches.cs` | Harmony prefix on `ObjectBase.InsertEngageTask` (ThreadStatic `Bypass` flag) |
-| `Core/Coordinator.cs` | The pipeline: batching, anchor selection, open-loop scheduling, release, fire |
+| `Core/Coordinator.cs` | The pipeline: entry (`TryIntercept`, `Tick`, `Reset`), batching, `PrepareIntent`, `Schedule`, `PickAnchor`, and the nested types |
+| `Core/Coordinator.Anchor.cs` | Observation anchoring: impact prediction, launch-state snapshot, shooter-progress sampling, anchor promotion |
+| `Core/Coordinator.Release.cs` | Release: due-time evaluation, flight-estimate resolution, envelope refresh, the fire paths, contention warning |
+| `Core/Coordinator.Diagnostics.cs` | The coordinator's log lines and the text helpers that build them |
 | `Simulation/FlightTime.cs` | Flight-time API: tier wiring, TTL caches, straight-line fallback, speed profile + group-forming delay |
 | `Simulation/FlightTime.Integrator.cs` | Grounded step integrator (tier 1, beta): the setup half, which reads game state, plus phase diagnostics |
 | `Simulation/FlightTime.Solve.cs` | The integration loop, written as a pure function of a snapshot |
@@ -875,7 +885,9 @@ Sources live in five folders by concern: `Core/` (pipeline + lifecycle),
 | `Support/LauncherFacts.cs` | Launcher cadence / ready rounds / reserve + TTL cache + reload-wave helpers |
 | `Support/TtlCache.cs` | Tiny real-time TTL cache used by FlightTime and LauncherFacts |
 | `Support/DotsScanHardening.cs` | Multiplayer mission-load crash shield for the DOTS assembly scan |
-| `Diagnostics/LaunchDiagnostics.cs` | Flight tracker (impact reports) + launch expectations (shortfall detection); feeds anchor launch times |
+| `Diagnostics/LaunchDiagnostics.cs` | Flight tracker: per-missile records, the weapon-list scan, retirement and impact reports |
+| `Diagnostics/LaunchDiagnostics.Expectations.cs` | Launch expectations: crediting, late crediting, shortfall detection; feeds anchor launch times |
+| `Diagnostics/LaunchDiagnostics.Tracing.cs` | Per-missile and per-launcher tracing behind the diagnostic switches |
 | `Diagnostics/EngagementBoard.cs` | Per-target engagement state for the HUD (consolidated: one row per target) |
 | `Diagnostics/TelemetryCadence.cs` | Sampling offsets shared by the `sim-track` and `track` traces, so the two stay comparable |
 | `Diagnostics/CoordinatorProfiler.cs` | Per-frame timing (`CoordinatorProfiler`): stage timers, counters, frame share, the 60-frame report |
@@ -1142,3 +1154,27 @@ rising to its launch depth. Both routinely outlast the adaptive window: an Oscar
 of 0/24 while doing exactly what it was told. The deadline is held off while `ShooterStillWorking`
 returns true, bounded absolutely from the order so a boat parked at a depth it will not leave
 still reports.
+
+
+## Diagnostic gates
+
+Two independent switches in the `Debug` config section, both off by default.
+
+**`VerboseLogging`** answers *what did the coordinator decide, and why*: commit and release lines,
+dispatch, the anchor trace and its finalisation, launch crediting, envelope and launcher state, and
+the per-round impact residual. This is the setting to turn on for a timing or coordination problem,
+and the one whose output is small enough to read.
+
+**`TraceFlightModel`** answers *how was that flight time produced*: the integrator's step trace
+(`sim-track`), the waypoint sim (`wp-track`), per-missile telemetry (`track`), launch geometry
+(`launch-rail`, `sim-launch`), stage transitions (`stage-obs`, `stage-model`, `int-phases`) and the
+estimate-versus-actual `gap`. It belongs to investigations that are closed, and it is kept because
+re-deriving the flight model without it cost several sessions.
+
+It is deliberately separate because it dominates everything else. On a two-mission 2026-09-07 run it
+was **5,923 of 6,567 lines, 90 percent of the log**, which buried the coordination lines the verbose
+setting exists to show. It also costs real work: the per-missile block it gates runs two extra flight
+sims and a waypoint sim per round, purely to print a comparison.
+
+`SHORTFALL`, the `anchored` summary and every warning stay unconditional, because those are the lines
+users send in.

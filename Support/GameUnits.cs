@@ -16,6 +16,11 @@ namespace AutoTOT
         /// <summary>Knots -> metres/second.</summary>
         public const float KnotsToMs = 0.5144447f;
 
+        /// <summary>Unity world units -> feet. The same scale as <see cref="MetersPerUnity"/>,
+        /// kept separately because the altitude and depth paths report in feet throughout, matching
+        /// the game's own cockpit and sonar readouts.</summary>
+        public const float UnityToFeet = 220.47266f;
+
         /// <summary>Metres per nautical mile (international definition).</summary>
         public const float MetersPerNm = 1852f;
 

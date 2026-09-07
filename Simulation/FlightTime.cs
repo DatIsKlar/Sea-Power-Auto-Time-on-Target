@@ -134,6 +134,74 @@ namespace AutoTOT
             return fallback;
         }
 
+        /// <summary>
+        /// The state of a shooter at the instant a round left its rail: everything
+        /// <see cref="TryBuildSolveInput"/> would otherwise read live from the platform.
+        ///
+        /// One rule produces every timing correction in
+        /// docs/plans/open/aircraft-anchor-impact-slide.md: <b>pair a launch time with a flight
+        /// estimate valid AT that launch time</b>. <see cref="Estimate"/> cannot express it, because
+        /// it takes the shooter as an <see cref="ObjectBase"/> and reads <c>transform.position</c>,
+        /// so it can only ever answer "from where the shooter is now". For a ship the two readings
+        /// describe the same place; for an aircraft closing at 540kn the answer walks earlier by the
+        /// distance flown, and the shared impact of a strike walks with it.
+        ///
+        /// The rail heading is carried because the launch bearing is the actual geometry the round
+        /// flew (see docs/plans/open/offboresight-estimate-collapse.md), and by the time the
+        /// prediction re-runs the aircraft has turned. Pitch is still read from the live rail: it is
+        /// an elevation in the platform's own frame and does not drift as the platform manoeuvres.
+        /// </summary>
+        internal readonly struct LaunchState
+        {
+            internal readonly bool    Valid;
+            internal readonly Vector3 PosU;         // shooter position at launch, Unity units
+            internal readonly float   VelKnots;     // shooter speed at launch
+            internal readonly Vector3 HeadingFlat;  // rail bearing at launch, flat; zero = unknown
+
+            internal LaunchState(Vector3 posU, float velKnots, Vector3 headingFlat)
+            {
+                Valid = true;
+                PosU = posU;
+                VelKnots = Mathf.Max(velKnots, 0f);
+                HeadingFlat = headingFlat;
+            }
+        }
+
+        /// <summary>
+        /// <see cref="Estimate"/> for a round that has ALREADY launched: the same integrator, run
+        /// from the recorded launch state instead of from wherever the shooter is now.
+        ///
+        /// Deliberately uncached. The answer is a constant of one launch, so the caller memoises it
+        /// against the launch observation and this runs once per round, where the shared TTL cache
+        /// is keyed on the live shooter and would be wrong for this question.
+        ///
+        /// The lower tiers cannot take an origin override, so this DECLINES (-1) rather than
+        /// answering from a cruder model. The caller then falls back to the live estimate, which is
+        /// a real integration of the wrong launch point and beats a straight-line floor from the
+        /// right one. The plausibility floor is applied from the recorded position, since that is
+        /// where this shot actually started.
+        /// </summary>
+        internal static float EstimateFromLaunch(ObjectBase unit, string ammoId, ObjectBase target,
+                                                 in LaunchState launch)
+        {
+            if (!launch.Valid) return Estimate(unit, ammoId, target);
+            if (!TryKey(unit, ammoId, target, out AmmunitionParameters ap, out _)) return -1f;
+
+            float integrated = IntegratedEndTimeCore(unit, ap, target, out _, emitDiag: false, launch);
+            float floor = StraightLineFloorSeconds(launch.PosU, ap, target);
+            if (integrated > MinValidSeconds
+                && !(floor > 0f && integrated < floor * PlausibleFloorFraction))
+            {
+                ModelStats.TierUsed(ModelStats.Tier.Integrator);
+                return integrated;
+            }
+            if (integrated > MinValidSeconds)
+                Bootstrap.Log.LogWarning(
+                    $"[AutoTOT] estimate-rejected {ap._ammunitionFileName}: launch-state integration " +
+                    $"returned {integrated:0.00}s against a straight-line floor of {floor:0.0}s.");
+            return -1f;
+        }
+
         internal static float Kinematic(ObjectBase unit, AmmunitionParameters ap, ObjectBase target)
         {
             TofKey key = KeyFor(unit, ap, target);
@@ -289,9 +357,67 @@ namespace AutoTOT
         private static bool _maxRangeLookedUp;
         private static FieldInfo _interceptTimeField;
 
+        /// <summary>
+        /// Fraction of the straight-line, top-speed flight time below which a result is not
+        /// slow-but-wrong, it is broken. A real shot is always SLOWER than range over max speed and
+        /// never faster, so this is a bound the physics guarantees rather than a tuned number.
+        /// </summary>
+        private const float PlausibleFloorFraction = 0.5f;
+
+        /// <summary>
+        /// Straight-line time for this shot at the round's own top speed, or -1 when it cannot be
+        /// computed. The lower bound no honest estimate can beat.
+        /// </summary>
+        internal static float StraightLineFloorSeconds(ObjectBase unit, AmmunitionParameters ap,
+                                                       ObjectBase target)
+        {
+            if (unit == null || ap == null || target == null) return -1f;
+            float speedMs = ap._maxVelocityInKnots * GameUnits.KnotsToMs;
+            if (speedMs <= MinSpeedMs) return -1f;
+            return GameUnits.MetersBetween(unit, target) / speedMs;
+        }
+
+        /// <summary>The same floor measured from a recorded launch position, for
+        /// <see cref="EstimateFromLaunch"/>, where the shooter has since moved.</summary>
+        internal static float StraightLineFloorSeconds(Vector3 originU, AmmunitionParameters ap,
+                                                       ObjectBase target)
+        {
+            if (ap == null || target == null || target.transform == null) return -1f;
+            float speedMs = ap._maxVelocityInKnots * GameUnits.KnotsToMs;
+            if (speedMs <= MinSpeedMs) return -1f;
+            return (target.transform.position - originU).magnitude * GameUnits.MetersPerUnity / speedMs;
+        }
+
+        /// <summary>
+        /// True when a candidate estimate is physically impossible for this shot.
+        ///
+        /// <see cref="MinValidSeconds"/> is 0.01s and exists to mean "the model declined", not "the
+        /// model answered absurdly". A 0.2s answer for a 195 km shot passed it, was cached, and
+        /// reached the coordinator as a real flight time, where it either stole the anchor role or
+        /// set the shared impact in the past. See
+        /// docs/plans/open/offboresight-estimate-collapse.md.
+        /// </summary>
+        internal static bool IsImplausible(float seconds, ObjectBase unit, AmmunitionParameters ap,
+                                           ObjectBase target)
+        {
+            float floor = StraightLineFloorSeconds(unit, ap, target);
+            return floor > 0f && seconds < floor * PlausibleFloorFraction;
+        }
+
         private static float KinematicRaw(ObjectBase unit, AmmunitionParameters ap, ObjectBase target)
         {
             float integrated = IntegratedEndTime(unit, ap, target);
+            // An implausible answer is treated exactly like a decline, so the lower tiers get their
+            // turn instead of the caller being handed a number that cannot be true.
+            if (integrated > MinValidSeconds && IsImplausible(integrated, unit, ap, target))
+            {
+                Bootstrap.Log.LogWarning(
+                    $"[AutoTOT] estimate-rejected {ap._ammunitionFileName}: integrator returned " +
+                    $"{integrated:0.00}s against a straight-line floor of " +
+                    $"{StraightLineFloorSeconds(unit, ap, target):0.0}s. Falling through to the " +
+                    $"remaining tiers.");
+                integrated = -1f;
+            }
             if (integrated > MinValidSeconds)
             {
                 ModelStats.TierUsed(ModelStats.Tier.Integrator);

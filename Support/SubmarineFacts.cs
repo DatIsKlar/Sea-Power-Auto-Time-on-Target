@@ -1,4 +1,4 @@
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using SeaPower;
 using UnityEngine;
 
@@ -13,10 +13,9 @@ namespace AutoTOT
     internal static class SubmarineFacts
     {
         /// <summary>Unity units to feet, the game's own factor (ObjectTorpedoDepthViewModel.cs:28).</summary>
-        private const float UnityToFeet = 220.47266f;
 
         /// <summary>Depths are reported positive-down, so the sign flips out of Unity's y axis.</summary>
-        private static float DepthFeet(float unityY) => -unityY * UnityToFeet;
+        private static float DepthFeet(float unityY) => -unityY * GameUnits.UnityToFeet;
 
         internal struct Snapshot
         {
@@ -54,7 +53,7 @@ namespace AutoTOT
         /// level off, and the surface for a weapon declaring MaxDepth 0.
         /// </summary>
         private static float LaunchTargetDepthFt(float maxLaunchDepthFt)
-            => Mathf.Max(0f, maxLaunchDepthFt - 0.115f * UnityToFeet);
+            => Mathf.Max(0f, maxLaunchDepthFt - 0.115f * GameUnits.UnityToFeet);
 
         /// <summary>
         /// Seconds a submarine needs between the fire order and its first round leaving: the ascent
@@ -85,8 +84,8 @@ namespace AutoTOT
 
             SubmarineAscent.State st = new SubmarineAscent.State
             {
-                DepthU = s.DepthFt / UnityToFeet,
-                TargetDepthU = targetFt / UnityToFeet,
+                DepthU = s.DepthFt / GameUnits.UnityToFeet,
+                TargetDepthU = targetFt / GameUnits.UnityToFeet,
                 PitchDeg = s.PitchDeg,
                 BallastRateU = sub._currentDepthChangeUsingTanks,
                 SpeedKn = s.SpeedKn,
@@ -102,7 +101,10 @@ namespace AutoTOT
             trace?.Append($" from {s.DepthFt:0}ft to {targetFt:0}ft, spd {s.SpeedKn:0.0}kn " +
                           $"(cmd {(float.IsNaN(s.CmdSpeedKn) ? 0f : s.CmdSpeedKn):0.0}kn), pitch {s.PitchDeg:0.0} |");
             if (!SubmarineAscent.TryEstimate(st, out float ascent, trace)) return 0f;
-            return ascent + LauncherFactsSource.HatchCycleSeconds(unit, ammoId);
+            // Ascent only. The hatch cycle used to be added here because StartupDelay excluded it;
+            // it is now part of Facts.LauncherCycle, which every platform pays through StartupDelay,
+            // and Coordinator adds EnvelopeLead on top of that. Adding it again would double-count.
+            return ascent;
         }
 
         /// <summary>Cheap test used to gate the sim-cadence depth trace; no field reads.</summary>
@@ -119,14 +121,14 @@ namespace AutoTOT
             s.Submerged = sub.isSubmerged();
             s.BelowPeriscope = sub.IsBelowPeriscopeDepth.Value;
             s.Diving = sub._divingInProgress;
-            s.PeriscopeDepthFt = (sub.SP != null) ? sub.SP._periscopeDepth * UnityToFeet : -1f;
+            s.PeriscopeDepthFt = (sub.SP != null) ? sub.SP._periscopeDepth * GameUnits.UnityToFeet : -1f;
 
             // The weapon's launch-depth ceiling, and the game's own gate re-evaluated against it.
             AmmunitionParameters ap = (ammoId != null) ? unit.getAmmunitionByName(ammoId)?._ap : null;
             if (ap != null)
             {
-                s.MaxLaunchDepthFt = ap._maxDepthUnity * UnityToFeet;
-                s.MinLaunchDepthFt = ap._minDepthUnity * UnityToFeet;
+                s.MaxLaunchDepthFt = ap._maxDepthUnity * GameUnits.UnityToFeet;
+                s.MinLaunchDepthFt = ap._minDepthUnity * GameUnits.UnityToFeet;
                 s.RequiresFullSurface = ap._maxDepthUnity <= 0f;
                 s.LaunchBlocked = sub.transform.position.y < -ap._maxDepthUnity
                                   && (ap._maxDepthUnity > 0f || s.Submerged);
@@ -141,7 +143,7 @@ namespace AutoTOT
             s.SpeedKn = sub._velocityInKnots;
             ISpeedCommand cmd = sub.SpeedCommand?.Value;
             s.CmdSpeedKn = (cmd != null) ? cmd.CommandSpeedInKnots : float.NaN;
-            s.BallastRateFtPerS = sub._currentDepthChangeUsingTanks * UnityToFeet;
+            s.BallastRateFtPerS = sub._currentDepthChangeUsingTanks * GameUnits.UnityToFeet;
             s.TargetDepthFt = DepthFeet(sub.DesiredAltitude.Value);
 
             s.EngageState = EngageStates(unit, ammoId);
@@ -154,14 +156,6 @@ namespace AutoTOT
         /// different states, and "which one is stuck" is exactly what the shortfall lines need.
         /// Logged by name so a branch that renumbers the enum still reads correctly.
         /// </summary>
-        /// <summary>
-        /// Public form of <see cref="EngageStates"/>. Nothing about the launcher state machine is
-        /// submarine-specific; the reader lives here because this is where it was first needed, and
-        /// moving it would churn a file that is validated against real engagements.
-        /// </summary>
-        internal static string EngageStatesFor(ObjectBase unit, string ammoId)
-            => unit == null ? "n/a" : EngageStates(unit, ammoId);
-
         private static string EngageStates(ObjectBase unit, string ammoId)
         {
             if (ammoId == null) return "n/a";

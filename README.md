@@ -6,12 +6,13 @@ multiple missile types** at the same target. Packaged as an **AnchorChain** mod:
 appears in the in-game **Mods** menu like any other mod.
 
 - **TOT planner panel** (Alt+G), a movable, collapsible window: hand-pick missiles
-  from one ship or the whole formation and fire them as a coordinated strike, with
+  from one ship or from a roster you assemble across formations, and fire them as a
+  coordinated strike, with
   live ETA/range readouts, salvo steppers, reload warnings, and a live ENGAGEMENTS
   overview.
 - **Auto-coordination mode** (Alt+T, off by default), intercepts your normal missile
   orders and holds/releases them so orders aimed at the same target arrive together.
-- **Multi-target strike** (Alt+H, or the panel's **ADD TO STRIKE**): stage shots at
+- **Multi-target strike** (Alt+H, or the panel's **+ TARGET**): stage shots at
   several targets, from any number of formations and from ships, submarines and
   aircraft together, then fire the lot on one shared time-on-target.
 - Works for stock and modded missiles alike. All timing comes from the game's own
@@ -120,7 +121,7 @@ without a full restart leaves the mod listed but inactive in-game.
 Confirm in `<Sea Power>/BepInEx/LogOutput.log`:
 
 ```
-[AutoTOT] Auto Time-on-Target v0.1.4 loaded (Enabled=True, Armed=False, Unity=...)
+[AutoTOT] Auto Time-on-Target v0.1.5 loaded (Enabled=True, Armed=False, Unity=...)
 ```
 
 **Keep exactly one copy installed.** If you are also subscribed to the Workshop
@@ -138,13 +139,14 @@ The `dist/AutoTOT/` folder is exactly what you'd upload as a Steam Workshop item
 | **Alt+T** | Toggle auto-coordination on/off |
 | **Alt+H** | Arm/disarm multi-target strike collection |
 
-Both use the configurable modifier (`ToggleModifier`; set to `None` for single-key).
+Both use the configurable modifier (`ToggleModifier`; set to `None` for single-key). The **?**
+in the panel's title bar lists the keys as configured, along with the salvo-stepper modifiers.
 
 ### Planner panel
 
 Starts minimized; expand via the ▸ chevron, drag it anywhere, resize the edges. It
-tracks your last-selected friendly ship as shooter (with a **This-ship /
-Whole-formation** toggle) and your last-selected enemy as target (fog-of-war-correct
+tracks your last-selected friendly ship as shooter and your last-selected enemy as
+target (fog-of-war-correct
 labels, no intel leakage). Rows list each ship's missiles with **live ETA/range**,
 checkboxes, and salvo steppers. The **–/+ salvo steppers** step by 1 per click;
 hold **Ctrl** for ±5 or **Shift** for ±10, clamped to the launcher's cell count.
@@ -152,26 +154,31 @@ Weapon-target validation uses the game's own
 `DoesAmmoMatchTarget()`, so only missiles that can engage the selected
 target are pickable. Salvos larger than the launcher's ready rounds show a
 ⚠ `needs reload` note and arrive in waves (shown in the overview).
-**FIRE — TIME ON TARGET** launches the selection coordinated; **FIRE NOW** launches
+**FIRE THIS TARGET** launches the selection coordinated; **FIRE NOW (no sync)** launches
 it without sync. The **ENGAGEMENTS** overview shows every coordinated target with
 queued/in-flight counts, a synced arrival countdown, and the ±arrival spread.
 
-### Strike group
+### Shooter roster
 
-The shooter list normally follows your last-selected ship. Press **+ ADD** on the SHOOTERS row
-to hold that ship (or its whole formation, with the toggle on) in a persistent **strike group**
-instead. The group survives selection changes, so you can walk through several formations and
-collect every shooter you want before picking a single target; a **GROUP** line reports what is
-held, each ship has a **remove**, and **CLEAR** empties it. With no target selected the rows
-still list every missile aboard, so salvo sizes can be set in advance. An empty group means the
-panel follows the current selection, exactly as before.
+The shooter list normally follows your last-selected ship. The SHOOTERS row carries two buttons:
+**+ SHIP** holds the selected ship in a persistent **roster**, and **+ FORMATION** holds every
+missile-armed ship in its formation. Either one reads **✓ HELD** once there is nothing left for it
+to add, so you can tell at a glance whether the ship you just clicked is already in.
+
+The roster is not limited to one formation, and it survives selection changes. Click a ship
+anywhere, press **+ SHIP**, click the next one and repeat, until you have every shooter you want;
+then pick a target. A **SHOOTERS (n)** line reports what is held, each ship has a **remove**, and
+**CLEAR** empties it. With no target selected the rows still list every missile aboard, so salvo
+sizes can be set in advance. An empty roster means the panel follows the single selected ship.
 
 ### Multi-target strike
 
 A strike is assembled one target at a time. Pick a target and its shooters as usual,
-press **ADD TO STRIKE**, then pick the next target and repeat. The staged set appears
-above the fire buttons, grouped by target and removable per group, and **FIRE STRIKE**
-launches all of it on a single shared impact time. There is no collection window: a
+press **+ TARGET**, then pick the next target and repeat. The staged set appears
+directly above the fire buttons, grouped by target and removable per group, and **FIRE STRIKE**
+launches all of it on a single shared impact time. Whenever anything is staged, **FIRE STRIKE**
+becomes the panel's single green commit button and **FIRE THIS TARGET** stays available beside
+it, so a pop-up threat can still be engaged without disturbing the plan. There is no collection window: a
 staged strike waits as long as you need.
 
 Press **Alt+H** to also collect the orders you issue in the game's own interface. While
@@ -245,7 +252,7 @@ Sources live in five folders by concern: `Core/` (pipeline + lifecycle),
 | `Core/AnchorChainEntry.cs` | AnchorChain entry point (`[ACPlugin]` + `IAnchorChainMod`) |
 | `Core/Bootstrap.cs` | Mod-menu gate, Harmony patching + DOTS shield install, config, pump/HUD lifecycle, Unity-exception forwarding |
 | `Core/Patches.cs` | Harmony prefix on `ObjectBase.InsertEngageTask` |
-| `Core/Coordinator.cs` | Core pipeline: batching, anchor selection, open-loop scheduling, release, fire |
+| `Core/Coordinator.cs` (+`Coordinator.Anchor.cs`, `Coordinator.Release.cs`, `Coordinator.Diagnostics.cs`) | Core pipeline: batching and anchor selection; observation anchoring; open-loop release and fire; the coordinator's log lines |
 | `Simulation/FlightTime.cs` | Flight-time API + caches: estimate entry, 3-tier kinematic wiring, speed profiles, group forming delay |
 | `Simulation/FlightTime.Integrator.cs` | Grounded step-integrator (primary tier, beta): setup, which reads the game state, and phase diagnostics |
 | `Simulation/FlightTime.Solve.cs` | The integration loop as a pure function of a snapshot, so it can run off the main thread |
@@ -254,13 +261,14 @@ Sources live in five folders by concern: `Core/` (pipeline + lifecycle),
 | `Simulation/FlightTime.Stats.cs` | Estimator cost counters (simulations, steps, which tier answered) behind the `Profiling` switch |
 | `Simulation/WaypointSim.cs` | Reflection port of the public `SimulateShotLinear`, the middle-tier fallback estimator |
 | `UI/Hud.cs` (+`Hud.Render.cs`, `Hud.Mouse.cs`, `Hud.Styles.cs`) | IMGUI planner panel: layout/data, drawing, pointer capture, styling |
-| `Diagnostics/LaunchDiagnostics.cs` | Impact reports + launch shortfall detection; feeds anchor observations |
+| `Diagnostics/LaunchDiagnostics.cs` (+`LaunchDiagnostics.Expectations.cs`, `LaunchDiagnostics.Tracing.cs`) | Impact reports; launch shortfall detection; per-missile tracing. Feeds anchor observations |
 | `Diagnostics/EngagementBoard.cs` | Per-target engagement state behind the HUD's ENGAGEMENTS list |
 | `Diagnostics/TelemetryCadence.cs` | Sampling offsets shared by the model and live-flight traces |
 | `Diagnostics/CoordinatorProfiler.cs` | Per-frame timing report behind the `Profiling` switch |
 | `Support/GameClock.cs` | Version-agnostic sim clock + launch-timestamp access (float/double beta drift) |
 | `Support/GameUnits.cs` | Shared unit conversions (Unity units ↔ metres/nm/knots) |
-| `Support/GameMath.cs` | Horizontal flatten and elevation-angle helpers shared by the flight-time setup paths |
+| `Support/GameMath.cs` | Horizontal flatten, elevation and pitch helpers shared by the flight-time setup paths |
+| `Support/UnitNaming.cs` | The one name-for-display helper, shared by the logs and the panel |
 | `Support/ModLog.cs` | Shared exception reporting, with and without the verbose gate |
 | `Support/LauncherFacts.cs` | Launcher cadence/ready rounds/reserve + cache, reload-wave helpers |
 | `Support/TtlCache.cs` | Tiny real-time TTL cache used on the per-frame UI paths |

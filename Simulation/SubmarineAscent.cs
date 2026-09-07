@@ -1,5 +1,6 @@
 using System;
 using System.Text;
+using UnityEngine;
 
 namespace AutoTOT
 {
@@ -13,8 +14,6 @@ namespace AutoTOT
     {
         private const float StepSim = 0.1f;             // matches FlightTime's IntegrationStepSim
         private const int MaxSteps = 12000;             // 20 min of sim at StepSim; a real ascent is ~1 min
-        internal const float KnotsToUnity = 0.0076554087f;   // Submarine.cs:703
-        internal const float UnityToFeet = 220.47266f;
 
         // Interlock thresholds, from applyDepth. Named rather than inlined because the whole model
         // turns on them: above BOTH, ballast is zeroed and the boat is on its planes alone.
@@ -51,15 +50,15 @@ namespace AutoTOT
         internal static bool TryEstimate(State s, out float seconds, StringBuilder trace)
         {
             seconds = 0f;
-            if (!Finite(s.DepthU) || !Finite(s.TargetDepthU) || s.MaxSpeedKn <= 0f ||
-                s.PitchRateDeg <= 0f || !Finite(s.SpeedKn)) return false;
+            if (!GameMath.IsFinite(s.DepthU) || !GameMath.IsFinite(s.TargetDepthU) || s.MaxSpeedKn <= 0f ||
+                s.PitchRateDeg <= 0f || !GameMath.IsFinite(s.SpeedKn)) return false;
 
             float toGo = s.DepthU - s.TargetDepthU;
             if (toGo <= 0f) { seconds = 0f; return true; }   // already shallow enough
 
             float depth = s.DepthU, pitch = s.PitchDeg, ballast = s.BallastRateU;
             float normSpd = Math.Abs(s.SpeedKn) / s.MaxSpeedKn;
-            float speedU = s.SpeedKn * KnotsToUnity;
+            float speedU = s.SpeedKn * GameUnits.KnotsToUnityPerSecond;
             float t = 0f, nextSample = 0f;
             int stalled = 0;
 
@@ -68,14 +67,14 @@ namespace AutoTOT
                 float err = s.TargetDepthU - depth;      // negative while ascending
 
                 // Ballast: target rate IS the depth error, clamped, then ramped toward.
-                float ballTgt = Clamp(err, -s.MaxBallastU, s.MaxBallastU);
+                float ballTgt = Mathf.Clamp(err, -s.MaxBallastU, s.MaxBallastU);
                 if (ballast < ballTgt) ballast = Math.Min(ballast + s.BallastAccelU * StepSim, ballTgt);
                 else if (ballast > ballTgt) ballast = Math.Max(ballast - s.BallastAccelU * StepSim, ballTgt);
 
                 // Dive planes: pitch authority scales with speed AND collapses near the surface.
-                float depthFac = Clamp01(2f * depth);
+                float depthFac = Mathf.Clamp01(2f * depth);
                 float pitchLimit = s.MaxPitchDeg * depthFac;
-                float tgtPitch = normSpd * Clamp(s.MaxPitchDeg * err, -pitchLimit, pitchLimit);
+                float tgtPitch = normSpd * Mathf.Clamp(s.MaxPitchDeg * err, -pitchLimit, pitchLimit);
                 if (pitch < tgtPitch) pitch = Math.Min(pitch + s.PitchRateDeg * StepSim, tgtPitch);
                 else if (pitch > tgtPitch) pitch = Math.Max(pitch - s.PitchRateDeg * StepSim, tgtPitch);
 
@@ -99,8 +98,8 @@ namespace AutoTOT
                 if (trace != null && t >= nextSample)
                 {
                     nextSample += TelemetryCadence.SampleIntervalSim;
-                    trace.Append($" t+{t:0}s {depth * UnityToFeet:0}ft p{pitch:0.0} " +
-                                 $"r{-rate * UnityToFeet:0.00}ft/s{(ballast == 0f ? " planes" : " tanks")};");
+                    trace.Append($" t+{t:0}s {depth * GameUnits.UnityToFeet:0}ft p{pitch:0.0} " +
+                                 $"r{-rate * GameUnits.UnityToFeet:0.00}ft/s{(ballast == 0f ? " planes" : " tanks")};");
                 }
 
                 if (depth <= s.TargetDepthU) { seconds = t; return true; }
@@ -112,8 +111,5 @@ namespace AutoTOT
             return false;   // ran out of steps: treat as unreachable rather than guessing
         }
 
-        private static bool Finite(float v) => !float.IsNaN(v) && !float.IsInfinity(v);
-        private static float Clamp(float v, float lo, float hi) => v < lo ? lo : (v > hi ? hi : v);
-        private static float Clamp01(float v) => v < 0f ? 0f : (v > 1f ? 1f : v);
     }
 }

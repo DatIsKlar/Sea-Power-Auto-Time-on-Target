@@ -36,10 +36,9 @@ namespace AutoTOT
             public bool Valid;
             public float ShotInterval;   // I: seconds between rounds within a burst / at fire-rate
             public float StartupDelay;   // S: fixed fire-to-first-launch offset the engage cycle pays
-                                         // ONCE before round 1 leaves: PreLaunchDelay + the EXPECTED
-                                         // reaction draw (MaxReactiontime/2, a uniform [0,max] roll).
-                                         // Both are config; the hatch-open animation is NOT counted
-                                         // (asset-driven, and observation anchoring absorbs it).
+                                         // before round 1 leaves: PreLaunchDelay + the EXPECTED
+                                         // reaction draw (MaxReactiontime/2, a uniform [0,max] roll)
+                                         // + the acquisition gate + LauncherCycle below.
             public float ReloadGap;      // R: magazine reload (s); 0 for per-container (VLS) reload
             public int ReadyRounds;      // X: rounds ready to fire before a reload (logical tally)
             public int Reserve;          // rounds behind the rails that a reload would pull from
@@ -60,8 +59,15 @@ namespace AutoTOT
             public bool PreparingToFire;
 
             // Longest open-hatch animation across the containers (s). Already used as a cadence
-            // floor below; also the launcher-cycle part of a submarine's order-to-first-round delay.
+            // floor below; also one half of LauncherCycle.
             public float HatchCycleSeconds;
+
+            // C: what one round costs the launcher's own state machine, declared OnRailWarmup plus
+            // the hatch animation. Paid before round 1 (hence its place in StartupDelay) and again
+            // before every later round, because WeaponSystemLauncher.cs:842 clears _onRail after
+            // every launch. Measured per state in the 2026-09-06 engage-state trace; see
+            // docs/plans/open/launcher-startup-delay.md.
+            public float LauncherCycle;
         }
 
         /// <summary>
@@ -218,8 +224,28 @@ namespace AutoTOT
         /// </summary>
         private static readonly HashSet<string> _startupLogged = new HashSet<string>();
 
+        /// <summary>
+        /// The declared OnRailWarmup for the log line, keeping "absent" distinct from "zero": 0 is
+        /// a weapon that declares no warm-up, absent is a launcher position missing from the ammo's
+        /// table, where the game skips the gate outright.
+        /// </summary>
+        private static string DeclaredWarmupText(ObjectBase ship, string ammoId)
+        {
+            float w = LauncherProbe.DeclaredOnRailWarmup(ship, ammoId);
+            return w < 0f ? "none" : $"{w:0.00}s";
+        }
+
+        /// <summary>
+        /// Declared OnRailWarmup as a duration to sum: the "no entry in the table" answer (-1) means
+        /// the game skips the gate, which costs nothing, so it collapses to 0 here. Keep
+        /// <see cref="DeclaredWarmupText"/> for the log, where the two must stay distinguishable.
+        /// </summary>
+        private static float DeclaredWarmup(ObjectBase ship, string ammoId)
+            => Mathf.Max(0f, LauncherProbe.DeclaredOnRailWarmup(ship, ammoId));
+
         private static void LogStartupTerms(ObjectBase ship, string ammoId, WeaponParameters vwp,
-                                            float acquisition, float total)
+                                            float acquisition, float total, float hatchCycle,
+                                            float launcherCycle)
         {
             if (!Coordinator.VerboseLog || ship == null || vwp == null) return;
             string key = ship.GetInstanceID() + "/" + ammoId;
@@ -228,7 +254,14 @@ namespace AutoTOT
             Bootstrap.Log.LogInfo(
                 $"[AutoTOT] launcher-startup {ammoId} from {ship.getUIDAndName()}: total {total:0.00}s = " +
                 $"preLaunch {vwp._preLaunchDelay:0.00}s + halfReaction {0.5f * vwp._maxReactiontime:0.00}s " +
-                $"+ acquisition {acquisition:0.00}s | targetAcqTime {vwp._targetAcquisitionTime:0.00}s, " +
+                $"+ acquisition {acquisition:0.00}s " +
+                $"+ launcherCycle {launcherCycle:0.00}s | " +
+                // The two terms LauncherCycle is made of, kept separate so a residual can be
+                // attributed to one of them. "none" is a launcher position absent from the ammo's
+                // table, where the game skips the gate; 0.00s is a weapon that declares no warm-up.
+                $"onRailWarmup {DeclaredWarmupText(ship, ammoId)}, " +
+                $"hatchCycle {hatchCycle:0.00}s | " +
+                $"targetAcqTime {vwp._targetAcquisitionTime:0.00}s, " +
                 $"automatic {vwp._automatic}, standalone {vwp._worksStandalone}, " +
                 $"actActive {ReactionFlag(ship, "ActActive")}, orientActive {ReactionFlag(ship, "OrientActive")}, " +
                 $"scale {ReactionScale(ship):0.00}");
@@ -320,10 +353,20 @@ namespace AutoTOT
             //                     [0, MaxReactiontime]; we can only take its EXPECTED value (half).
             // The launcher pays this ONCE before round 1, not between rounds, so it belongs in the
             // release lead as a fixed offset ; NOT in the per-round ShotInterval span.
+            //   OnRailWarmup   ; a flat declared hold the launcher sits in before the hatch opens
+            //   the hatch cycle ; the open-hatch animation, previously excluded on surface ships
+            // Those last two are LauncherCycle. Excluding them was a deliberate choice made when
+            // every consumer was an anchor, whose startup observation anchoring rewrites away; a
+            // follower pays the whole of it as a late arrival. The 2026-09-06 trace measured the
+            // declared warm-up against the observed hold on 25 launchers and they agree to the
+            // 0.25s trace cadence. The sub-0.3s dispatch tick stays unmodelled: it is below the
+            // resolution that measured it.
             float acquisition = AcquisitionSeconds(ship, vwp);
+            f.LauncherCycle = NonNegativeFinite(DeclaredWarmup(ship, ammoId) + f.HatchCycleSeconds);
             f.StartupDelay = NonNegativeFinite(vwp._preLaunchDelay + 0.5f * vwp._maxReactiontime
-                                               + acquisition);
-            LogStartupTerms(ship, ammoId, vwp, acquisition, f.StartupDelay);
+                                               + acquisition + f.LauncherCycle);
+            LogStartupTerms(ship, ammoId, vwp, acquisition, f.StartupDelay, f.HatchCycleSeconds,
+                            f.LauncherCycle);
 
             // (see AcquisitionSeconds for the third term)
 
@@ -478,6 +521,17 @@ namespace AutoTOT
             if (!f.Valid) return 0f;
             float h = f.HatchCycleSeconds;
             return (h > 0f && h < MaxPlausibleHatchSeconds) ? h : 0f;
+        }
+
+        /// <summary>
+        /// What one round costs the launcher's own state machine (s): declared OnRailWarmup plus the
+        /// hatch animation. Part of <see cref="Facts.StartupDelay"/>; exposed for the diagnostics,
+        /// which report the modelled terms separately from the total.
+        /// </summary>
+        internal static float LauncherCycleSeconds(ObjectBase ship, string ammoId)
+        {
+            Facts f = Get(ship, ammoId);
+            return f.Valid ? f.LauncherCycle : 0f;
         }
 
         /// <summary>

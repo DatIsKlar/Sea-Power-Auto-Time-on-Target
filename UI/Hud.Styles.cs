@@ -29,7 +29,12 @@ namespace AutoTOT
         // Font sizes used by the styles below.
         private const int FontSizeBody = 14, FontSizeTitle = 15, FontSizeControl = 16, FontSizeSmall = 12;
 
-        private GUIStyle _winStyle, _title, _chev, _hdr, _row, _ship, _btn, _fire, _fireNow, _menuItem;
+        private GUIStyle _winStyle, _title, _chev, _hdr, _row, _ship, _btn, _fire, _menuItem;
+        // The four button roles the panel uses. _fire is primary (the single commit), _btnSecondary
+        // is an outlined action that is real but not the headline, _btn is the flat ghost used for
+        // in-list actions, and _btnDanger empties a list. One style per role, so a button's weight
+        // reads its consequence.
+        private GUIStyle _btnSecondary, _btnDanger;
         // Single-line variant of _row for the selection header. A long ship name in a wrapping
         // label grows the row taller than the layout reserved for it and the second line then
         // draws over the row above.
@@ -37,6 +42,7 @@ namespace AutoTOT
         private GUIStyle _scrollThumb, _scrollTrack, _hScrollThumb, _hScrollTrack;
         private Texture2D _panelTex, _headerTex, _fireTex, _btnTex, _btnHoverTex;
         private Texture2D _scrollThumbTex, _scrollTrackTex, _menuHoverTex, _transparentTex;
+        private Texture2D _outlineTex, _outlineHoverTex;
 
         private static Texture2D Solid(Color c)
         {
@@ -181,15 +187,31 @@ namespace AutoTOT
             };
             SetStates(_fire, _fireTex, _fireTex, _fireTex, _fireTex, Color.white, Color.white);
 
-            // Fire Now button ; flat like other buttons
-            _fireNow = new GUIStyle(_btn)
+            // Secondary: a real action, outlined rather than filled. Framed() carries its border in
+            // the texture, so unlike _btn this style needs a 1px GUIStyle border to stop the corners
+            // being stretched away.
+            _outlineTex      = Framed(new Color(0f, 0f, 0f, 0f), Border);
+            _outlineHoverTex = Framed(BtnHover, Border);
+            _btnSecondary = new GUIStyle(_btn)
             {
-                fontSize = FontSizeSmall,
+                fontStyle = FontStyle.Normal, fontSize = FontSizeSmall,
                 alignment = TextAnchor.MiddleCenter,
+                border = new RectOffset(1, 1, 1, 1),
                 padding = new RectOffset(8, 8, 6, 6),
             };
-            SetStates(_fireNow, _transparentTex, _menuHoverTex, _menuHoverTex, _menuHoverTex,
-                      TextDim, TextMain);
+            SetStates(_btnSecondary, _outlineTex, _outlineHoverTex, _outlineHoverTex, _outlineTex,
+                      TextMain, Color.white);
+
+            // Destructive: empties a list. Flat and dim at rest so it never competes with a commit
+            // button, amber on hover so the consequence is stated before the click.
+            _btnDanger = new GUIStyle(_btn)
+            {
+                fontStyle = FontStyle.Normal, fontSize = FontSizeSmall,
+                alignment = TextAnchor.MiddleCenter,
+                padding = new RectOffset(8, 8, 4, 4),
+            };
+            SetStates(_btnDanger, _transparentTex, _menuHoverTex, _menuHoverTex, _transparentTex,
+                      TextDim, Warn);
         }
     }
 }
