@@ -262,9 +262,32 @@ namespace AutoTOT
                 $"onRailWarmup {DeclaredWarmupText(ship, ammoId)}, " +
                 $"hatchCycle {hatchCycle:0.00}s | " +
                 $"targetAcqTime {vwp._targetAcquisitionTime:0.00}s, " +
-                $"automatic {vwp._automatic}, standalone {vwp._worksStandalone}, " +
+                $"automatic {AutomaticText(vwp)}, standalone {vwp._worksStandalone}, " +
                 $"actActive {ReactionFlag(ship, "ActActive")}, orientActive {ReactionFlag(ship, "OrientActive")}, " +
                 $"scale {ReactionScale(ship):0.00}");
+        }
+
+        /// <summary>
+        /// <c>WeaponParameters._automatic</c> for the log line, or "n/a" where the field does not
+        /// exist. It is declared ONLY on the beta branch, and a compile-time read faults the whole
+        /// method when it is JIT-compiled, not at the read: binding it directly took out
+        /// <see cref="Compute"/> on public and excluded the ship for the mission, over a diagnostic
+        /// string. Same reasoning as GameClock and the guidance members above: one DLL, both branches.
+        /// </summary>
+        private static FieldInfo _automaticField;
+        private static bool _automaticResolved;
+
+        private static string AutomaticText(WeaponParameters vwp)
+        {
+            if (!_automaticResolved)
+            {
+                _automaticResolved = true;
+                _automaticField = typeof(WeaponParameters).GetField("_automatic",
+                    BindingFlags.Public | BindingFlags.Instance);
+            }
+            if (_automaticField == null) return "n/a";
+            try { return _automaticField.GetValue(vwp)?.ToString() ?? "n/a"; }
+            catch { return "err"; }
         }
 
         // Diagnostic reads of the game's own OODA switches, so the line above can say whether a zero

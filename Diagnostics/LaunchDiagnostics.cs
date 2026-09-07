@@ -290,7 +290,14 @@ namespace AutoTOT
                 if (_flightTracker.TryGetValue(w, out FlightSample s))
                 {
                     float flightTime = s.LastSeenTime - s.LaunchTime;
-                    if (Coordinator.TraceFlightModel && s.Coordinated)
+                    // Two gates, deliberately, per the rule in Coordinator.TraceFlightModel:
+                    // VerboseLog is coordination, TraceFlightModel is estimator internals. The
+                    // `impact` line is the OUTCOME of a strike (did it land when it was told to),
+                    // which is coordination, and it used to sit behind TraceFlightModel with the
+                    // `gap` line. That hid the mod's headline measurement behind the one setting
+                    // that performance runs require to be off, so a coordinated strike could be
+                    // flown start to finish and report nothing about whether it worked.
+                    if (s.Coordinated && (Coordinator.VerboseLog || Coordinator.TraceFlightModel))
                     {
                         // The predicate, not its rendering: the two gap branches below used to
                         // re-test this by comparing the display string back to "HIT".
@@ -306,12 +313,30 @@ namespace AutoTOT
                                        && !ReferenceEquals(s.Target, null);
                         string switched = retargeted ? $" [RETARGETED -> {s.CurrentTargetName}]" : "";
                         // Residual = observed impact − predicted (anchor-finalized) impact. Read from
-                        // the sample, not the board, so it still prints after the target is gone,
-                        // which is the late/missed case most worth measuring.
+                        // the sample, not the board, so it still prints after the target is gone.
+                        //
+                        // ONLY meaningful when the round actually arrived. LastSeenTime is when the
+                        // TRACKER retired, and in a coordinated strike that is normally the moment the
+                        // TARGET died under a different round, not the moment this one got there. Every
+                        // round aimed at a ship therefore retires at the same instant, and printing a
+                        // residual for all of them reported one number as though several rounds had each
+                        // landed on time. Observed 2026-09-07: three yj-18a HIT at +1.3/+1.6/+2.7s and
+                        // nine rounds that were still 8.6 to 30.2 km out claimed those same residuals.
+                        // RoundPredictionScore has the identical flaw (its err is also measured against
+                        // LastSeenTime), so it is suppressed on the same condition.
                         string residual = "";
-                        if (s.PredictedImpact >= 0f)
-                            residual = $", predicted {s.PredictedImpact:0.0}, residual {s.LastSeenTime - s.PredictedImpact:+0.0;-0.0}s";
-                        residual += RoundPredictionScore(s);
+                        if (hit)
+                        {
+                            if (s.PredictedImpact >= 0f)
+                                residual = $", predicted {s.PredictedImpact:0.0}, residual {s.LastSeenTime - s.PredictedImpact:+0.0;-0.0}s";
+                            residual += RoundPredictionScore(s);
+                        }
+                        else
+                        {
+                            string pred = s.PredictedImpact >= 0f ? $", predicted {s.PredictedImpact:0.0}" : "";
+                            residual = $"{pred}, NO ARRIVAL: still {s.LastDistM:0} m out when the tracker " +
+                                       "retired, so sim time above is not an arrival and there is no residual";
+                        }
                         Bootstrap.Log.LogInfo(
                             $"[AutoTOT] impact {s.AmmoName} -> {s.TargetName}: {outcome} at sim {s.LastSeenTime:0.0} " +
                             $"(flight {flightTime:0.0}s, final range {s.LastDistM:0} m){switched}{residual}");
@@ -321,14 +346,14 @@ namespace AutoTOT
                         // its flight is to the ship the seeker picked while simEst was computed for
                         // the ship it was ordered against, so its gap measures formation geometry,
                         // not the estimator.
-                        if (retargeted && s.KinEstAtLaunch > 0f && hit)
+                        if (retargeted && s.KinEstAtLaunch > 0f && hit && Coordinator.TraceFlightModel)
                         {
                             Bootstrap.Log.LogInfo(
                                 $"[AutoTOT] gap {s.AmmoName} -> {s.TargetName}: SKIPPED, seeker switched to " +
                                 $"{s.CurrentTargetName}. Flight {flightTime:0.0}s is to that ship; " +
                                 $"simEst {s.KinEstAtLaunch:0.0}s was for the assigned one. Not estimator error.");
                         }
-                        else if (s.KinEstAtLaunch > 0f && hit)
+                        else if (s.KinEstAtLaunch > 0f && hit && Coordinator.TraceFlightModel)
                         {
                             string legacy = s.LegacyEstAtLaunch > 0f
                                 ? $", legacyEst {s.LegacyEstAtLaunch:0.0}s (gap {flightTime - s.LegacyEstAtLaunch:+0.0;-0.0}s)"
