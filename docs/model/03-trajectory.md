@@ -187,9 +187,15 @@ ini sets it above the rate already in hand. It defaults to -1, and three shipped
 | `wp_sa-n-6` | 40°/s | 20°/s |
 | `wp_sa-n-9` | 360°/s | 30°/s |
 
-Harpoon is the one that matters, because it is a strike round the coordinator plans with. Left
-unmodelled it turns onto its target too slowly, flies further off-axis, and the estimate runs late.
-`rgm-84c` and `rgm-84d` leave the key at its default, so the error appears on the A-variant alone.
+Harpoon is the one that matters in the base game, because it is a strike round the coordinator
+plans with. Left unmodelled it turns onto its target too slowly, flies further off-axis, and the
+estimate runs late. `rgm-84c` and `rgm-84d` leave the key at its default, so the error appears on
+the A-variant alone.
+
+Workshop ammunition uses the key far more: 38 of 106 modded missiles set it, against 3 of 160 in
+the base game. Anti-ship rounds among them include `plan_yj-18a` (50 against 15), `knm_nsm_1a`,
+`knm_3sm_tyrfing`, `plan_cj-10` and the `usn_rgm-109e` family. On a modded loadout this is a broad
+correction rather than a single-round one.
 
 ## 3.3 The stage model
 

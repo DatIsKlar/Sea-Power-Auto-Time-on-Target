@@ -157,7 +157,11 @@ can be, and they are recorded so nobody spends a test run chasing them.
   `usn_ugm-109b`) set `SearchVelocity` equal to their `MaxVelocity`, so there is no speed change to
   model. Both states also exit to `TerminalApproach` as soon as the seeker holds an echo, which is
   the same condition that let the round leave cruise. It becomes real for a modded round whose
-  `SearchVelocity` differs from its `MaxVelocity`, or one that reaches terminal with no echo.
+  `SearchVelocity` differs from its `MaxVelocity`, and one such round is installed: the PLAN Pack
+  `plan_yj-18` searches at 1824 kn against a `MaxVelocity` of 530, modelling the type's supersonic
+  sprint as its search state. A yj-18 that reaches terminal with no echo flies more than three
+  times the speed the model gives it, and the estimate runs late by whatever that leg costs.
+  `yj-18a` and `yj-18c` do not declare a search mode and are unaffected.
 - **`TerminalDelay` is not modelled.** The mover refuses `TerminalApproach` until
   `elapsedSinceLaunch` passes `TerminalDelay`, which defaults to `0.8 * GoActiveTime` and is set
   explicitly by none of the 446 shipped ammunition. It can only matter for a shot launched already
