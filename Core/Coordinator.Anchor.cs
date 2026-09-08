@@ -538,7 +538,7 @@ namespace AutoTOT
                             ? $" (slid {pred - a.FirstPred:+0.0;-0.0}s from {a.FirstPred:0.0}, " +
                               $"anchor {PlatformTag(it.Unit)}, {ShooterDisplacement(a, it, simNow)})"
                             : "") +
-                        (stalled && !complete ? " ; ripple stalled, anchored on launches observed" : "") +
+                        (stalled && !complete ? ", ripple stalled, anchored on launches observed" : "") +
                         (stalled && k == 0 ? " (NOTHING launched)" : "") +
                         SubmarineFacts.Describe(it.Unit, it.AmmoId));
 

@@ -256,7 +256,7 @@ namespace AutoTOT
         {
             Ready = false;
             if (Coordinator.TraceFlightModel)
-                Bootstrap.Log.LogWarning($"[AutoTOT] wp-init: FAILED at {stage} resolution ; spike disabled");
+                Bootstrap.Log.LogWarning($"[AutoTOT] wp-init: FAILED at {stage} resolution, spike disabled");
         }
 
         private static MethodInfo FindStaticByNameCount(Type t, string name, int paramCount)

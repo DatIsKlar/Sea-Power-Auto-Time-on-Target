@@ -61,10 +61,8 @@ Provide them in any of three ways (checked in this order):
      -p:AnchorChainDll="/path/to/AnchorChain.dll"
    ```
 
-2. As environment variables: `GAME_DIR` and `ANCHORCHAIN_DLL`.
-
-3. An optional `AutoTOT.local.props` file next to the csproj (machine-local, not
-   shipped), so repeated builds need no arguments:
+2. An optional `AutoTOT.local.props` file next to the csproj (machine-local, not
+   tracked), so repeated builds need no arguments:
 
    ```xml
    <Project>
@@ -74,6 +72,13 @@ Provide them in any of three ways (checked in this order):
      </PropertyGroup>
    </Project>
    ```
+
+3. As environment variables: `GAME_DIR` and `ANCHORCHAIN_DLL`.
+
+The list is the build's resolution order: an explicit `-p:` wins, then
+`AutoTOT.local.props`, then the environment variables. Note that `install.sh` reads
+`GAME_DIR` first and falls back to the props file, so if you keep a props file, set the
+install destination there rather than in the environment.
 
 Then:
 
@@ -298,6 +303,8 @@ All settings take effect live when edited (BepInEx reloads the file; no restart 
 | Timing | `GroupWindowSeconds` | `0.75` | Quiet gap (real s) after the last order before the batch locks in. |
 | Timing | `MaxCollectSeconds` | `6.0` | Hard cap (real s) on how long one target collects orders. |
 | Debug | `VerboseLogging` | `false` | Log every queued and released launch with timing details, plus per-shot flight-model diagnostics. Costly during a large salvo: it runs an extra flight simulation per missile, so leave it off unless you are investigating something. |
+| Debug | `TraceFlightModel` | `false` | Log the flight-model internals behind every estimate: the integrator step trace, the waypoint sim, launch geometry, stage transitions and the estimate-versus-actual gap. Roughly ten times the volume of `VerboseLogging` and it runs extra simulations per round, so use it only when a flight time looks wrong. |
+| Debug | `VerticalProfile` | `false` | Log a 1 s trace of every submarine depth change and every aircraft altitude change, with the hull parameters each model uses. Order a depth or altitude change with no engagement and one manoeuvre becomes one labelled block in the log. |
 | Debug | `Profiling` | `false` | Log a timing report every 60 frames: the mod's share of the frame, worst frame, where the time went, and how many flight simulations ran. |
 | Debug | `VerifySolve` | `false` | Run every threaded flight simulation a second time on the main thread and warn if the answers differ. Doubles the simulation work, so use it to check correctness rather than to measure speed. |
 | Performance | `EstimatorThreads` | `-1` | Worker threads for flight simulation. `-1` takes a quarter of the logical cores, at least 1 and at most 4. `0` runs everything on the main thread. Raise it only if the profiling line shows the queue backing up. |
@@ -387,7 +394,7 @@ Everything interesting lands in `<Sea Power>/BepInEx/LogOutput.log`, prefixed
 | `DOTS assembly scan would have crashed on an unnameable assembly` | the shield absorbed the multiplayer mission-load crash; load continues |
 | `DOTS scan hardening target NOT found` | **WARN**: shield disabled (DOTS layout changed); the rest of the mod still works |
 | `AnchorChain: Attempted to load a duplicate plugin` | two copies of the mod are installed (local + Workshop); remove one |
-| `present but not enabled in the Mods menu — standing down` | mod is unticked in the menu |
+| `present but not enabled in the Mods menu, so it is standing down` | mod is unticked in the menu |
 | `coordinator tick error` / `Unity exception` | something threw; report with the stack |
 
 If the mod is enabled but does nothing in-game: **fully restart the game** (code mods

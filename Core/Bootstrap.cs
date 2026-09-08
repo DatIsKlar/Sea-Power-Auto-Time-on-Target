@@ -64,7 +64,7 @@ namespace AutoTOT
             bool? enabled = ModMenuEnabled();
             if (enabled == false)
             {
-                Log.LogInfo("AutoTOT is present but not enabled in the Mods menu ; standing down.");
+                Log.LogInfo("AutoTOT is present but not enabled in the Mods menu, so it is standing down.");
                 return;
             }
             if (enabled == true)
@@ -145,7 +145,7 @@ namespace AutoTOT
             // (e.g. after a game update) ; PatchAll would then fail. Log it either way.
             var patchTarget = AccessTools.Method(typeof(ObjectBase), nameof(ObjectBase.InsertEngageTask));
             if (patchTarget == null)
-                Log.LogError("[AutoTOT] patch target ObjectBase.InsertEngageTask NOT found ; the game version may be incompatible; patching will likely fail.");
+                Log.LogError("[AutoTOT] patch target ObjectBase.InsertEngageTask NOT found. The game version may be incompatible, and patching will likely fail.");
             else
                 Log.LogInfo($"[AutoTOT] patch target resolved: {patchTarget.DeclaringType?.FullName}.{patchTarget.Name}");
 
@@ -155,7 +155,7 @@ namespace AutoTOT
             }
             catch (Exception e)
             {
-                Log.LogError($"[AutoTOT] Harmony PatchAll failed ; mod will not function:\n{e}");
+                Log.LogError($"[AutoTOT] Harmony PatchAll failed, so the mod will not function:\n{e}");
                 throw;
             }
 
@@ -355,7 +355,7 @@ namespace AutoTOT
 
                 if (enabled == false)
                 {
-                    Log.LogInfo("AutoTOT not enabled in the Mods menu ; standing down.");
+                    Log.LogInfo("AutoTOT not enabled in the Mods menu, so it is standing down.");
                 }
                 else
                 {

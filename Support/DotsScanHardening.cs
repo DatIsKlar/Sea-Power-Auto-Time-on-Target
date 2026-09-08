@@ -59,11 +59,11 @@ namespace AutoTOT
                 _hooked = true;
                 AppDomain.CurrentDomain.AssemblyLoad += OnAssemblyLoad;
                 Bootstrap.Log.LogInfo(
-                    "[AutoTOT] DOTS scan hardening: Unity.Entities not loaded yet ; the shield will install automatically when it loads.");
+                    "[AutoTOT] DOTS scan hardening: Unity.Entities not loaded yet. The shield will install automatically when it loads.");
             }
             catch (Exception e)
             {
-                Bootstrap.Log.LogWarning($"[AutoTOT] DOTS scan hardening install failed ; shield disabled, mod continues:\n{e}");
+                Bootstrap.Log.LogWarning($"[AutoTOT] DOTS scan hardening install failed. Shield disabled, mod continues:\n{e}");
             }
         }
 
@@ -137,12 +137,12 @@ namespace AutoTOT
             {
                 _installed = true;
                 Bootstrap.Log.LogInfo(
-                    $"[AutoTOT] DOTS scan hardening active: {patched} scan method(s) shielded ; multiplayer mission-load crash shield enabled.");
+                    $"[AutoTOT] DOTS scan hardening active: {patched} scan method(s) shielded, multiplayer mission-load crash shield enabled.");
             }
             else
             {
                 Bootstrap.Log.LogWarning(
-                    "[AutoTOT] DOTS scan hardening target NOT found (TypeManager has no IsAssemblyReferencing*(Assembly, ...) methods) ; DOTS may have changed; shield disabled, mod continues.");
+                    "[AutoTOT] DOTS scan hardening target NOT found (TypeManager has no IsAssemblyReferencing*(Assembly, ...) methods). DOTS may have changed. Shield disabled, mod continues.");
             }
         }
 
@@ -160,7 +160,7 @@ namespace AutoTOT
         /// Catch-all: if a scan filter throws (the invalid-culture GetName() case), swallow the
         /// exception and report it once. Returning null from a finalizer suppresses the
         /// exception; the caller then sees the method's result/outputs at their defaults, which
-        /// for every known filter variant means "does not reference entities" ; so the
+        /// for every known filter variant means "does not reference entities", so the
         /// unnameable assembly is skipped and mission load continues.
         /// </summary>
         private static Exception ShieldFinalizer(Exception __exception)
