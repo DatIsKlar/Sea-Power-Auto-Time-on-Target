@@ -67,12 +67,9 @@ namespace AutoTOT
         /// Seconds to reach <see cref="State.TargetAltU"/>. False when the seed is unusable or the
         /// aircraft makes no progress. Only descent is modelled: a climb request returns false rather
         /// than a wrong answer.
-        /// </summary>
-        internal static bool TryEstimate(State s, out float seconds) => TryEstimate(s, out seconds, null);
-
-        /// <summary>
-        /// As above, additionally writing a sampled profile into <paramref name="trace"/> for the
-        /// envelope-sim diagnostic. Pass null on any path that runs per frame.
+        ///
+        /// <para><paramref name="trace"/> collects a sampled profile for the envelope-sim
+        /// diagnostic. Pass null on any path that runs per frame.</para>
         /// </summary>
         internal static bool TryEstimate(State s, out float seconds, StringBuilder trace)
         {
@@ -94,6 +91,9 @@ namespace AutoTOT
                 float err = s.CommandAltU - alt;               // negative while descending
 
                 float taper = Mathf.Clamp(err / s.ThresholdAltU, -1f, 1f);
+                // Read once per step. The altitude does not move between here and the rate
+                // integration below, only the pitch does, so a second call would return the same
+                // number for another Atmosphere.SpeedOfSound trip into the game.
                 float tasU = TrueAirspeedU(s.Mach, alt);
                 float vsp = (float)Math.Sin(pitch * Math.PI / 180.0) * tasU;
 
@@ -118,8 +118,7 @@ namespace AutoTOT
                 float step = s.PitchRateDeg * StepSim;
                 pitch += Mathf.Clamp(want - pitch, -step, step);
 
-                float tasNow = TrueAirspeedU(s.Mach, alt);
-                float rateU = (float)Math.Sin(pitch * Math.PI / 180.0) * tasNow;
+                float rateU = (float)Math.Sin(pitch * Math.PI / 180.0) * tasU;
                 alt += rateU * StepSim;
                 t += StepSim;
 
@@ -127,7 +126,7 @@ namespace AutoTOT
                 {
                     nextSample += TelemetryCadence.SampleIntervalSim;
                     trace.Append($" t+{t:0}s {alt * GameUnits.UnityToFeet:0}ft p{pitch:0.0} " +
-                                 $"r{rateU * GameUnits.UnityToFeet:0.00}ft/s tas {tasNow * GameUnits.UnityToFeet * 0.592484f:0}kn;");
+                                 $"r{rateU * GameUnits.UnityToFeet:0.00}ft/s tas {tasU * GameUnits.UnityToFeet * 0.592484f:0}kn;");
                 }
             }
             return false;

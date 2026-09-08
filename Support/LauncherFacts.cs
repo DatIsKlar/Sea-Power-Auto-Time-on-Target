@@ -17,7 +17,7 @@ namespace AutoTOT
         private const float CacheTtlSeconds = 0.5f;   // real seconds
 
         /// <summary>Cadence used when a launcher declares nothing usable: the game's own
-        /// FireRate default of 60 rounds/min (ObjectBaseLoader.cs:2739) = 1 s/round.</summary>
+        /// FireRate default of 60 rounds/min (ObjectBaseLoader, ini key "FireRate") = 1 s/round.</summary>
         internal const float FallbackShotInterval = 1f;
 
         private const float SecondsPerMinute = 60f;

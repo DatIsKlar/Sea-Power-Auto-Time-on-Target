@@ -16,17 +16,6 @@ namespace AutoTOT
         ///
         /// Fields that the loop mutates are carried as their INITIAL values and unpacked into locals.
         /// </summary>
-        /// <summary>
-        /// Which of the two cruise-leg altitudes applies at this distance. The game runs
-        /// <c>MaintainSeaSkimming</c> and <c>MaintainFinalFlightAlt</c> as separate stages with
-        /// separate altitudes and switches at <c>FinalFlightPhaseDistToTarget</c>
-        /// (<c>Missile.cs:614-647</c>). Inert when the ammunition declares no final-flight distance,
-        /// or declares the same altitude for both, which is the common case.
-        /// </summary>
-        private static float CruiseOrFinalFlightAlt(float flatDist, float finalFlightDist,
-                                                    float finalFlightAlt, float cruiseAlt)
-            => (finalFlightDist > 0f && flatDist <= finalFlightDist) ? finalFlightAlt : cruiseAlt;
-
         internal readonly struct SolveInput
         {
             internal readonly Vector2[]   AltNodes;
@@ -68,7 +57,22 @@ namespace AutoTOT
             internal readonly float       TermDist;
             internal readonly float       TermVelKn;
             internal readonly bool        TrackDiag;
+            /// <summary>The rate every ordinary turn is budgeted at: the ammunition's
+            /// <c>MaxTurnRate</c>, plus the banking roll addend where that applies.</summary>
             internal readonly float       TurnRate;
+            /// <summary>Turn rate for the ToBearing window only, from the ammunition's
+            /// <c>LaunchTurnRate</c>. Equal to <see cref="TurnRate"/> when the ini leaves it at the
+            /// default, which is all but three shipped ammunition. See
+            /// FlightTime.Integrator.ResolveToBearingTurnRate.</summary>
+            internal readonly float       ToBearingTurnRate;
+            /// <summary>The <c>MaxTurnRate</c> part of <see cref="TurnRate"/>, without the banking
+            /// roll addend. The G-derate applies to this part alone, because the mover derates
+            /// before it spends the separate hardcoded roll budget.</summary>
+            internal readonly float       TurnRateBase;
+            /// <summary>Speed above which the G-limit starts cutting the turn rate, precomputed so
+            /// the step loop pays one compare. 0 = the ammunition can never reach its own limit, so
+            /// the derate is off. See FlightTime.Integrator.ResolveTurnDerateThreshold.</summary>
+            internal readonly float       TurnDerateThresholdKn;
             internal readonly int         AltLatchPhase;
             internal readonly bool        AltLatched;
             internal readonly Quaternion  Att;
@@ -116,6 +120,9 @@ namespace AutoTOT
                 float termVelKn,
                 bool trackDiag,
                 float turnRate,
+                float toBearingTurnRate,
+                float turnRateBase,
+                float turnDerateThresholdKn,
                 int altLatchPhase,
                 bool altLatched,
                 Quaternion att,
@@ -162,6 +169,9 @@ namespace AutoTOT
                 TermVelKn = termVelKn;
                 TrackDiag = trackDiag;
                 TurnRate = turnRate;
+                ToBearingTurnRate = toBearingTurnRate;
+                TurnRateBase = turnRateBase;
+                TurnDerateThresholdKn = turnDerateThresholdKn;
                 AltLatchPhase = altLatchPhase;
                 AltLatched = altLatched;
                 Att = att;
@@ -176,6 +186,17 @@ namespace AutoTOT
                 VelKnots = velKnots;
             }
         }
+
+        /// <summary>
+        /// Which of the two cruise-leg altitudes applies at this distance. The game runs
+        /// <c>MaintainSeaSkimming</c> and <c>MaintainFinalFlightAlt</c> as separate stages with
+        /// separate altitudes and switches at <c>FinalFlightPhaseDistToTarget</c>
+        /// (<c>Missile.cs:614-647</c>). Inert when the ammunition declares no final-flight distance,
+        /// or declares the same altitude for both, which is the common case.
+        /// </summary>
+        private static float CruiseOrFinalFlightAlt(float flatDist, float finalFlightDist,
+                                                    float finalFlightAlt, float cruiseAlt)
+            => (finalFlightDist > 0f && flatDist <= finalFlightDist) ? finalFlightAlt : cruiseAlt;
 
         /// <summary>
         /// The integration loop, as a pure function of <paramref name="i"/>.
@@ -227,6 +248,12 @@ namespace AutoTOT
             float       termVelKn              = i.TermVelKn;
             bool        trackDiag              = i.TrackDiag;
             float       turnRate               = i.TurnRate;
+            float       toBearingTurnRate      = i.ToBearingTurnRate;
+            float       turnRateBase           = i.TurnRateBase;
+            float       turnDerateThresholdKn  = i.TurnDerateThresholdKn;
+            // The mover derates MaxTurnRate for the G-limit and only then spends the separate
+            // hardcoded roll budget, so the addend rides above the derate rather than through it.
+            float       bankingRollAddend      = turnRate - turnRateBase;
             int         altLatchPhase          = i.AltLatchPhase;
             bool        altLatched             = i.AltLatched;
             Quaternion  att                    = i.Att;
@@ -278,8 +305,44 @@ namespace AutoTOT
                 Vector3 horizDir = flatDist > 1e-4f
                     ? new Vector3(dx / flatDist, 0f, dz / flatDist) : Vector3.forward;
                 Vector3 horizDirTarget = horizDir;   // where the round wants to point
-                bool coupledTurn = CoupledPitchYawRateLimit && nonKin
+                // Dropping `nonKin` here is deliberate. The gate was written believing the single
+                // combined rotation budget was reached only on the legacy path, but the
+                // Kinematics == Full path spends one budget too: a surface target with the default
+                // TerminalVerticalTurnRate takes one Vector3.RotateTowards covering yaw and pitch
+                // together (WeaponBase.setCourseTowardsPosition, the else of the
+                // |terminalRate - rate| > 1 split), and an air target takes a single 3-D cone
+                // rotation. Modelling the axes independently for kinematic ammo spent the budget
+                // twice, exactly the error this gate removes for non-kinematic ammo. What stays
+                // nonKin-only is BankingAddsRollBudgetToPitch: only the legacy path folds roll into
+                // the same quaternion.
+                bool coupledTurn = CoupledPitchYawRateLimit
                                 && launchHeading.sqrMagnitude > 0.5f && t >= initialPhaseDur;
+
+                // ToBearing, hoisted above the heading slew because the launch turn rate below has
+                // to reach the slew, the coupled turn and the pitch step alike. The mover picks the
+                // rate once per setCourseTowardsPosition call and spends it on whichever axes that
+                // call touches, so the model must not pick a different rate per axis.
+                //
+                // The 3-D cone the game tests is reduced to elevation here (Missile.cs:343). The
+                // horizontal component is already aligned on every shot fired near its own bearing,
+                // and the coupled turn carries it where it is not.
+                float elevToTgtDeg = Mathf.Atan2(predTgt.y - pos.y,
+                                                 Mathf.Max(flatDist, 1e-4f)) * Mathf.Rad2Deg;
+                bool inToBearing = launchPitch >= 0f
+                                && t >= initialPhaseDur
+                                && t < initialPhaseDur + ToBearingMaxSeconds
+                                && Mathf.Abs(prevPitch - elevToTgtDeg) >= ToBearingConeDeg;
+
+                // The rate this step is budgeted at. Two corrections ride on the base rate, in the
+                // mover's own order: the G-limit derate first, then the ToBearing override, which
+                // the mover applies as a floor AFTER derating (setCourseTowardsPosition reads
+                // LaunchTurnRate only if it exceeds the already-derated rate).
+                float stepTurnRate = turnRateBase;
+                if (TurnRateGDerate && turnDerateThresholdKn > 0f && velKnots > turnDerateThresholdKn)
+                    stepTurnRate *= turnDerateThresholdKn / velKnots;
+                if (LaunchTurnRateOverride && inToBearing && toBearingTurnRate > stepTurnRate)
+                    stepTurnRate = toBearingTurnRate;
+                stepTurnRate += bankingRollAddend;
 
                 // Fixed-rail launch heading: fly the rail's bearing for the initial flight
                 // phase, then turn toward the target at MaxTurnRate. The horizontal mirror of
@@ -290,7 +353,7 @@ namespace AutoTOT
                     // turns heading and pitch together further down, out of one budget.
                     if (t >= initialPhaseDur && !coupledTurn)
                         launchHeading = Vector3.RotateTowards(
-                            launchHeading, horizDir, turnRate * Mathf.Deg2Rad * dt, 0f).normalized;
+                            launchHeading, horizDir, stepTurnRate * Mathf.Deg2Rad * dt, 0f).normalized;
                     horizDir = launchHeading;
                 }
 
@@ -347,14 +410,8 @@ namespace AutoTOT
 
                     // The game's ToBearing test: angle between the missile's attitude and the
                     // line to its aim point, against a 5 deg cone, with a 10.0s cap
-                    // (Missile.cs:343). The horizontal component is already aligned on every
-                    // shot fired near its own bearing, so in practice this reduces to elevation.
-                    float elevToTgtDeg = Mathf.Atan2(predTgt.y - pos.y,
-                                                     Mathf.Max(flatDist, 1e-4f)) * Mathf.Rad2Deg;
-                    bool inToBearing = launchPitch >= 0f
-                                    && t >= initialPhaseDur
-                                    && t < initialPhaseDur + ToBearingMaxSeconds
-                                    && Mathf.Abs(prevPitch - elevToTgtDeg) >= ToBearingConeDeg;
+                    // inToBearing is resolved at the top of the step, because the launch turn
+                    // rate it selects has to reach the heading slew as well as the pitch step.
                     // Launch and ToBearing both command _maxVelocityInKnots (Missile.cs:3142).
                     if (LaunchStageSpeed && (t < initialPhaseDur || inToBearing))
                         stageTgt = maxVelKn;
@@ -416,7 +473,7 @@ namespace AutoTOT
                         // Unity's euler x is nose-DOWN positive, so climb-positive pitch is
                         // negated going in and read back off the forward vector coming out.
                         Quaternion tgt = Quaternion.Euler(-targetPitch, YawOf(horizDirTarget), 0f);
-                        att = Quaternion.RotateTowards(att, tgt, turnRate * dt);
+                        att = Quaternion.RotateTowards(att, tgt, stepTurnRate * dt);
                         Vector3 fwd = att * Vector3.forward;
                         pitchDeg = Mathf.Asin(Mathf.Clamp(fwd.y, -1f, 1f)) * Mathf.Rad2Deg;
                         Vector3 fh = new Vector3(fwd.x, 0f, fwd.z);
@@ -428,7 +485,7 @@ namespace AutoTOT
                     }
                     else
                     {
-                        pitchDeg = Mathf.MoveTowards(prevPitch, targetPitch, turnRate * dt);
+                        pitchDeg = Mathf.MoveTowards(prevPitch, targetPitch, stepTurnRate * dt);
                         // Not on the coupled path this step (initial phase, kinematic ammo, or
                         // no launch heading): keep the carried attitude in step with where the
                         // round actually points, roll zero.

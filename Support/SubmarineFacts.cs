@@ -67,12 +67,10 @@ namespace AutoTOT
         /// Returns 0 when the model reports the boat never arrives, which is the depth-deadlock
         /// case; the caller must not read that as "ready now", and the no-launch hold in
         /// <see cref="Coordinator"/> is what actually terminates such an order.
+        ///
+        /// <para><paramref name="trace"/> collects a sampled ascent profile for the asc-sim
+        /// diagnostic. Pass null on any path that runs per frame.</para>
         /// </summary>
-        internal static float EstimateLaunchDelay(ObjectBase unit, string ammoId)
-            => EstimateLaunchDelay(unit, ammoId, null);
-
-        /// <summary>As above, additionally writing a sampled ascent profile into
-        /// <paramref name="trace"/> for the asc-sim diagnostic.</summary>
         internal static float EstimateLaunchDelay(ObjectBase unit, string ammoId, System.Text.StringBuilder trace)
         {
             if (!TrySnapshot(unit, ammoId, out Snapshot s)) return 0f;

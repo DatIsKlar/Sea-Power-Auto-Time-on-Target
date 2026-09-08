@@ -13,12 +13,14 @@ namespace AutoTOT
         // brake, so it is declared once for the whole partial class rather than in each.
         internal const float ZeroDensityAltU = 1f / 0.00163f;
         private const float AltToleranceU = 0.5f;
-        // The game's OWN ini defaults: MaxLoftAngle 30 (AmmunitionParameters.cs:1633),
-        // SeaSkimmingMaxDescentAngle 30 (:1662), FinalFlightPhaseMaxAngle 30 (:1683).
+        // The game's OWN ini defaults, from AmmunitionParameters' ini reads: MaxLoftAngle 30,
+        // SeaSkimmingMaxDescentAngle 30, FinalFlightPhaseMaxAngle 30. Cited by KEY rather than by
+        // line: the decompile renumbers on every beta bump, and these four citations were already
+        // pointing at the previous one. Grep the key in AmmunitionParameters.cs to find the read.
         private const float DefaultClimbDeg = 30f;
         private const float DefaultDescentDeg = 30f;
         private const float BoostClimbDeg = 90f;
-        private const float DefaultTurnRateDeg = 5f;   // MaxTurnRate default (AmmunitionParameters.cs:1732)
+        private const float DefaultTurnRateDeg = 5f;   // AmmunitionParameters, ini key "MaxTurnRate"
         private const float MinDescentOnsetDeg = 5f;
         // A launcher elevates between horizontal and straight up; anything outside that is a bad
         // read of the rail transform rather than a real aim point.
@@ -77,7 +79,7 @@ namespace AutoTOT
 
         // Launch elevation from the launcher's container transform, NOT `_fixVerticalLaunchAngle`,
         // which reads 35 deg for every launcher in the game because that is the ini default and its
-        // gating bool also defaults true (ObjectBaseLoader.cs:2688-2690).
+        // gating bool also defaults true (ObjectBaseLoader, ini key "FixVerticalLaunchAngle").
         private const bool LauncherTransformLaunchAngle = true;
 
         // A launcher that cannot train fires along its OWN bearing, so an off-bearing shot flies its
@@ -87,13 +89,44 @@ namespace AutoTOT
         // A vertical rail has no bearing of its own, so the round leaves carrying the SHIP's yaw.
         private const bool VerticalLaunchInheritsShipHeading = true;
 
-        // Pitch, yaw and roll share ONE Quaternion.RotateTowards budget (WeaponBase.cs:1769-1771),
-        // so modelling the axes independently spends it twice: 90 deg of pitch with 90 deg of
-        // heading error is 120 deg of quaternion travel, not 90. Reached only for
-        // Kinematics == None (:1599). An on-bearing shot is unaffected, the step reducing to
-        // MoveTowards. Requires the attitude to PERSIST across steps, or the budget spent on roll is
-        // refunded every step and the gate goes inert.
+        // Pitch, yaw and roll share ONE rotation budget, so modelling the axes independently spends
+        // it twice: 90 deg of pitch with 90 deg of heading error is 120 deg of quaternion travel,
+        // not 90. An on-bearing shot is unaffected, the step reducing to MoveTowards. Requires the
+        // attitude to PERSIST across steps, or the budget spent on roll is refunded every step and
+        // the gate goes inert.
+        //
+        // Both mover paths spend one budget, which is why this is NOT scoped to Kinematics == None.
+        // Legacy (Kinematics == None) takes one Quaternion.RotateTowards over the whole rotation
+        // (WeaponBase.setCourseTowardsPositionLegacy, the else of its split); Kinematics == Full
+        // takes one Vector3.RotateTowards over the forward vector for a surface target, or one
+        // Quaternion.AngleAxis cone for an air target (setCourseTowardsPosition). The Full path
+        // excludes roll from that budget and levels separately, so the mod's coupled path rotating
+        // an attitude with roll zero is the matching shape. Only the per-axis split is different,
+        // and it needs a TerminalVerticalTurnRate diverging from MaxTurnRate by more than 1 deg/s,
+        // which 6 of 446 shipped ammunition declare.
         private const bool CoupledPitchYawRateLimit = true;
+
+        // While in ToBearing the mover floors the turn rate at LaunchTurnRate when the ini sets it
+        // above the ordinary rate (WeaponBase.setCourseTowardsPosition, the toBearingState branch).
+        // Three shipped ammunition set it, and one of them is a mainstream strike round:
+        // usn_rgm-84a at 40 deg/s against a MaxTurnRate of 15, wp_sa-n-6 at 40 against 20,
+        // wp_sa-n-9 at 360 against 30. Left unmodelled the round turns onto its target too slowly,
+        // flies further off-axis, and the estimate runs LATE. rgm-84c and rgm-84d leave the key at
+        // its default, so the error shows on the A-variant alone and reads as scatter.
+        private const bool LaunchTurnRateOverride = true;
+
+        // The mover converts the commanded turn rate into a G-load at the round's CURRENT speed and
+        // cuts the rate when it exceeds MaxTurnG (WeaponBase.setCourseTowardsPosition, ahead of the
+        // Kinematics dispatch, so both paths derate). Unmodelled, the round turns harder than the
+        // game lets it and the estimate runs early.
+        //
+        // Inert on every anti-ship missile in the game: none sets MaxTurnG, so all take the 200 g
+        // default, and the fastest of them reaches 14.2 g. It is not inert generally. 82 shipped
+        // ammunition set MaxTurnG, 25 being the most common value, and 57 missiles exceed their own
+        // limit at max speed, down to 0.26x on usn_rim-2f. Every one is a SAM or an AAM, which the
+        // coordinator will plan for: it filters to Ammunition.Type.Missile and DoesAmmoMatchTarget
+        // and no further.
+        private const bool TurnRateGDerate = true;
 
         // Non-kinematic + SupportsBanking gets a SECOND rotation call per tick: performToTargetRoll
         // at a hardcoded 60 deg/s on top of the normal RotateTowards (WeaponBase.cs:1773-1776,
@@ -345,7 +378,7 @@ namespace AutoTOT
             // 1312 ft while the model held 13200 ft, worth -4.4s on a 199s flight.
             //
             // The game parses FinalFlightPhaseAlt with SeaSkimmingAlt as its default
-            // (AmmunitionParameters.cs:1704-1719), so for an ammunition that does not distinguish
+            // (AmmunitionParameters, ini key "TerminalVelocity"), so for an ammunition that does not distinguish
             // the two these are equal and the switch below is inert. That is the common case.
             float cruiseAlt = ap._seaSkimmingAltUnity > 0f ? ap._seaSkimmingAltUnity : finalAlt;
             float finalFlightAlt = ap._finalFlightPhaseAltUnity > 0f
@@ -414,6 +447,62 @@ namespace AutoTOT
             // which is the larger distance.
             return Mathf.Max(Mathf.Max(ap._seekerActiveRange, ap._seekerPassiveRange), 0f);
         }
+
+        // The mover's own factors, pinned rather than taken from GameUnits: setCourseTowardsPosition
+        // writes 0.514444f and 9.8f literally, and GameUnits.KnotsToMs carries one more digit. The
+        // difference cannot matter at this scale, but a threshold derived from the game's arithmetic
+        // should read as the game's arithmetic.
+        private const float MoverKnotsToMs = 0.514444f;
+        private const float MoverGravityMs2 = 9.8f;
+
+        /// <summary>
+        /// Speed, in knots, at which a turn at <paramref name="turnRateDeg"/> reaches the
+        /// ammunition's own G-limit. Above it the mover cuts the rate in proportion; below it the
+        /// rate stands. Returns 0 when no limit can apply, which turns the derate off.
+        ///
+        /// <para>The mover computes, every tick, from its CURRENT speed
+        /// (<c>WeaponBase.setCourseTowardsPosition</c>, ahead of the Kinematics dispatch so both
+        /// paths derate):</para>
+        /// <code>
+        /// v      = 0.514444 * knots            // m/s
+        /// radius = v * (360 / rate) / (2*PI)   // m, the circle that rate traces at v
+        /// g      = v^2 / (radius * 9.8)
+        /// if (g &gt; MaxTurnG) rate *= MaxTurnG / g
+        /// </code>
+        /// <para>Substituting the radius collapses g to <c>v * rate * 2*PI / (360 * 9.8)</c>, which
+        /// is linear in speed. So there is one speed where g equals the limit, and above it the
+        /// surviving rate is <c>rate * threshold / knots</c>. Solving once here keeps the step loop
+        /// to a compare and, on the far side of it, one divide.</para>
+        ///
+        /// <para>Inert for every anti-ship missile: none declares <c>MaxTurnG</c>, so all take the
+        /// 200 g default, and the fastest reaches 14.2 g. It bites on SAMs and AAMs, 57 of which
+        /// exceed their declared limit at their own max speed.</para>
+        /// </summary>
+        private static float ResolveTurnDerateThreshold(AmmunitionParameters ap, float turnRateDeg)
+        {
+            float maxTurnG = ap._maxTurnG;
+            // A non-positive limit is an unset or malformed ini value, not an order to freeze the
+            // round. One shipped ammunition writes `MaxTurnG=` with no number at all.
+            if (maxTurnG <= 0f || turnRateDeg <= VelocityEpsilonKn) return 0f;
+            float thresholdMs = maxTurnG * 360f * MoverGravityMs2
+                              / (2f * Mathf.PI * turnRateDeg);
+            return thresholdMs / MoverKnotsToMs;
+        }
+
+        /// <summary>
+        /// The turn rate the ToBearing window is budgeted at. The mover floors the rate at
+        /// <c>LaunchTurnRate</c> while <c>toBearingState</c> is set, and only when the ini value
+        /// exceeds the rate already in hand (<c>WeaponBase.setCourseTowardsPosition</c>).
+        /// <c>LaunchTurnRate</c> defaults to -1, so this returns
+        /// <paramref name="turnRateDeg"/> unchanged for all but three shipped ammunition.
+        ///
+        /// <para>The comparison against the ordinary rate is repeated in the step loop rather than
+        /// settled here, because the mover applies the floor AFTER the G-derate has already cut the
+        /// rate. An ammunition can sit below its launch rate at speed and above it when slow.</para>
+        /// </summary>
+        private static float ResolveToBearingTurnRate(AmmunitionParameters ap, float turnRateDeg)
+            => ap._toBearingTurnRateDegrees > 0f && ap._toBearingTurnRateDegrees > turnRateDeg
+             ? ap._toBearingTurnRateDegrees : turnRateDeg;
 
         /// <summary>
         /// How far off-bearing a shot is at launch: the horizontal angle between the shooter's
@@ -569,11 +658,19 @@ namespace AutoTOT
 
                 float climbDeg = ap._maxLoftAngle > AltToleranceU ? ap._maxLoftAngle : DefaultClimbDeg;
                 float boostClimbDeg = isHighBallisticLofter ? BoostClimbDeg : climbDeg;
-                float turnRate = ap._maxTurnRateDegrees > VelocityEpsilonKn ? ap._maxTurnRateDegrees : DefaultTurnRateDeg;
+                // turnRateBase is MaxTurnRate alone. It is carried separately because the two
+                // corrections below apply to different parts: the G-derate cuts the base rate, and
+                // the banking roll addend is a second budget the mover spends at a hardcoded rate
+                // that no G-limit touches. Deriving the addend by subtraction in the step loop keeps
+                // one number on the wire instead of two.
+                float turnRateBase = ap._maxTurnRateDegrees > VelocityEpsilonKn ? ap._maxTurnRateDegrees : DefaultTurnRateDeg;
+                float turnRate = turnRateBase;
                 // See BankingAddsRollBudgetToPitch above: the roll call is a second, independent
                 // per-tick budget, so the two can sum onto pitch.
                 if (BankingAddsRollBudgetToPitch && nonKin && ap._supportsBanking)
                     turnRate += BankingRollRateDeg;
+                float toBearingTurnRate = ResolveToBearingTurnRate(ap, turnRateBase);
+                float turnDerateThresholdKn = ResolveTurnDerateThreshold(ap, turnRateBase);
 
                 LaunchGeometry geom = ResolveLaunchGeometry(unit, ap, launchPos, targetPos);
                 float launchPitch = geom.Pitch;
@@ -705,6 +802,15 @@ namespace AutoTOT
                         $", loftEntry {(loftEntryDist > 0f ? loftEntryDist.ToString("0") + "u" : "none")}" +
                         $", cruiseAlt {cruiseAlt * GameUnits.MetersPerUnity / 0.3048f:0}ft" +
                         $", finalFlight {finalFlightDist:0}u @ {finalFlightAlt * GameUnits.MetersPerUnity / 0.3048f:0}ft" +
+                        // The turn budget and its two corrections. "launchTurn none" and "gLimit
+                        // none" are the answer for almost every round, which is the point: a shot
+                        // that reads "none" for both is one where neither correction can have moved
+                        // it, so a residual on that shot has some other cause. gLimit prints the
+                        // speed at which the derate STARTS, so it can be read against the sim-track
+                        // speeds on the same shot.
+                        $", turn {turnRateBase:0.#}°/s" +
+                        $", launchTurn {(toBearingTurnRate > turnRateBase ? toBearingTurnRate.ToString("0.#") + "°/s" : "none")}" +
+                        $", gLimit {(turnDerateThresholdKn > 0f ? turnDerateThresholdKn.ToString("0") + "kn" : "none")}" +
                         // Sampled on the fired-shot path: the planning-path launch-rail reading goes
                         // stale because the ship keeps turning between planning and launch.
                         $", railAz {railAzTxt}");
@@ -746,6 +852,9 @@ namespace AutoTOT
                     termVelKn,
                     trackDiag,
                     turnRate,
+                    toBearingTurnRate,
+                    turnRateBase,
+                    turnDerateThresholdKn,
                     altLatchPhase,
                     altLatched,
                     att,

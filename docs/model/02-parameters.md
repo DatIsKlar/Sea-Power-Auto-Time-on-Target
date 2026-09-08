@@ -40,7 +40,8 @@ Every `AmmunitionParameters` field the model reads, all via `ap.`:
 
 `_fixVerticalLaunchAngle` (with `_additionalFixVerticalLaunchAngle` and
 `_fixVerticalLaunchAngleForLauncher`) reads **35° for every launcher in the game**. It is the `.ini`
-default, and the bool gating it also defaults true (`ObjectBaseLoader.cs:2688-2690`), so it is not a
+default, and the bool gating it also defaults true (`ObjectBaseLoader`, ini key
+`FixVerticalLaunchAngle`), so it is not a
 usable test for vertical launch and not a usable launch elevation. The model reads the launcher's
 transform instead ([§3.1](03-trajectory.md#31-launch-geometry)). The field is still logged beside the
 measured value for comparison.
@@ -86,9 +87,9 @@ per-missile tuning.
 | `MetersPerUnity` | 67.200066 | Unity unit → metres (game constant) |
 | `ZeroDensityAltU` | 1 / 0.00163 ≈ 613.5 u | where the game's air density `(1 − 0.00163·h)^4.256` reaches zero |
 | `AltToleranceU` | 0.5 u | altitude deadband on the pitch command |
-| `DefaultClimbDeg`, `DefaultDescentDeg` | 30° | fallback when the `.ini` angles are unset; the game's own `.ini` defaults (`AmmunitionParameters.cs:1633/1662/1683`) |
+| `DefaultClimbDeg`, `DefaultDescentDeg` | 30° | fallback when the `.ini` angles are unset; the game's own `.ini` defaults (`AmmunitionParameters`, keys `MaxLoftAngle` / `SeaSkimmingMaxDescentAngle` / `FinalFlightPhaseMaxAngle`) |
 | `BoostClimbDeg` | 90° | vertical boost climb, applied only to high ballistic lofters ([§3](03-trajectory.md)) |
-| `BankingRollRateDeg` | 60°/s | the game's hardcoded roll rate (`WeaponBase.cs:1792`) |
+| `BankingRollRateDeg` | 60°/s | the game's hardcoded roll rate (`WeaponBase.performToTargetRoll`) |
 | `DefaultTurnRateDeg` | 5°/s | fallback slew rate when `_maxTurnRateDegrees` is unset |
 | `ToBearingConeDeg`, `ToBearingMaxSeconds` | 5°, 10.0 s | the game's ToBearing exit test (`Missile.cs:343`) |
 | `MinDescentOnsetDeg` | 5° | floor on the geometric dive onset, bounds the tangent |

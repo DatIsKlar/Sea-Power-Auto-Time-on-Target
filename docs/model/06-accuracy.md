@@ -113,9 +113,11 @@ kinematic measurement should be read against that band, not treated as a point v
 - **Constant-velocity target prediction.** The lead is `targetPos + targetVel · t`, with the same
   evasive-manoeuvre boost the game's own estimator applies. A target that turns hard mid-flight is
   not modelled.
-- **Independent pitch and heading rate limits.** The game rate-limits combined pitch and yaw in one
-  `Quaternion.RotateTowards`; the model limits each axis separately
-  ([§3.1](03-trajectory.md#heading)). The error is small when a turn is dominated by one axis.
+- **The per-axis turn split is not modelled.** Both mover paths spend one combined rotation
+  budget, and the model matches that ([§3.1](03-trajectory.md#heading)). What it does not carry
+  is the game's split into separate yaw and pitch budgets, which needs a `TerminalVerticalTurnRate`
+  more than 1 deg/s from `MaxTurnRate` and the round already in TerminalApproach. Six of 446
+  shipped ammunition declare such a rate.
 - **Three phases, not the game's full stage list.** The model collapses the guidance machine to
   loft / final / terminal with instant speed transitions. The boundary values it uses are tuned to
   that collapsed form; feeding it the game's own multi-stage waypoint boundaries makes it *worse*,
@@ -127,3 +129,46 @@ kinematic measurement should be read against that band, not treated as a point v
   simulator drives timing ([§1](01-overview.md#branch-behaviour)).
 - **Fixed 0.1 s step.** No adaptive stepping. A 16-minute flight is ~9,600 steps, which the 0.5 s
   result cache keeps off the per-frame path.
+
+## 6.4 Error the model cannot remove
+
+Four of these are properties of the game, not defects in the model. They bound how good any estimate
+can be, and they are recorded so nobody spends a test run chasing them.
+
+- **`MotorPerformance` is rolled per round.** Every missile draws a thrust multiplier in
+  [0.98, 1.02] at launch and keeps it for the flight. It is unpredictable by design, so plus or
+  minus 2 percent of thrust is a noise floor under every estimate. Section 6.2 measures what that
+  becomes in seconds for each ammunition class.
+- **A game bug the model inherits on purpose.** When an integration window straddles sustainer
+  burnout, `CalculateThrustOverTime` returns `remainingTime * timeWindow`, which is dimensionally
+  seconds squared; the sustainer acceleration it should have multiplied is dropped. The mod calls
+  that function rather than reimplementing it, so it inherits the bug, which is correct: the bug is
+  the ground truth. The two do not lose the same amount, because the mover hits it with a 0.0333 s
+  window and the model with 0.1 s, so the model loses up to about 3 times the impulse on that one
+  step, bounded by `sustainerAccel * 0.1` knots, and only for ammunition with a sustainer. Fixing it
+  in the model would make the model wrong.
+- **Wobble is not modelled.** `WobblingStrength` and `VerticalWobblingStrength` add a sinusoidal
+  heading and pitch offset outside ToBearing, gated above 0.1. Cosmetic in scale.
+- **Snake search is not modelled.** On terminal entry with a non-zero `SearchMode` the mover enters
+  `EnterSearchMode` and possibly `PerformSnakeSearch`, which flies a sinusoidal heading at
+  `SearchVelocity`. This is documented rather than declined because it cannot reach a shipped
+  missile: 43 of the 45 shipped ammunition that declare a search mode are torpedoes, which do not
+  run the missile mover at all, and the only two missiles that declare one (`usn_rgm-109b`,
+  `usn_ugm-109b`) set `SearchVelocity` equal to their `MaxVelocity`, so there is no speed change to
+  model. Both states also exit to `TerminalApproach` as soon as the seeker holds an echo, which is
+  the same condition that let the round leave cruise. It becomes real for a modded round whose
+  `SearchVelocity` differs from its `MaxVelocity`, or one that reaches terminal with no echo.
+- **`TerminalDelay` is not modelled.** The mover refuses `TerminalApproach` until
+  `elapsedSinceLaunch` passes `TerminalDelay`, which defaults to `0.8 * GoActiveTime` and is set
+  explicitly by none of the 446 shipped ammunition. It can only matter for a shot launched already
+  inside terminal distance, since the delay is seconds and terminal distance is tens of kilometres.
+  Modelling it would add a branch to the hottest loop in the mod for a case the coordinator does not
+  plan.
+- **Tiers 2 and 3 disagree with the mover for a moving surface launcher, and the mover is right.**
+  The ported waypoint sim seeds launch speed from the platform for every unit, matching what the live
+  mover does. The game's own `MaxRangePrecise` seeds it only for air units. This is a deliberate
+  deviation from tier 3, not an oversight, and should not be "fixed" toward it.
+- **The vacuum brake is a proxy, not a lock reading.** The model's `dragTargetAlt` override mirrors
+  the mover's own `CurrentTarget ? target.y : own y` for the part of flight before the seeker is up.
+  The -40 degree pitch and phase-2 gate stand in for "seeker not up yet, past apex", because seeker
+  state is not available at planning time ([§4.4](04-speed.md#44-the-vacuum-brake)).

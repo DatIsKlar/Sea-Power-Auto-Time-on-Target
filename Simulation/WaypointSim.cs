@@ -38,10 +38,13 @@ namespace AutoTOT
         // number.
         private const float InterceptReestimateFraction = 6f;
 
-        // Speed margin the game applies to the quadratic's a-term (public Missile.cs:2455). Shares
-        // its value with FlightTime.EvasiveBoostFraction by coincidence, not by meaning: that one
-        // scales a TARGET's speed, this one derates the MISSILE's. Kept separate so a change to
-        // either cannot travel to the other.
+        // The intercept solver's margin, applied at both places the game uses it: the quadratic's
+        // a-term (public Missile.cs:2455) and, when the quadratic degenerates, the closing-rate
+        // fallback beside it (:2471). Shares its value with FlightTime.EvasiveBoostFraction by
+        // coincidence, not by meaning. That one scales a TARGET's speed to model evasion; this one
+        // is a margin inside one solver. Kept separate so a change to either cannot travel to the
+        // other, which means the fallback below reads THIS constant even though the term it
+        // scales happens to be a target velocity.
         private const float InterceptSpeedMarginFactor = 0.8f;
 
         // Cadence of the verbose wp-track line. Not TelemetryCadence: that one exists so the
@@ -171,10 +174,13 @@ namespace AutoTOT
                 _fCoStall = _tWpContext.GetField("StallSpeedKnots", PI);
                 _fCoMotor = _tWpContext.GetField("MotorBurning", PI);
 
-                if (_fCtxAp == null || _fCfgDist == null || _fCfgSettings == null ||
-                    _fWpStatus == null || _fWpSettings == null || _fStDesiredPos == null ||
-                    _fSetTargetSpeed == null || _fCoGeo == null)
-                { LogInitFail("field"); return; }
+                // All 22, not the 8 the step loop happens to dereference first. An unchecked
+                // null does not fail here; it fails later as a NullReferenceException inside
+                // EndTime's catch, which returns -1 and reads as "the tier declined" with only a
+                // verbose log to say otherwise. A field renamed by a beta bump would look like an
+                // ammunition the port cannot fly. The name is reported so the rename is findable.
+                string missing = FirstMissingField();
+                if (missing != null) { LogInitFail("field " + missing); return; }
 
                 Ready = true;
 
@@ -213,6 +219,37 @@ namespace AutoTOT
                 if (Coordinator.TraceFlightModel)
                     Bootstrap.Log.LogWarning($"[AutoTOT] wp-init: exception resolving waypoint surface: {e.Message}");
             }
+        }
+
+        /// <summary>
+        /// Name of the first reflected field that did not resolve, or null when all 22 are present.
+        /// Ordered as they are read above so the report points at the first thing that moved.
+        /// </summary>
+        private static string FirstMissingField()
+        {
+            if (_fCtxAp == null) return "WaypointCreationContext.Ap";
+            if (_fCtxIsAir == null) return "WaypointCreationContext.IsAirTarget";
+            if (_fCtxTerrain == null) return "WaypointCreationContext.TerrainFollow";
+            if (_fCtxGroupLeader == null) return "WaypointCreationContext.IsGroupLeader";
+            if (_fCtxStartAngle == null) return "WaypointCreationContext.StartAngle";
+            if (_fCtxPopUpDisabled == null) return "WaypointCreationContext.SelectivePopUpDisabled";
+            if (_fCtxLaunchAlt == null) return "WaypointCreationContext.LaunchAltUnity";
+            if (_fCtxLoftOverride == null) return "WaypointCreationContext.LoftAltUnityOverride";
+            if (_fCfgDist == null) return "WaypointConfig.DistanceToTarget";
+            if (_fCfgSettings == null) return "WaypointConfig.Settings";
+            if (_fWpStatus == null) return "Waypoint.WpStatus";
+            if (_fWpSettings == null) return "Waypoint.WpSettings";
+            if (_fStDesiredPos == null) return "Waypoint.Status.DesiredPosition";
+            if (_fStDone == null) return "Waypoint.Status.Done";
+            if (_fSetTargetSpeed == null) return "Waypoint.Settings.TargetSpeedKnots";
+            if (_fSetLoftHeight == null) return "Waypoint.Settings.LoftHeight";
+            if (_fCoGeo == null) return "Waypoint.Context.GeoPosition";
+            if (_fCoUnity == null) return "Waypoint.Context.UnityPosition";
+            if (_fCoVel == null) return "Waypoint.Context.VelocityVector";
+            if (_fCoFlatVel == null) return "Waypoint.Context.FlatVelocity";
+            if (_fCoStall == null) return "Waypoint.Context.StallSpeedKnots";
+            if (_fCoMotor == null) return "Waypoint.Context.MotorBurning";
+            return null;
         }
 
         private static void LogInitFail(string stage)
@@ -411,7 +448,7 @@ namespace AutoTOT
                         }
                         else
                         {
-                            float targetSpeedFactorSq = targetVelocityVector.sqrMagnitude * FlightTime.EvasiveBoostFraction;
+                            float targetSpeedFactorSq = targetVelocityVector.sqrMagnitude * InterceptSpeedMarginFactor;
                             float fallbackInterceptTime = targetSpeedFactorSq > QuadraticEpsilon
                                 ? Mathf.Max(0f, -Vector3.Dot(targetOffset, targetVelocityVector) / targetSpeedFactorSq)
                                 : (speedUnity > QuadraticEpsilon ? slantRange / speedUnity : 0f);
@@ -517,15 +554,28 @@ namespace AutoTOT
                     }
 
                     // loftTooHigh escape + stall (public 2577-2604).
+                    //
+                    // The escape retires the loft waypoint and does NOT skip the range break below.
+                    // The game reaches that break through `goto IL_0a08`, so the same iteration
+                    // still evaluates it (public Missile.cs:2596-2604); an earlier `continue` here
+                    // jumped to the loop increment instead, buying the round one extra 0.5s step and
+                    // one extra intercept-detection pass whenever both conditions came true at once.
                     if (simTime > LoftCheckMinSimTime && !motorBurning)
                     {
-                        if (velKnots < minVel + LoftHighSpeedMargin && waypoints.Count > 0)
+                        bool stalled = velKnots < minVel;
+                        // waypoints[0] is null-checked because the game checks it (public
+                        // Missile.cs:2583). Reaching through a null here would throw into EndTime's
+                        // catch and turn a flyable shot into a silent -1 tier decline.
+                        if (velKnots < minVel + LoftHighSpeedMargin && waypoints.Count > 0
+                            && waypoints[0] != null)
                         {
                             object settings = _fWpSettings.GetValue(waypoints[0]);
                             object loft = settings != null ? _fSetLoftHeight.GetValue(settings) : null;
-                            if (loft != null) { SetActiveDone(waypoints[0]); continue; }
+                            // Retiring the waypoint clears the stall: the game sets Done and leaves
+                            // the loop running, so the `break` below must not also fire.
+                            if (loft != null) { SetActiveDone(waypoints[0]); stalled = false; }
                         }
-                        if (velKnots < minVel) break;
+                        if (stalled) break;
                     }
                     if (nonKin && GameMath.FlatDistance(missilePos, launchPosition) > ap._launchRangesInUnity.y) break;
                 }

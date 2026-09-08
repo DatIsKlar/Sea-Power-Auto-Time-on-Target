@@ -62,8 +62,23 @@ and resolves the integrator's and waypoint sim's reflection surfaces.
 | 4: straight line | last resort | last resort |
 
 On the public branch the game's own simulator is accurate and the mod defers to it. On beta the
-built-in `EstimateShot` measures ~30 s off on lofting missiles; its Chebyshev speed fit smears sharp
-speed transitions and underestimates loft arcs, which is why the integrator exists.
+built-in `EstimateShot` measures about 30 s off on lofting missiles, which is why the integrator
+exists. The Chebyshev fit is often named as the cause and is not: `EstimateShot` fits
+flat-distance against time (`FitChebyshev(profile.FlatDistAt, 0, EndTime)`, degree 12 over 33
+nodes) and reads intercept speed straight off the profile, so there is no speed fit to smear.
+The bias comes from the flyout the fit is taken over, in rough order of suspicion:
+
+1. the loft apex is chosen to maximise effective chase RANGE, not to be the arc the round
+   actually flies (`SearchOptimalLoftAltitude`, including its comfort snap);
+2. the flyout is a straight line to a one-shot aim point, while the real round flies curved lead
+   pursuit;
+3. `BuildFlyout` freezes air density per segment and uses `cos^2(pitch)` where the live mover's
+   drag uses `LiftLoadFactor^2`;
+4. smearing in the distance curve becomes time error wherever the gap's slope is shallow.
+
+Tier 4 is worth naming for what it is: the game's own on-screen TOT readout computes
+`TargetRange / FiringWeapon.MaxVelocity` (`TimeOnTargetCalculation.cs:87`), a straight line at
+max speed. The last-resort tier is the same arithmetic the game shows the player.
 
 ## When tier 1 declines
 

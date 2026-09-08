@@ -20,7 +20,7 @@ churn and defensive-SAM launches do not drown the log.
 | `sim-launch` | one line per shot: `launchPitch`, `initPhase`, `turnRate`, `loftAlt`, `descentDeg`, `onsetDeg`, `bearingErr`, `range`, `iniPitch` (the `.ini` value, for comparison), `railAz` |
 | `sim-track` | the model's own state: `t` / speed / altitude / pitch / `hdgErr` / `roll` / drag / phase / flat distance / slant |
 | `stage-model` | the model's phase boundaries: `finalDist`, `termDist`, `diveStart`, `loftAlt`, `onsetDeg` |
-| `launch-rail` | every candidate launcher transform (`gunObj` / `containerBase` / `mount`), the `fixedRail` verdict, the `predicted` launch angle, `railAz`, and the rotatable / joined / elevation-arc flags |
+| `launch-rail` | every candidate launcher transform (`gunObj` / `containerBase` / `mount`), the `fixedRail` verdict, the `predicted` launch angle, `railAz`, and the rotatable / joined / elevation-arc flags. Also the resolved stage schedule (`loftHold`, `loftEntry`, `cruiseAlt`, `finalFlight`) and turn budget (`turn`, `launchTurn`, `gLimit`), so a traced shot records what the model thought it should fly without anyone re-reading the ini |
 | `wp-track` | the tier-2 waypoint sim's own state, for tier comparison |
 
 ### Reality side
@@ -252,3 +252,17 @@ The game teleports a unit on spawn and on altitude correction (`transform.positi
 and the first session logged peaks of 1372 and 1612 ft/s, above the airframes' own declared maxima.
 Samples beyond a plausible ceiling are dropped from the rate statistics and counted, so a
 snap-heavy run is visibly suspect rather than quietly biased.
+
+### Reading `turn`, `launchTurn` and `gLimit`
+
+`turn` is the ammunition's `MaxTurnRate`. The two beside it are the corrections that can move it,
+and both print `none` for almost every round:
+
+- `launchTurn` shows the ToBearing floor from `LaunchTurnRate`, or `none` when the ini leaves it at
+  its default. Three shipped ammunition set it, `usn_rgm-84a` among them.
+- `gLimit` shows the speed at which the G-derate STARTS cutting the rate, or `none` when no limit can
+  apply. Read it against the speeds on the same shot's `sim-track` lines: a `gLimit` above every
+  speed the round reached means the derate never fired. No anti-ship missile can reach its own limit.
+
+A shot printing `none` for both is one where neither correction can have moved it, so a residual
+there has some other cause.

@@ -83,12 +83,15 @@ aims before firing, so it has no launch turn to model.
 
 ### Pitch and heading share one budget
 
-The two axes are not rate-limited separately. The game turns the whole airframe with a single
-`Quaternion.RotateTowards` covering pitch, yaw and roll at once (`WeaponBase.cs:1769-1771`), so
-yawing and pitching compete for the same degrees per second. A round that must do both finishes
-later than one doing either alone.
+The two axes are not rate-limited separately, on either mover path. Non-kinematic ammunition turns
+the whole airframe with a single `Quaternion.RotateTowards` covering pitch, yaw and roll at once
+(`WeaponBase.setCourseTowardsPositionLegacy`). Kinematic ammunition spends one budget too: a
+surface target takes a single `Vector3.RotateTowards` of the forward vector, and an air target a
+single `Quaternion.AngleAxis` cone rotation (`WeaponBase.setCourseTowardsPosition`). Either way,
+yawing and pitching compete for the same degrees per second, and a round that must do both
+finishes later than one doing either alone.
 
-For non-kinematic ammunition, which is the path that rotation code serves, the model does the same:
+The model does the same, for both classes:
 
 ```
 att  = RotateTowards(att, Euler(-targetPitch, yaw(targetHeading)), turnRate · dt)
@@ -109,6 +112,12 @@ limiting would charge; at 10°/s that is 12 s of turning rather than 9 s.
 With no heading error the quaternion angle equals the pitch change exactly, so this reduces to the
 plain slew above and cannot disturb a shot that has nothing to yaw.
 
+The kinematic path excludes roll from that budget and levels the airframe in a separate call, so
+the model's attitude, which carries no roll of its own, is the matching shape there. What the
+model does not carry on either path is the game's split into separate yaw and pitch budgets: that
+needs a `TerminalVerticalTurnRate` more than 1 deg/s away from `MaxTurnRate`, and the round
+already in TerminalApproach. Six of 446 shipped ammunition declare such a rate.
+
 ## 3.2 The turn-rate budget
 
 Pitch slews toward its command at `_maxTurnRateDegrees` (5°/s when unset):
@@ -125,7 +134,7 @@ swing down, climbing the whole way. A model that levels instantly peaks hundreds
 
 A **non-kinematic** missile with `_supportsBanking` gets a *second* rotation call every physics tick:
 `setCourseTowardsPositionLegacy` runs its normal `RotateTowards` at `_maxTurnRateDegrees`, and then
-`performToTargetRoll` runs another at a hardcoded 60°/s (`WeaponBase.cs:1773-1776`, `:1789-1792`).
+`performToTargetRoll` runs another at a hardcoded 60°/s (`WeaponBase.performToTargetRoll`).
 That second call assigns a locally-read Euler angle to *world* rotation, which is gimbal-degenerate
 near vertical, so after a vertical launch its budget lands largely on **pitch**, not roll.
 
@@ -135,6 +144,52 @@ if nonKinematic && ap._supportsBanking:
 ```
 
 Modelling only `_maxTurnRateDegrees` makes such a round nose over roughly three times too slowly.
+
+### Two corrections ride on the base rate
+
+The mover does not spend `MaxTurnRate` as written. It derates it for the G-limit first, then floors
+it at the launch turn rate while in ToBearing, and only then dispatches to one of the two rotation
+paths. The model resolves the same two in the same order, per step, and adds the banking roll addend
+afterwards, because the mover's roll call runs at a hardcoded rate that no G-limit touches:
+
+```
+rate = MaxTurnRate
+if TurnRateGDerate       && knots > gThreshold:  rate *= gThreshold / knots
+if LaunchTurnRateOverride && inToBearing && LaunchTurnRate > rate:  rate = LaunchTurnRate
+rate += bankingRollAddend
+```
+
+**The G-limit.** The mover converts the commanded rate into a load at the round's *current* speed
+and cuts the rate when it exceeds `MaxTurnG`:
+
+```
+v      = 0.514444 · knots
+radius = v · (360 / rate) / 2π
+g      = v² / (radius · 9.8)
+if g > MaxTurnG: rate *= MaxTurnG / g
+```
+
+Substituting the radius collapses `g` to `v · rate · 2π / (360 · 9.8)`, linear in speed, so there is
+one speed at which the load reaches the limit. The model solves for that speed once at setup and the
+step loop pays a compare. Above it the surviving rate is `rate · threshold / knots`.
+
+This is inert for every anti-ship missile in the game: none declares `MaxTurnG`, so all take the
+200 g default, and the fastest of them reaches 14.2 g. It is not inert generally. 82 shipped
+ammunition declare a limit, 25 being the most common value, and 57 missiles exceed their own limit at
+their own maximum speed, down to 0.26x on `usn_rim-2f`. Every one is a SAM or an AAM.
+
+**The launch turn rate.** While in ToBearing the mover raises the rate to `LaunchTurnRate` when the
+ini sets it above the rate already in hand. It defaults to -1, and three shipped ammunition set it:
+
+| ammo | `LaunchTurnRate` | `MaxTurnRate` |
+|---|---|---|
+| `usn_rgm-84a` | 40°/s | 15°/s |
+| `wp_sa-n-6` | 40°/s | 20°/s |
+| `wp_sa-n-9` | 360°/s | 30°/s |
+
+Harpoon is the one that matters, because it is a strike round the coordinator plans with. Left
+unmodelled it turns onto its target too slowly, flies further off-axis, and the estimate runs late.
+`rgm-84c` and `rgm-84d` leave the key at its default, so the error appears on the A-variant alone.
 
 ## 3.3 The stage model
 
@@ -184,7 +239,7 @@ The game runs `MaintainSeaSkimming` at `SeaSkimmingAlt` and `MaintainFinalFlight
 `cruiseAlt` outside that distance and `finalFlightAlt` within it.
 
 The game parses `FinalFlightPhaseAlt` with `SeaSkimmingAlt` as its default
-(`AmmunitionParameters.cs:1704-1719`), so for most ammunition the two are equal and the switch is
+(`AmmunitionParameters`, ini key `TerminalVelocity`), so for most ammunition the two are equal and the switch is
 inert. Where they differ it matters most on a shot that starts inside the final-flight distance and
 so never sea-skims at all: an `ss-n-3b` fired at 91 km flew its whole flight at 1312 ft while a
 single-altitude model held 13200 ft, worth -4.4 s on a 199 s flight.

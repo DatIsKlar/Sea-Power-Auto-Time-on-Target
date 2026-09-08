@@ -226,12 +226,29 @@ namespace AutoTOT
                 $"every value the loop reads.");
         }
 
-        /// <summary>Cache-only read, for callers that must not block. Main thread only.</summary>
+        /// <summary>
+        /// Cache-only read, for callers that must not block. Main thread only.
+        ///
+        /// <para>A cached DECLINE must look like a miss. <see cref="Kinematic"/> caches the tier
+        /// chain's answer whatever it is, including the -1 that means "the model declined", and the
+        /// async decline path caches its re-run the same way. <see cref="Estimate"/> intercepts
+        /// those and substitutes the straight-line tier; this method cannot, because it must not
+        /// run a tier. Returning the -1 raw would hand it to callers that treat the result as a
+        /// flight time: the anchor scan would compute a negative <c>needed</c> and silently never
+        /// let that item win the anchor, and the release gate would put -1 into
+        /// <c>LastFlightEst</c> and release the shot on this tick. Reporting a miss instead makes
+        /// both callers fall through to <see cref="Estimate"/>, which resolves the decline
+        /// properly. The next tick does not recover on its own: -1 fails the
+        /// <c>LastFlightEst &gt;= 0</c> refresh branch, so the release path re-solves rather than
+        /// reusing the bad value.</para>
+        /// </summary>
         internal static bool TryCached(ObjectBase unit, string ammoId, ObjectBase target, out float value)
         {
             value = 0f;
             if (!TryKey(unit, ammoId, target, out _, out TofKey key)) return false;
-            return _cache.TryGet(key, out value);
+            if (!_cache.TryGet(key, out float cached) || cached <= MinValidSeconds) return false;
+            value = cached;
+            return true;
         }
     }
 }
