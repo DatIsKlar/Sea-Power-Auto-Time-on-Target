@@ -30,6 +30,8 @@ namespace AutoTOT
         private const int FontSizeBody = 14, FontSizeTitle = 15, FontSizeControl = 16, FontSizeSmall = 12;
 
         private GUIStyle _winStyle, _title, _chev, _hdr, _row, _ship, _btn, _fire, _menuItem;
+        // _menuItem with the tick column reserved in its left padding, for rows that can be ticked.
+        private GUIStyle _menuItemMarked;
         // The four button roles the panel uses. _fire is primary (the single commit), _btnSecondary
         // is an outlined action that is real but not the headline, _btn is the flat ghost used for
         // in-list actions, and _btnDanger empties a list. One style per role, so a button's weight
@@ -196,6 +198,17 @@ namespace AutoTOT
             };
             SetStates(_menuItem, _transparentTex, _menuHoverTex, _menuHoverTex, _menuHoverTex,
                       TextMain, Color.white);
+
+            // A tickable row reserves the mark's width in its padding and the mark is drawn into
+            // that column separately. Carrying the tick as a text prefix instead made the label
+            // move when the row was ticked: the glyph is not the width of the spaces it replaces,
+            // and it is taller than the plain text, so the centred line box shifted down as well.
+            _menuItemMarked = new GUIStyle(_menuItem)
+            {
+                padding = new RectOffset(_menuItem.padding.left + (int)MarkColumnW,
+                                         _menuItem.padding.right,
+                                         _menuItem.padding.top, _menuItem.padding.bottom),
+            };
             
             // Scrollbar styles ; flat light gray thumb, dark track (Sea Power style).
             // These are LOCAL styles applied only around our own scroll view (see

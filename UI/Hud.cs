@@ -129,7 +129,9 @@ namespace AutoTOT
         private const int WindowId = 0xA070F0;                       // "A070F0" ~ "AutoTOT" in leet hex
 
         // Content layout shared with the Render partial.
-        internal const float RowHeight = 26f;                        // interactive rows (missile pick, checkbox)
+        internal const float RowHeight = 26f;                        // interactive rows (missile pick, buttons)
+        internal const float FooterRowHeight = 20f;                  // the scale stepper row, the panel's thinnest
+        internal const float FooterStripH = FooterRowHeight + 6f;    // that row plus its divider and air
         internal const float FireButtonHeight = 38f;
         internal const float MinSpreadToDisplay = 0.1f;              // smaller arrival spreads aren't shown
         internal const float ResizeGripClearance = 18f;             // px kept clear of the corner grip
@@ -422,24 +424,18 @@ namespace AutoTOT
             // Live, post-launch state. It reports what is already in the air rather than what is
             // being built, so it goes below everything that builds.
             DrawEngagements();
-            DrawDivider();
 
-            GUILayout.BeginHorizontal();
-            bool auto = DrawCheckbox(Coordinator.Active, "Auto-coordinate group orders");
-            if (auto != Coordinator.Active)
-            {
-                Coordinator.Active = auto;
-                Bootstrap.Log.LogInfo($"[AutoTOT] auto-coordination {(auto ? "ON" : "OFF")}");
-            }
-            GUILayout.FlexibleSpace();
-            DrawScaleControl();
-            GUILayout.Space(ResizeGripClearance);   // settings is the bottom row now: keep it clear of the grip
-            GUILayout.EndHorizontal();
+            // The footer is reserved in the flow so the lists' budget leaves room for it, but it is
+            // PAINTED at the window's bottom edge (see DrawFooter). Laid out in the flow it ended
+            // wherever the sections above happened to end, which parked it on the bottom border as
+            // soon as a strike list appeared.
+            GUILayoutUtility.GetRect(0f, FooterStripH, GUILayout.ExpandWidth(true));
 
             Rect endProbe = GUILayoutUtility.GetRect(0f, 0f, GUILayout.ExpandWidth(true));
             if (Event.current.type == EventType.Repaint)
                 _belowListsH = Mathf.Max(0f, endProbe.y - belowProbe.y);
 
+            DrawFooter();
             DrawResizeGrip();
         }
 

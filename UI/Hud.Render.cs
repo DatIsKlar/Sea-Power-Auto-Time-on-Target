@@ -31,9 +31,9 @@ namespace AutoTOT
         private const float StrikeListShare = 0.5f;
         private const float StrikeListMinH = 2f * RowHeight;
         private const float StrikeOrderLineH = 18f;   // one condensed order line
-        // Checkbox prefixes. The unchecked one is spaces of matching width so the label does not
-        // shift sideways when a row is toggled.
-        private const string CheckedPrefix = "\u2713 ", UncheckedPrefix = "  ";
+        // Width of the tick column on a tickable row. The mark is drawn into it, never prefixed
+        // to the label, so a row's text sits at the same place whether it is ticked or not.
+        private const float MarkColumnW = 14f;
 
         // SHOOTERS then TARGET, in the order the player works: pick who shoots, then what at.
         private void DrawSelectionHeader(bool haveTarget)
@@ -301,14 +301,20 @@ namespace AutoTOT
 
             GUI.enabled = r.InRange;                       // out-of-range rows can't be picked
             
-            // Clickable missile name with checkmark prefix (like Sea Power menu items)
+            // Clickable missile name, with the tick in its own column (like Sea Power menu items).
             bool isChecked = _checked[key] && r.InRange;
-            string missileLabel = (isChecked ? CheckedPrefix : UncheckedPrefix) + $"{r.AmmoId}  x{r.Count}";
-            
-            // Set color based on range
+
             GUI.color = r.InRange ? TextMain : OutOfRange;
-            if (GUILayout.Button(missileLabel, _menuItem, GUILayout.Height(RowHeight)))
+            if (GUILayout.Button($"{r.AmmoId}  x{r.Count}", _menuItemMarked, GUILayout.Height(RowHeight)))
                 _checked[key] = !isChecked;
+            if (isChecked)
+            {
+                // Drawn over the row's own rect rather than laid out, so the mark costs the row no
+                // width and toggling it cannot move anything.
+                Rect nameRect = GUILayoutUtility.GetLastRect();
+                GUI.Label(new Rect(nameRect.x + _menuItem.padding.left, nameRect.y,
+                                   MarkColumnW, nameRect.height), "\u2713", _rowCenter);
+            }
             GUI.color = Color.white;
             
             // ETA and range labels
@@ -497,14 +503,14 @@ namespace AutoTOT
             }
         }
 
-        // One staged order: shooter, missile and round count, small and dim so a long strike stays
-        // scannable. Collected orders carry a marker naming where they came from.
-        private void DrawStrikeOrderLine(Coordinator.Shot sh, bool fromGame)
+        // One staged shooter: its name and every missile it fires at this target, small and dim so
+        // a long strike stays scannable. Collected orders carry a marker naming where they came from.
+        private void DrawStrikeOrderLine(ObjectBase unit, string weapons, bool fromGame)
         {
             GUILayout.BeginHorizontal(GUILayout.Height(StrikeOrderLineH));
             GUI.color = TextDim;
             GUILayout.Space(16f);
-            GUILayout.Label($"{UnitNaming.SafeName(sh.Unit)}  ·  {sh.AmmoId} x{Mathf.Max(1, sh.Salvo)}",
+            GUILayout.Label($"{UnitNaming.SafeName(unit)}  ·  {weapons}",
                             _rowSmall, GUILayout.ExpandWidth(false));
             if (fromGame)
             {
@@ -514,6 +520,68 @@ namespace AutoTOT
             GUI.color = Color.white;
             GUILayout.FlexibleSpace();
             GUILayout.EndHorizontal();
+        }
+
+        // Reused by the order-line grouping below and by the height it asks for, so both always
+        // count the same lines. Never held across frames.
+        private readonly List<ObjectBase> _orderShooterScratch = new List<ObjectBase>();
+        private readonly System.Text.StringBuilder _orderLine = new System.Text.StringBuilder();
+
+        /// <summary>
+        /// The per-order breakdown under one target: ONE line per shooter, listing every missile
+        /// that ship fires at it, rather than one line per missile. A ship with three weapon types
+        /// staged used to cost three lines, which pushed the rest of the strike out of view for no
+        /// extra information. Staged rows and in-game orders are grouped separately, so the
+        /// "in-game order" marker on a line is true of everything on that line.
+        /// </summary>
+        private void DrawStrikeOrderLines(ObjectBase target, List<Coordinator.Shot> collected)
+        {
+            DrawShooterGroup(_strike, target, fromGame: false);
+            DrawShooterGroup(collected, target, fromGame: true);
+        }
+
+        private void DrawShooterGroup(List<Coordinator.Shot> shots, ObjectBase target, bool fromGame)
+        {
+            _orderShooterScratch.Clear();
+            foreach (Coordinator.Shot sh in shots)
+                if (sh.Target == target && !_orderShooterScratch.Contains(sh.Unit))
+                    _orderShooterScratch.Add(sh.Unit);
+
+            foreach (ObjectBase unit in _orderShooterScratch)
+            {
+                _orderLine.Length = 0;
+                foreach (Coordinator.Shot sh in shots)
+                {
+                    if (sh.Target != target || sh.Unit != unit) continue;
+                    if (_orderLine.Length > 0) _orderLine.Append(",  ");
+                    _orderLine.Append(sh.AmmoId).Append(" x").Append(Mathf.Max(1, sh.Salvo));
+                }
+                DrawStrikeOrderLine(unit, _orderLine.ToString(), fromGame);
+            }
+        }
+
+        /// <summary>
+        /// How many order lines the breakdown will draw: one per shooter per target, counted the
+        /// same way DrawShooterGroup groups them, so the height reserved matches what is drawn.
+        /// </summary>
+        private int StrikeOrderLineCount(List<Coordinator.Shot> collected)
+        {
+            int lines = 0;
+            foreach (ObjectBase t in _strikeTargetScratch)
+            {
+                lines += DistinctShooters(_strike, t);
+                lines += DistinctShooters(collected, t);
+            }
+            return lines;
+        }
+
+        private int DistinctShooters(List<Coordinator.Shot> shots, ObjectBase target)
+        {
+            _orderShooterScratch.Clear();
+            foreach (Coordinator.Shot sh in shots)
+                if (sh.Target == target && !_orderShooterScratch.Contains(sh.Unit))
+                    _orderShooterScratch.Add(sh.Unit);
+            return _orderShooterScratch.Count;
         }
 
         /// <summary>True if another listed engagement shares this strike id.</summary>
@@ -541,11 +609,13 @@ namespace AutoTOT
         {
             if (_strike.Count == 0 && !Coordinator.StrikeArmed) return 0f;
             CollectStrikeTargets(_strikeTargetScratch);
-            int totalOrders = _strike.Count + CollectedOrders().Count;
+            List<Coordinator.Shot> collected = CollectedOrders();
+            int totalOrders = _strike.Count + collected.Count;
             if (totalOrders == 0) return RowHeight * 2f;   // header plus the "nothing staged" line
 
+            // The breakdown draws a line per shooter, not per order, so it is counted that way too.
             float wanted = _strikeTargetScratch.Count * RowHeight +
-                           (_strikeDetail ? totalOrders * StrikeOrderLineH : 0f) + 4f;
+                           (_strikeDetail ? StrikeOrderLineCount(collected) * StrikeOrderLineH : 0f) + 4f;
             return RowHeight + Mathf.Min(wanted, Mathf.Max(StrikeListMinH, _listsAvailH * StrikeListShare));
         }
 
@@ -628,13 +698,7 @@ namespace AutoTOT
                 // What each order actually fires, one condensed line apiece. The count above says
                 // how much is committed; these say which shooter and which missile, which is what
                 // tells the player the order they just gave is the one that got caught.
-                if (_strikeDetail)
-                {
-                    foreach (Coordinator.Shot sh in _strike)
-                        if (sh.Target == t) DrawStrikeOrderLine(sh, fromGame: false);
-                    foreach (Coordinator.Shot sh in collected)
-                        if (sh.Target == t) DrawStrikeOrderLine(sh, fromGame: true);
-                }
+                if (_strikeDetail) DrawStrikeOrderLines(t, collected);
             }
 
             GUILayout.EndScrollView();
@@ -738,35 +802,45 @@ namespace AutoTOT
             else foreach (var s in shots) Coordinator.FireNow(s.Unit, s.AmmoId, _target, s.Salvo);
         }
 
-        // Draw a menu-item style checkbox row (checkmark prefix + hover highlight, like Sea Power
-        // context menu). Always renders with _menuItem: the row IS the button, so a caller-supplied
-        // label style would have nothing to apply to.
-        private bool DrawCheckbox(bool value, string label, float width = 0f)
-        {
-            string displayText = (value ? CheckedPrefix : UncheckedPrefix) + label;
-            bool clicked = width > 0f
-                ? GUILayout.Button(displayText, _menuItem, GUILayout.Height(RowHeight), GUILayout.Width(width))
-                : GUILayout.Button(displayText, _menuItem, GUILayout.Height(RowHeight));
-            if (clicked) value = !value;
-            return value;
-        }
+        private const float ScaleValueW = 36f;   // "1.0×", wide enough for every step
 
-        // On-panel size control: –/+ buttons adjusting the UI scale multiplier in 0.1 steps.
-        // Persists to config via Bootstrap so it survives restarts and stays in sync with the .cfg.
-        private void DrawScaleControl()
+        /// <summary>
+        /// The bottom strip: a divider and the panel-scale stepper, drawn at explicit rects on the
+        /// window's bottom edge rather than in the layout flow.
+        ///
+        /// Same reasoning as the title bar. The flow puts a row wherever the content above it
+        /// happens to end, so this row moved with the strike list and eventually sat on the border;
+        /// and a flow row is only as tall as its tallest item, so the label beside the steppers had
+        /// no row to be centred in. Here every item gets a full-height rect on ONE mid-line, and the
+        /// strip keeps a fixed clearance from the resize grip in the corner.
+        /// </summary>
+        private void DrawFooter()
         {
-            GUI.color = TextDim;
-            // _hdrCenterV, not _hdr: the default label margin makes an _hdr claim RowHeight+8,
-            // which grows the footer row past the fixed-height items beside it and leaves the
-            // steppers sitting off the checkbox's centre line.
-            GUILayout.Label("Scale", _hdrCenterV, GUILayout.Height(RowHeight));
+            float y = _win.height - _winStyle.padding.bottom - FooterRowHeight;
+            float right = _win.width - _winStyle.padding.right - ResizeGripClearance;
+
+            GUI.color = new Color(Border.r, Border.g, Border.b, 0.5f);
+            GUI.DrawTexture(new Rect(1f, y - 4f, _win.width - 2f, 1f), Texture2D.whiteTexture);
             GUI.color = Color.white;
-            // Same style, size and centred read-out as the salvo steppers: both are a value
-            // between two steps, so they should not be two different-looking controls.
-            if (GUILayout.Button("–", _btnStep, GUILayout.Width(StepButtonW), GUILayout.Height(RowHeight)))
+
+            // Measured from the right edge inwards, so the group stays put whatever the panel width.
+            // Same style, size and centred read-out as the salvo steppers: both are a value between
+            // two steps, so they should not be two different-looking controls.
+            var plusRect  = new Rect(right - StepButtonW, y, StepButtonW, FooterRowHeight);
+            var valueRect = new Rect(plusRect.x - ScaleValueW, y, ScaleValueW, FooterRowHeight);
+            var minusRect = new Rect(valueRect.x - StepButtonW, y, StepButtonW, FooterRowHeight);
+
+            var label = new GUIContent("Scale");
+            float labelW = _hdrCenterV.CalcSize(label).x + 2f;
+            var labelRect = new Rect(minusRect.x - labelW - 6f, y, labelW, FooterRowHeight);
+
+            GUI.color = TextDim;
+            GUI.Label(labelRect, label, _hdrCenterV);
+            GUI.color = Color.white;
+            if (GUI.Button(minusRect, "–", _btnStep))
                 Bootstrap.SetUiScaleMultiplier(Bootstrap.UiScaleMultiplier - UiScaleStep);
-            GUILayout.Label($"{Bootstrap.UiScaleMultiplier:0.0}×", _rowCenter, GUILayout.Width(36));
-            if (GUILayout.Button("+", _btnStep, GUILayout.Width(StepButtonW), GUILayout.Height(RowHeight)))
+            GUI.Label(valueRect, $"{Bootstrap.UiScaleMultiplier:0.0}×", _rowCenter);
+            if (GUI.Button(plusRect, "+", _btnStep))
                 Bootstrap.SetUiScaleMultiplier(Bootstrap.UiScaleMultiplier + UiScaleStep);
         }
 
