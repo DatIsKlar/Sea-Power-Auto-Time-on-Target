@@ -375,6 +375,41 @@ namespace AutoTOT
             => unit != null && ammoId != null &&
                _contendedShooters.Contains(unit.GetInstanceID() + "/" + ammoId);
 
+        // Shooters already warned about a guidance-channel trim, so the warning fires once per
+        // shooter and ammo rather than once per commit. Cleared when that pair stops being capped.
+        private static readonly HashSet<string> _channelCapWarned = new HashSet<string>();
+
+        // The shooter+ammo pairs the last commit had to trim, for the HUD to mark.
+        private static readonly HashSet<string> _channelCappedShooters = new HashSet<string>();
+
+        /// <summary>
+        /// True if the last commit trimmed this shooter's salvo of this ammo to what its guiding
+        /// sensor can actually control. Unlike <see cref="IsContended"/> this is not advisory: rounds
+        /// the player asked for were NOT ordered, so the planner has to say so on the row.
+        /// </summary>
+        internal static bool IsChannelCapped(ObjectBase unit, string ammoId)
+        {
+            if (unit == null || ammoId == null) return false;
+            if (_channelCappedShooters.Contains(unit.GetInstanceID() + "/" + ammoId)) return true;
+            // Also answered live, so a budget filled entirely by planner staging counts. The marked
+            // set is only written by the intake and commit paths, which panel picks never reach
+            // until the strike is fired; without this a player who staged straight into the panel
+            // got no indicator at all.
+            return GuidanceRoom(unit, ammoId) <= 0;
+        }
+
+        /// <summary>Any shooter at or over its channel budget, for the on-screen indicator.</summary>
+        internal static bool AnyChannelCapped => _channelCappedShooters.Count > 0;
+
+        // Shooters the last COMMIT actually had to cut rounds from, as opposed to ones merely sitting
+        // at their limit. Only this set justifies telling the player rounds were lost.
+        private static readonly HashSet<string> _channelTrimmedShooters = new HashSet<string>();
+
+        /// <summary>True if the last commit removed rounds from this shooter to fit its channels.</summary>
+        internal static bool IsChannelTrimmed(ObjectBase unit, string ammoId)
+            => unit != null && ammoId != null &&
+               _channelTrimmedShooters.Contains(unit.GetInstanceID() + "/" + ammoId);
+
         /// <summary>
         /// One observed anchor launch: when it left, where the shooter was at that instant, and the
         /// round itself.
@@ -471,11 +506,44 @@ namespace AutoTOT
                 return false; // weapon cannot engage this target type
 
             Batch batch = _strikeBatch;
+            bool createdBatch = false;
             if (batch == null && !_openBatches.TryGetValue(target, out batch))
             {
                 batch = new Batch { FirstRealTime = Time.unscaledTime };
                 _openBatches[target] = batch;
+                createdBatch = true;
             }
+
+            // Guidance channels, decided HERE rather than left to the commit-time clamp. Collecting
+            // an order the ship can never guide and trimming it later is the worse deal: the strike
+            // count goes up, the panel implies the rounds are coming, and the player only learns
+            // otherwise when they fire. Refusing at intake keeps the held strike an honest statement
+            // of what will actually leave.
+            //
+            // Note the return value on refusal is TRUE, which reads backwards and is not. The
+            // Harmony prefix fires the order itself whenever this returns false, so handing the
+            // order back would launch exactly the unguidable rounds this is preventing. True means
+            // "the game must not fire this", and by not queueing it the order is dropped outright.
+            int room = GuidanceRoom(unit, ammoId);
+            if (room <= 0)
+            {
+                if (createdBatch) _openBatches.Remove(target);
+                MarkChannelPressure(_strikeBatch?.Items ?? batch.Items);
+                Bootstrap.Log.LogWarning(
+                    $"[AutoTOT] order refused: {unit.getUIDAndName()} has every guidance channel for " +
+                    $"{ammoId} already committed, so these {shots} round(s) were not collected. They " +
+                    $"would launch, find no channel and self-destruct. Fire the strike you have, or " +
+                    $"use another shooter.");
+                return true;
+            }
+            if (shots > room)
+            {
+                Bootstrap.Log.LogWarning(
+                    $"[AutoTOT] order reduced: {unit.getUIDAndName()} can guide {room} more {ammoId} " +
+                    $"round(s), so {shots} were collected as {room}.");
+                shots = room;
+            }
+
             batch.LastRealTime = Time.unscaledTime;
             batch.Items.Add(new Intent
             {
@@ -486,6 +554,10 @@ namespace AutoTOT
                 Priority = priority,
                 IsFormation = isFormationAttack,
             });
+
+            // Flag channel pressure as the order lands, not at commit: with the panel collapsed the
+            // commit-time answer arrives at the same moment the rounds do.
+            MarkChannelPressure(batch.Items);
 
             if (VerboseLog)
                 Bootstrap.Log.LogInfo($"[AutoTOT] queued {unit.getUIDAndName()} -> {target.getUIDAndName()} ({ammoId} x{shots})");
@@ -515,6 +587,9 @@ namespace AutoTOT
             _scheduled.Clear();   // per-item caches live on Scheduled, so they go with it
             _contentionWarned.Clear();
             _contendedShooters.Clear();
+            _channelCapWarned.Clear();
+            _channelCappedShooters.Clear();
+            _channelTrimmedShooters.Clear();
             FlightTime.ClearCache();
             LauncherFactsSource.ClearCache();
             LaunchDiagnostics.Reset();
@@ -682,6 +757,19 @@ namespace AutoTOT
 
         private static void CommitBatch(Batch b)
         {
+            // Before PrepareIntent: anchor selection and the shared impact time are both computed
+            // from the shot counts, so they must see the counts that will actually be ordered. This
+            // is also the only place the intercepted-order path is covered, since orders issued in
+            // the game's own interface never pass through the planner's per-row cap.
+            ClampToGuidanceChannels(b.Items);
+            if (b.Items.Count == 0)
+            {
+                Bootstrap.Log.LogWarning(
+                    "[AutoTOT] every order in this strike was trimmed away by the guidance-channel " +
+                    "limit; nothing was fired.");
+                return;
+            }
+
             foreach (Intent it in b.Items)
                 PrepareIntent(it);
 

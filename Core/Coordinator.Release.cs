@@ -198,7 +198,7 @@ namespace AutoTOT
                     if (overshoot > SlackWarnSeconds)
                         Bootstrap.Log.LogWarning(
                             $"[AutoTOT] {it.AmmoId} from {it.Unit.getUIDAndName()} released {overshoot:0.0}s " +
-                            $"past-due (est flight {flightNow:0.0}s > time-to-impact {timeLeft:0.0}s) ; " +
+                            $"past-due (est flight {flightNow:0.0}s > time-to-impact {timeLeft:0.0}s): " +
                             $"launch stagger lost; commit/release flight estimates likely diverged.");
                     if (VerboseLog)
                     {
@@ -272,29 +272,37 @@ namespace AutoTOT
             if (shots == null || shots.Count == 0) return;
 
             var items = new List<Intent>(shots.Count);
-            _targetScratch.Clear();
             foreach (Shot s in shots)
             {
                 if (s.Target == null) continue;
-                // Per TARGET, not per strike: the game's formation-attack flag means "several
-                // shooters are engaging this contact together", so counting the whole strike would
-                // mislabel a one-shooter target inside a multi-target strike.
-                int atTarget = 0;
-                foreach (Shot o in shots) if (o.Target == s.Target) atTarget++;
-                var it = new Intent
+                items.Add(new Intent
                 {
                     Unit = s.Unit,
                     AmmoId = s.AmmoId,
                     Target = s.Target,
                     Shots = Mathf.Max(1, s.Salvo),
                     Priority = PlannerTaskPriority,
-                    IsFormation = atTarget > 1,
-                };
-                PrepareIntent(it);
-                items.Add(it);
-                if (!_targetScratch.Contains(s.Target)) _targetScratch.Add(s.Target);
+                });
             }
             if (items.Count == 0) return;
+
+            // Before the formation flags and PrepareIntent below, both of which are derived from the
+            // shot counts and from which orders survive.
+            ClampToGuidanceChannels(items);
+            if (items.Count == 0) return;
+
+            _targetScratch.Clear();
+            foreach (Intent it in items)
+            {
+                // Per TARGET, not per strike: the game's formation-attack flag means "several
+                // shooters are engaging this contact together", so counting the whole strike would
+                // mislabel a one-shooter target inside a multi-target strike.
+                int atTarget = 0;
+                foreach (Intent o in items) if (o.Target == it.Target) atTarget++;
+                it.IsFormation = atTarget > 1;
+                PrepareIntent(it);
+                if (!_targetScratch.Contains(it.Target)) _targetScratch.Add(it.Target);
+            }
 
             Intent anchor = PickAnchor(items, out float maxEnroute);
 
@@ -348,6 +356,214 @@ namespace AutoTOT
                 }
             }
             ExecuteStrike();
+        }
+
+        // Shooter+ammo pairs already handled by the current clamp pass, so each group is costed once.
+        private static readonly HashSet<string> _clampSeen = new HashSet<string>();
+        // Intents the clamp reduced to nothing, removed after the walk rather than during it.
+        private static readonly List<Intent> _clampDropped = new List<Intent>();
+
+        /// <summary>
+        /// Trim every shooter's salvo to the number of rounds its guiding sensor can actually
+        /// control, across the WHOLE commit rather than one target at a time.
+        ///
+        /// <para><b>Why this clamps instead of warning.</b> The surplus rounds are not held back by
+        /// the game: they launch, fail to win a channel in Missile.CheckRadioConnection, set
+        /// ConnectionLost and are logged "no weapon channel". A radio-command round in that state is
+        /// refused its run-in by Missile.RunInPermitted, so it flies on and self-destructs. The
+        /// magazine is spent either way, so ordering them can only waste rounds, never deliver
+        /// them.</para>
+        ///
+        /// <para><b>Why here.</b> This is the only point that sees the whole wave, and it covers the
+        /// planner path and the intercepted-order path alike. The panel's own per-row cap cannot do
+        /// it: it is applied per target, and orders issued through the game's own interface never
+        /// reach the panel at all. It must also run BEFORE PrepareIntent, because anchor selection
+        /// and the shared impact time are computed from the shot counts.</para>
+        ///
+        /// <para>Only ungroupable launcher-guided ammo is capped at all (see
+        /// LauncherFactsSource.ComputeGuidance); everything that can form a missile group shares one
+        /// channel and is bounded by the group instead.</para>
+        /// </summary>
+        /// <summary>
+        /// Rounds of <paramref name="ammoId"/> this ship has committed and not yet released. Once an
+        /// order fires, its rounds occupy the guiding sensor's own channels and GuidanceChannelCap
+        /// has already subtracted them, so counting a fired order here would charge it twice.
+        /// </summary>
+        private static int CommittedUnfired(ObjectBase unit, string ammoId)
+        {
+            int n = 0;
+            for (int i = 0; i < _scheduled.Count; i++)
+            {
+                Scheduled s = _scheduled[i];
+                if (s == null || s.Fired || s.Item == null) continue;
+                if (s.Item.Unit == unit && s.Item.AmmoId == ammoId) n += Mathf.Max(1, s.Item.Shots);
+            }
+            return n;
+        }
+
+        /// <summary>
+        /// Rounds of <paramref name="ammoId"/> this ship could still guide if an order arrived now:
+        /// its channel budget less what is already committed and unfired, less what
+        /// <paramref name="batch"/> is already holding for it. int.MaxValue when the ammunition is
+        /// not channel-limited, which is everything that can form a missile group.
+        /// </summary>
+        private static int BatchRounds(Batch b, ObjectBase unit, string ammoId)
+        {
+            int n = 0;
+            if (b == null) return 0;
+            for (int i = 0; i < b.Items.Count; i++)
+            {
+                Intent it = b.Items[i];
+                if (it != null && it.Unit == unit && it.AmmoId == ammoId) n += Mathf.Max(1, it.Shots);
+            }
+            return n;
+        }
+
+        /// <summary>
+        /// Every round of <paramref name="ammoId"/> this ship is already spoken for by the
+        /// coordinator: committed and unfired, plus anything in the armed strike batch or in an open
+        /// per-target batch. A batch is either the strike batch or in _openBatches, never both, so
+        /// these three pools do not overlap.
+        /// </summary>
+        internal static int HeldRounds(ObjectBase unit, string ammoId)
+        {
+            int n = CommittedUnfired(unit, ammoId);
+            n += BatchRounds(_strikeBatch, unit, ammoId);
+            foreach (KeyValuePair<ObjectBase, Batch> kv in _openBatches)
+                n += BatchRounds(kv.Value, unit, ammoId);
+            return n;
+        }
+
+        /// <summary>
+        /// Rounds the PLANNER PANEL has staged but not yet handed over, supplied by the Hud because
+        /// the coordinator cannot see them: a staged pick lives in the panel until FireStrike.
+        ///
+        /// <para>Without this the two halves of the budget were blind to each other. Orders taken in
+        /// through Alt+H did not stop the panel offering more, and picks staged in the panel did not
+        /// stop Alt+H accepting more, so either order of operations could exceed the channels the
+        /// other half was carefully protecting.</para>
+        /// </summary>
+        internal static System.Func<ObjectBase, string, int> StagedRoundsProvider;
+
+        private static int StagedRounds(ObjectBase unit, string ammoId)
+        {
+            System.Func<ObjectBase, string, int> f = StagedRoundsProvider;
+            if (f == null) return 0;
+            try { return f(unit, ammoId); }
+            catch { return 0; }   // a UI fault must never block firing
+        }
+
+        /// <summary>
+        /// Rounds of <paramref name="ammoId"/> this ship could still guide if an order arrived now.
+        /// int.MaxValue when the ammunition is not channel-limited, which is everything that can
+        /// form a missile group.
+        /// </summary>
+        private static int GuidanceRoom(ObjectBase unit, string ammoId)
+        {
+            int cap = LauncherFactsSource.GuidanceChannelCap(unit, ammoId);
+            if (cap == int.MaxValue) return int.MaxValue;
+            return Mathf.Max(0, cap - HeldRounds(unit, ammoId) - StagedRounds(unit, ammoId));
+        }
+
+        /// <summary>
+        /// Flag the shooters an armed batch has already pushed past their guidance-channel budget,
+        /// WITHOUT trimming anything. Called as each order is collected, so the indicator and the
+        /// panel can say a trim is coming while the strike is still being built and the player can
+        /// still do something about it.
+        ///
+        /// <para>The clamp itself cannot serve this purpose: it runs at commit, which is the same
+        /// instant the rounds leave. A player with the panel collapsed then learns what happened
+        /// only from a log line, after the fact.</para>
+        /// </summary>
+        internal static void MarkChannelPressure(List<Intent> items)
+        {
+            _channelCappedShooters.Clear();
+            if (items == null || items.Count == 0) return;
+            _clampSeen.Clear();
+
+            for (int i = 0; i < items.Count; i++)
+            {
+                Intent lead = items[i];
+                if (lead?.Unit == null || lead.AmmoId == null) continue;
+                string key = lead.Unit.GetInstanceID() + "/" + lead.AmmoId;
+                if (!_clampSeen.Add(key)) continue;
+
+                int cap = LauncherFactsSource.GuidanceChannelCap(lead.Unit, lead.AmmoId);
+                if (cap == int.MaxValue) continue;
+
+                // HeldRounds already covers `items`, since the caller's list is one of the batches
+                // it walks. Adding the list again here would double-count it.
+                int requested = HeldRounds(lead.Unit, lead.AmmoId) + StagedRounds(lead.Unit, lead.AmmoId);
+                // >= not >: the point of the light is "this ship's channels are spoken for", and a
+                // ship holding exactly its cap is the case the player most needs to see, since the
+                // next order they try will be refused outright. Requiring a strict overrun made it
+                // unreachable on the intercept path, which now refuses the overrun before it can be
+                // counted at all.
+                if (requested >= cap) _channelCappedShooters.Add(key);
+            }
+        }
+
+        private static void ClampToGuidanceChannels(List<Intent> items)
+        {
+            _channelCappedShooters.Clear();
+            _channelTrimmedShooters.Clear();
+            if (items == null || items.Count == 0) return;
+
+            _clampSeen.Clear();
+            _clampDropped.Clear();
+
+            // Indexed, not foreach: the group walk below reads the same list.
+            for (int i = 0; i < items.Count; i++)
+            {
+                Intent lead = items[i];
+                if (lead?.Unit == null || lead.AmmoId == null) continue;
+                string key = lead.Unit.GetInstanceID() + "/" + lead.AmmoId;
+                if (!_clampSeen.Add(key)) continue;
+
+                int cap = LauncherFactsSource.GuidanceChannelCap(lead.Unit, lead.AmmoId);
+                if (cap == int.MaxValue) { _channelCapWarned.Remove(key); continue; }
+
+                int committed = CommittedUnfired(lead.Unit, lead.AmmoId);
+
+                int budget = Mathf.Max(0, cap - committed);
+                int requested = 0;
+                for (int j = 0; j < items.Count; j++)
+                {
+                    Intent it = items[j];
+                    if (it != null && it.Unit == lead.Unit && it.AmmoId == lead.AmmoId)
+                        requested += Mathf.Max(1, it.Shots);
+                }
+                if (requested <= budget) { _channelCapWarned.Remove(key); continue; }
+
+                // Trim in list order, so the targets staged first keep their full salvo and the ones
+                // added last absorb the cut. Deterministic, and it matches the order the player
+                // built the strike in.
+                int left = budget;
+                for (int j = 0; j < items.Count; j++)
+                {
+                    Intent it = items[j];
+                    if (it == null || it.Unit != lead.Unit || it.AmmoId != lead.AmmoId) continue;
+                    int give = Mathf.Min(Mathf.Max(1, it.Shots), left);
+                    it.Shots = give;
+                    left -= give;
+                    if (give <= 0) _clampDropped.Add(it);
+                }
+
+                _channelCappedShooters.Add(key);
+                _channelTrimmedShooters.Add(key);
+                if (_channelCapWarned.Add(key))
+                    Bootstrap.Log.LogWarning(
+                        $"[AutoTOT] guidance channels: {lead.Unit.getUIDAndName()} can control " +
+                        $"{cap} {lead.AmmoId} round(s) at once" +
+                        (committed > 0 ? $" and has {committed} already committed" : "") +
+                        $", but {requested} were ordered. Trimmed to {budget}; the targets added " +
+                        $"last lose their rounds. Ordering more would not deliver them: the extra " +
+                        $"rounds launch, lose guidance for want of a channel and self-destruct. " +
+                        $"Spread the shots across more shooters.");
+            }
+
+            for (int i = 0; i < _clampDropped.Count; i++) items.Remove(_clampDropped[i]);
+            _clampDropped.Clear();
         }
 
         /// <summary>

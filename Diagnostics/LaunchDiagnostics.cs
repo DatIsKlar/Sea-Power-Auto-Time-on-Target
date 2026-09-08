@@ -125,8 +125,13 @@ namespace AutoTOT
             _launcherTraces.Clear();
             _shipLastLaunchSim.Clear();
             _retiredExpectations.Clear();
+            _noArrivalWarned.Clear();
             UncreditedLaunches = 0;
         }
+
+        // Ammunition already reported as having ended a flight without arriving, so the warning is
+        // one line per ammunition per mission rather than one per round.
+        private static readonly HashSet<string> _noArrivalWarned = new HashSet<string>();
 
         /// <summary>
         /// Each tick: record a baseline the first time we see each friendly missile airborne, keep
@@ -373,6 +378,28 @@ namespace AutoTOT
                 if (_flightTracker.TryGetValue(w, out FlightSample s))
                 {
                     float flightTime = s.LastSeenTime - s.LaunchTime;
+
+                    // Deliberately OUTSIDE the VerboseLog/TraceFlightModel gate below. A round that
+                    // ends without arriving neither falls short at launch (the SHORTFALL line counts
+                    // orders that never fired) nor impacts (the `impact` line needs an arrival), so
+                    // with the default settings every instrument this mod has misses it by
+                    // construction and the strike is reported as complete. That blind spot is how a
+                    // ship could order more radio-command rounds than it had weapon channels and
+                    // have the surplus launch, lose guidance and self-destruct, with nothing said.
+                    //
+                    // A dead target is NOT such a case, and excluding it is the whole difficulty.
+                    // Every round aimed at one ship retires the instant that ship sinks, so in any
+                    // strike that overkills its target the trailing rounds retire far out through no
+                    // fault of their own. Unity's == is wanted here rather than ReferenceEquals: a
+                    // destroyed object compares equal to null, which is exactly the test.
+                    bool targetGone = s.Target == null || s.Target.IsDestroyed;
+                    if (s.Coordinated && s.LastDistM > HitRangeM && !targetGone
+                        && _noArrivalWarned.Add(s.AmmoName))
+                        Bootstrap.Log.LogWarning(
+                            $"[AutoTOT] no arrival: a coordinated {s.AmmoName} ended {s.LastDistM:0} m " +
+                            $"from {s.TargetName} after {flightTime:0.0}s, with the target still afloat. " +
+                            $"Shot down, decoyed, or guidance lost. Reported once per ammunition per " +
+                            $"mission; VerboseLogging gives the per-round impact lines.");
                     // Two gates, deliberately, per the rule in Coordinator.TraceFlightModel:
                     // VerboseLog is coordination, TraceFlightModel is estimator internals. The
                     // `impact` line is the OUTCOME of a strike (did it land when it was told to),

@@ -214,8 +214,16 @@ namespace AutoTOT
             UpdateMouseCapture();
         }
 
+        private void OnEnable()
+        {
+            // The coordinator needs the panel's staged picks to police its own intake, and only the
+            // panel knows them. Cleared in OnDisable so a torn-down HUD cannot be called into.
+            Coordinator.StagedRoundsProvider = StagedRoundsFor;
+        }
+
         private void OnDisable()
         {
+            Coordinator.StagedRoundsProvider = null;
             // On mission end Unity disables us while the game HUD is already tearing down, so the
             // over-UI release can hit half-null game state. Reset our own flag unconditionally and
             // only poke the game when a mission is still live; SetOverUi also catches defensively.
@@ -570,7 +578,16 @@ namespace AutoTOT
             }
         }
 
-        private struct Row { public string AmmoId; public int Count; public bool InRange; }
+        private struct Row
+        {
+            public string AmmoId;
+            public int Count;          // rounds selectable here: stock, launcher and channels applied
+            public bool InRange;
+            // Guidance-channel state, carried so the row can EXPLAIN a count of zero instead of
+            // vanishing. int.MaxValue = this ammunition is not channel-limited at all.
+            public int ChannelCap;
+            public int ChannelsElsewhere;   // rounds of it already staged at other targets
+        }
 
         private bool IsMissileShip(ObjectBase u)
         {
@@ -611,6 +628,59 @@ namespace AutoTOT
         // per frame. Instance ids, cleared with the rest of the selection state.
         private readonly HashSet<int> _rowErrorLogged = new HashSet<int>();
 
+        /// <summary>
+        /// Rounds of this ammo this ship already has staged at OTHER targets. Entries for the
+        /// current target are excluded because committing the current selection replaces them
+        /// (AddToStrike removes the matching Unit+Ammo+Target entry first), so counting them would
+        /// charge the same rounds twice while the player edits a row they have already staged.
+        /// </summary>
+        private int StagedElsewhere(ObjectBase ship, string ammoId)
+        {
+            // Rounds the coordinator is already holding for this ship count too. They are a
+            // different pool (orders taken in through Alt+H or auto-coordination, plus anything
+            // committed and not yet away) and the panel used to ignore them entirely, so four
+            // rounds collected in-game still left the panel offering four more.
+            int n = Coordinator.HeldRounds(ship, ammoId);
+            for (int i = 0; i < _strike.Count; i++)
+            {
+                Coordinator.Shot s = _strike[i];
+                if (s.Unit == ship && s.AmmoId == ammoId && s.Target != _target)
+                    n += Mathf.Max(1, s.Salvo);
+            }
+            return n;
+        }
+
+        /// <summary>
+        /// True if anything staged in the panel has filled its shooter's guidance channels. The
+        /// coordinator's own flag cannot see planner picks until the strike is fired, and the title
+        /// bar is the only place this is readable with the panel collapsed.
+        /// </summary>
+        private bool AnyStagedChannelCap()
+        {
+            for (int i = 0; i < _strike.Count; i++)
+            {
+                Coordinator.Shot s = _strike[i];
+                if (s.Unit != null && Coordinator.IsChannelCapped(s.Unit, s.AmmoId)) return true;
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// Rounds staged in the panel for this ship and ammunition, across every target. Published
+        /// to the coordinator so the intake gate can see picks that have not been fired yet; the
+        /// mirror of <see cref="StagedElsewhere"/> reading the coordinator's own holdings.
+        /// </summary>
+        private int StagedRoundsFor(ObjectBase ship, string ammoId)
+        {
+            int n = 0;
+            for (int i = 0; i < _strike.Count; i++)
+            {
+                Coordinator.Shot s = _strike[i];
+                if (s.Unit == ship && s.AmmoId == ammoId) n += Mathf.Max(1, s.Salvo);
+            }
+            return n;
+        }
+
         // Missiles this ship carries that can engage the current target (by type). Each row
         // also reports whether the target is within that missile's max range. With no target,
         // all missiles are listed and treated as in range.
@@ -639,14 +709,35 @@ namespace AutoTOT
                 // Cap the selectable count at what the serving launchers can actually fire (loaded +
                 // magazine reserve), not the ship-wide inventory ; otherwise the salvo picker could
                 // request rounds sitting behind an unusable launcher, and the strike fires short.
-                int count = Mathf.Min(kv.Value, LauncherFactsSource.AvailableRounds(ship, kv.Key));
+                int stock = Mathf.Min(kv.Value, LauncherFactsSource.AvailableRounds(ship, kv.Key));
+                if (stock <= 0) continue;   // nothing physically firable: the row has no purpose
                 // Second cap: a radio-command weapon that cannot group holds one fire-control
                 // channel per round in flight, so the boat physically cannot put up more than it
-                // has channels. Offering more would issue an order that fires short and then
-                // truncates the wave's shared impact time. See LauncherFactsSource.GuidanceChannelCap.
-                count = Mathf.Min(count, LauncherFactsSource.GuidanceChannelCap(ship, kv.Key));
-                if (count <= 0) continue;
-                yield return new Row { AmmoId = kv.Key, Count = count, InRange = inRange };
+                // has channels. Offering more cannot deliver them: the surplus launches, fails to
+                // win a channel and self-destructs. See LauncherFactsSource.GuidanceChannelCap.
+                //
+                // Budget is per SHIP, not per target, so rounds this ship already has staged at
+                // other targets come off the count offered here. Without that subtraction each
+                // target was offered the full budget and a multi-target strike quietly ordered a
+                // multiple of it. Coordinator.ClampToGuidanceChannels is the backstop that also
+                // covers orders issued in the game's own interface; this only keeps the number the
+                // panel shows honest while staging.
+                int cap = LauncherFactsSource.GuidanceChannelCap(ship, kv.Key);
+                int elsewhere = cap == int.MaxValue ? 0 : StagedElsewhere(ship, kv.Key);
+                int left = cap == int.MaxValue ? int.MaxValue : Mathf.Max(0, cap - elsewhere);
+
+                // Count may legitimately be 0 here, and the row is still emitted. Dropping it left
+                // the ammunition simply missing from the list the moment its channels were spent at
+                // another target, with nothing to say why; the row explains itself instead and
+                // renders unselectable, the same way an out-of-range one does.
+                yield return new Row
+                {
+                    AmmoId = kv.Key,
+                    Count = Mathf.Min(stock, left),
+                    InRange = inRange,
+                    ChannelCap = cap,
+                    ChannelsElsewhere = elsewhere,
+                };
             }
         }
 
@@ -778,7 +869,10 @@ namespace AutoTOT
             foreach (ObjectBase ship in shooters)
                 foreach (Row r in CachedEngageRows(ship))
                 {
-                    if (!r.InRange) continue;
+                    // Count 0 means every guidance channel is already staged at another target.
+                    // Without this the row would stage a Salvo of 0, which the coordinator floors
+                    // back up to 1 and orders a round the ship cannot guide.
+                    if (!r.InRange || r.Count <= 0) continue;
                     string key = Key(ship, r.AmmoId);
                     if (!_checked.TryGetValue(key, out bool on) || !on) continue;
                     int salvo = Mathf.Min(_salvo.TryGetValue(key, out int sv) ? sv : 1, r.Count);

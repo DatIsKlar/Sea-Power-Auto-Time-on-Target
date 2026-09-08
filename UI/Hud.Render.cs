@@ -99,7 +99,7 @@ namespace AutoTOT
             foreach (ObjectBase ship in shooters)
                 foreach (Row r in CachedEngageRows(ship))
                 {
-                    if (!r.InRange) continue;
+                    if (!r.InRange || r.Count <= 0) continue;
                     string key = Key(ship, r.AmmoId);
                     if (!_checked.TryGetValue(key, out bool on) || !on) continue;
                     rounds += Mathf.Min(_salvo.TryGetValue(key, out int sv) ? sv : 1, r.Count);
@@ -145,11 +145,15 @@ namespace AutoTOT
             "collect the orders you issue in-game into the strike",
             "fire the staged strike",
             "hold while stepping a salvo: +/- 10 (Shift) or 5 (Ctrl)",
+            // Not a key. It earns a line here because it is the one title-bar light that reports
+            // rounds the player will not get, and it is readable with the panel collapsed, which is
+            // exactly when its meaning is least guessable.
+            "a shooter is out of missile guidance channels; further orders for it are refused",
         };
 
         private static string[] HelpKeys() => new[]
         {
-            HideHint(), ToggleHint(), StrikeHint(), FireHint(), "Shift / Ctrl",
+            HideHint(), ToggleHint(), StrikeHint(), FireHint(), "Shift / Ctrl", "● CH CAP",
         };
 
         private const float HelpKeyColumnW = 96f;   // widest configured combo plus air
@@ -233,6 +237,20 @@ namespace AutoTOT
                 right -= strikeW + 8f;
             }
 
+            // Guidance-channel trim, in the same shape as the two above. This is the one status here
+            // that reports rounds the player asked for and did NOT get, and the paths that trigger it
+            // (auto-coordination and Alt+H collection) are exactly the ones a player uses without
+            // ever opening the panel, so a panel-only warning would never reach them.
+            if (Coordinator.AnyChannelCapped || AnyStagedChannelCap())
+            {
+                const string capText = "● CH CAP";
+                float capW = _hdrCenterV.CalcSize(new GUIContent(capText)).x + 2f;
+                GUI.color = Warn;
+                GUI.Label(new Rect(right - capW, y, capW, HeaderH), capText, _hdrCenterV);
+                GUI.color = Color.white;
+                right -= capW + 8f;
+            }
+
             int rounds = 0, tgts = _salvos.Count;
             foreach (var e in _salvos) rounds += e.Queued + e.InFlight;
             if (tgts > 0)
@@ -299,12 +317,17 @@ namespace AutoTOT
                 range = $"{nm:0.0}nm";
             }
 
-            GUI.enabled = r.InRange;                       // out-of-range rows can't be picked
+            // A row with no channels left is shown but cannot be picked, exactly like an
+            // out-of-range one. Both are "visible so it can explain itself, inert so it cannot be
+            // staged".
+            bool selectable = r.InRange && r.Count > 0;
+
+            GUI.enabled = selectable;
             
             // Clickable missile name, with the tick in its own column (like Sea Power menu items).
-            bool isChecked = _checked[key] && r.InRange;
+            bool isChecked = _checked[key] && selectable;
 
-            GUI.color = r.InRange ? TextMain : OutOfRange;
+            GUI.color = selectable ? TextMain : OutOfRange;
             if (GUILayout.Button($"{r.AmmoId}  x{r.Count}", _menuItemMarked, GUILayout.Height(RowHeight)))
                 _checked[key] = !isChecked;
             if (isChecked)
@@ -318,10 +341,13 @@ namespace AutoTOT
             GUI.color = Color.white;
             
             // ETA and range labels
-            GUI.color = r.InRange ? Accent : OutOfRange;
+            GUI.color = selectable ? Accent : OutOfRange;
             GUILayout.Label($"ETA {eta}", _row, GUILayout.Width(95));
-            GUI.color = r.InRange ? TextMain : OutOfRange;
-            GUILayout.Label(r.InRange ? range : range + " (out of range)", _row, GUILayout.Width(170));
+            GUI.color = selectable ? TextMain : OutOfRange;
+            string why = !r.InRange ? " (out of range)"
+                       : r.Count <= 0 ? " (no channels left)"
+                       : "";
+            GUILayout.Label(range + why, _row, GUILayout.Width(170));
             GUI.color = Color.white;
             
             GUILayout.FlexibleSpace();
@@ -373,17 +399,40 @@ namespace AutoTOT
             // cap and this warning never once appeared. The slider simply stopped at the cap and
             // said nothing. `>=` is the condition that makes a binding limit visible, which is the
             // whole point of the line.
-            if (r.InRange && _checked[key])
+            // Outside the `_checked` block below, deliberately. Committing a row clears its tick,
+            // so gating on it hid this warning from the staged strike it actually applies to, which
+            // is the moment the player most needs it.
+            //
+            // Kept to one short clause. This fires whenever the player is at the limit, which on a
+            // 4-channel ship is most of the time, so a long explanation becomes wallpaper and stops
+            // being read at all.
+            if (r.ChannelCap < int.MaxValue)
             {
-                int cap = LauncherFactsSource.GuidanceChannelCap(ship, r.AmmoId);
-                if (cap < int.MaxValue && _salvo[key] >= cap)
+                int cap = r.ChannelCap;
+                bool trimmed = Coordinator.IsChannelTrimmed(ship, r.AmmoId);
+                bool full = Coordinator.IsChannelCapped(ship, r.AmmoId);
+                int want = _salvo.TryGetValue(key, out int sv) ? sv : 0;
+                bool atCap = _checked[key] && r.InRange && want >= r.Count && r.Count > 0;
+
+                // Ordered by how much the player loses, worst first. Only the trimmed case says
+                // rounds were dropped; a ship merely sitting at its limit has lost nothing yet.
+                string note = null;
+                if (trimmed)                      note = $"over {cap} guidance channels : the extra rounds will not fire";
+                else if (r.Count <= 0)            note = $"all {cap} guidance channels used at other targets";
+                else if (full)                    note = $"all {cap} guidance channels in use : further orders are refused";
+                else if (r.ChannelsElsewhere > 0) note = $"only {cap} guidance channels, {r.ChannelsElsewhere} used elsewhere";
+                else if (atCap)                   note = $"only {cap} guidance channels";
+
+                if (note != null)
                 {
                     GUI.color = Warn;
-                    GUILayout.Label($"     ⚠ {cap} guidance channel(s): capped at {cap} per target, " +
-                                    "rounds are guided one per channel", _row);
+                    GUILayout.Label($"     ⚠ {note}", _row);
                     GUI.color = Color.white;
                 }
+            }
 
+            if (r.InRange && _checked[key])
+            {
                 // Beam-only launcher. The ship steers to put the target within 3 degrees of exactly
                 // abeam, not merely inside the launcher's arc, so it keeps manoeuvring after it
                 // could already shoot and its salvo comes out in bursts around the turns. Nothing
@@ -783,7 +832,9 @@ namespace AutoTOT
             foreach (ObjectBase ship in shooters)
                 foreach (Row r in CachedEngageRows(ship))
                 {
-                    if (!r.InRange) continue;
+                    // Count 0 means the guidance channels are already spoken for at another
+                    // target, so there is nothing to fire here even if the row is still ticked.
+                    if (!r.InRange || r.Count <= 0) continue;
                     string key = Key(ship, r.AmmoId);
                     if (_checked.TryGetValue(key, out bool on) && on)
                     {
