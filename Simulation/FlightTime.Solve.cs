@@ -60,9 +60,9 @@ namespace AutoTOT
             /// <summary>The rate every ordinary turn is budgeted at: the ammunition's
             /// <c>MaxTurnRate</c>, plus the banking roll addend where that applies.</summary>
             internal readonly float       TurnRate;
-            /// <summary>Turn rate for the ToBearing window only, from the ammunition's
-            /// <c>LaunchTurnRate</c>. Equal to <see cref="TurnRate"/> when the ini leaves it at the
-            /// default, which is all but three shipped ammunition. See
+            /// <summary>Turn-rate FLOOR for the ToBearing window only, from the ammunition's
+            /// <c>LaunchTurnRate</c>, unclamped. 0 when the ini leaves it at the default, which is
+            /// all but three shipped ammunition, and 0 means the step loop applies no floor. See
             /// FlightTime.Integrator.ResolveToBearingTurnRate.</summary>
             internal readonly float       ToBearingTurnRate;
             /// <summary>The <c>MaxTurnRate</c> part of <see cref="TurnRate"/>, without the banking
@@ -336,7 +336,9 @@ namespace AutoTOT
                 // The rate this step is budgeted at. Two corrections ride on the base rate, in the
                 // mover's own order: the G-limit derate first, then the ToBearing override, which
                 // the mover applies as a floor AFTER derating (setCourseTowardsPosition reads
-                // LaunchTurnRate only if it exceeds the already-derated rate).
+                // LaunchTurnRate only if it exceeds the already-derated rate). toBearingTurnRate
+                // is the raw ini value, 0 when unset, so the compare below is the mover's own and
+                // an unset key can never re-floor a derated step back up to MaxTurnRate.
                 float stepTurnRate = turnRateBase;
                 if (TurnRateGDerate && turnDerateThresholdKn > 0f && velKnots > turnDerateThresholdKn)
                     stepTurnRate *= turnDerateThresholdKn / velKnots;

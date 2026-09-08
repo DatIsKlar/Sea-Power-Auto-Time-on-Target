@@ -490,19 +490,23 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// The turn rate the ToBearing window is budgeted at. The mover floors the rate at
+        /// The turn rate the ToBearing window is floored at. The mover floors the rate at
         /// <c>LaunchTurnRate</c> while <c>toBearingState</c> is set, and only when the ini value
         /// exceeds the rate already in hand (<c>WeaponBase.setCourseTowardsPosition</c>).
-        /// <c>LaunchTurnRate</c> defaults to -1, so this returns
-        /// <paramref name="turnRateDeg"/> unchanged for all but three shipped ammunition.
+        /// <c>LaunchTurnRate</c> defaults to -1, so this returns 0 for all but three shipped
+        /// ammunition.
         ///
-        /// <para>The comparison against the ordinary rate is repeated in the step loop rather than
-        /// settled here, because the mover applies the floor AFTER the G-derate has already cut the
-        /// rate. An ammunition can sit below its launch rate at speed and above it when slow.</para>
+        /// <para>The ini value is returned UNCLAMPED, and 0 means "no floor". The comparison
+        /// against the ordinary rate belongs in the step loop, not here, because the mover applies
+        /// the floor AFTER the G-derate has already cut the rate: an ammunition can sit below its
+        /// launch rate at speed and above it when slow. Clamping here against the un-derated
+        /// <c>MaxTurnRate</c> would both drop that case and, by returning the base rate as the
+        /// "no override" answer, re-floor a derated step back to the un-derated rate — cancelling
+        /// the G-derate through the whole ToBearing window on every round that leaves the key at
+        /// its default, which is the entire population the derate exists for.</para>
         /// </summary>
-        private static float ResolveToBearingTurnRate(AmmunitionParameters ap, float turnRateDeg)
-            => ap._toBearingTurnRateDegrees > 0f && ap._toBearingTurnRateDegrees > turnRateDeg
-             ? ap._toBearingTurnRateDegrees : turnRateDeg;
+        private static float ResolveToBearingTurnRate(AmmunitionParameters ap)
+            => ap._toBearingTurnRateDegrees > 0f ? ap._toBearingTurnRateDegrees : 0f;
 
         /// <summary>
         /// How far off-bearing a shot is at launch: the horizontal angle between the shooter's
@@ -669,7 +673,7 @@ namespace AutoTOT
                 // per-tick budget, so the two can sum onto pitch.
                 if (BankingAddsRollBudgetToPitch && nonKin && ap._supportsBanking)
                     turnRate += BankingRollRateDeg;
-                float toBearingTurnRate = ResolveToBearingTurnRate(ap, turnRateBase);
+                float toBearingTurnRate = ResolveToBearingTurnRate(ap);
                 float turnDerateThresholdKn = ResolveTurnDerateThreshold(ap, turnRateBase);
 
                 LaunchGeometry geom = ResolveLaunchGeometry(unit, ap, launchPos, targetPos);
@@ -809,7 +813,7 @@ namespace AutoTOT
                         // speed at which the derate STARTS, so it can be read against the sim-track
                         // speeds on the same shot.
                         $", turn {turnRateBase:0.#}°/s" +
-                        $", launchTurn {(toBearingTurnRate > turnRateBase ? toBearingTurnRate.ToString("0.#") + "°/s" : "none")}" +
+                        $", launchTurn {(toBearingTurnRate > 0f ? toBearingTurnRate.ToString("0.#") + "°/s" : "none")}" +
                         $", gLimit {(turnDerateThresholdKn > 0f ? turnDerateThresholdKn.ToString("0") + "kn" : "none")}" +
                         // Sampled on the fired-shot path: the planning-path launch-rail reading goes
                         // stale because the ship keeps turning between planning and launch.
