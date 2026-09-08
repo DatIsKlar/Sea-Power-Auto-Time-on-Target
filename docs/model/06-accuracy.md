@@ -27,6 +27,12 @@ later than predicted; negative means it ran long and the round arrived early.
 | ss-n-19 | non-kinematic lofter | 45° | on-bearing, three ranges | -0.5 / +0.7 / +0.1 s | 437 / 302 / 170 s |
 | hhq-9b | kinematic terminal-loft | 90° | on-bearing | -0.8 s | 102 s |
 | yj-20 | kinematic high ballistic lofter | 90° | on-bearing | +1.4 s | 180 s |
+| ss-n-19 | non-kinematic lofter | 45° | on-bearing / 76° off | -0.9 / +0.3 s | 483 / 484 s |
+| ss-n-12 | non-kinematic lofter | 17.5° | on-bearing / 103° off | -0.3 / +1.8 s | 410 / 411 s |
+| ss-n-3b | non-kinematic lofter, seeker-gated | 25° | trainable mount, left on-bearing | -1.0 s | 566 s |
+| yj-18a | non-kinematic sea-skimmer | 90° | on-bearing / 91° off | -0.6 / -0.4 s | 512 / 509 s |
+| yj-20 | kinematic high ballistic lofter | 90° | on-bearing / 91° off | +3.3 / -1.3 s | 126 / 121 s |
+| hhq-9b | kinematic terminal-loft | 90° | on-bearing / 90° off | -2.2 / +2.4 s | 120 / 126 s |
 
 **Non-kinematic mean |gap| 0.55 s, maximum 2.7 s**, across thirty-six measurements. Flights span
 40 s to 16 minutes. For comparison, the game's own `EstimateShot` is 3 to 69 s off on the same
@@ -34,6 +40,13 @@ shots.
 
 The 2026-09-08 validation set, nine solo shots at isolated targets across six ammunition and ranges
 from 90 to 320 km, came in at **mean |gap| 0.51 s, maximum 1.0 s**.
+
+A second run the same day, eleven solo shots covering the three turn-budget corrections in
+[§3.2](03-trajectory.md#two-corrections-ride-on-the-base-rate), came in at **mean |gap| 1.38 s**
+overall: **0.64 s over the six non-kinematic shots** and 2.30 s over the five kinematic ones,
+the latter against a floor of 1.7 to 5.3 s for those flight lengths. Every shot hit. Six of the
+eleven were fired 76 to 103 degrees off the launch bearing, which is why that run carries more
+orientation error than the first.
 
 Three defects were closed that day, all of them one model field standing in for two distinct game
 stages, and all three invisible until an ammunition or a launch range exercised the difference
@@ -62,12 +75,20 @@ so the bearing a shot is actually taken on can differ from the one intended, and
 judged against the geometry that occurred. The ss-n-19 rows above are a case in point: the launching
 ship swung to face the target, and those shots left at 72° off the bow rather than abeam.
 
-rgm-109b is the shot most sensitive to orientation and still carries about 2 s of spread between the
-two geometries, the largest orientation effect that remains.
+An off-bearing launch is under-charged: every round measured in both geometries moves the gap
+positive when fired off the bearing, by 1.2 s on `ss-n-19` at 76°, 2.1 s on `ss-n-12` at 103° and
+2.0 s on `rgm-109b` abeam. The effect scales with how long the round spends turning, so it nearly
+vanishes on `yj-18a`, which turns through a similar angle at about five times the rate and shifts
+0.2 s. This is the largest systematic error left in the model. It is tracked, with the evidence and
+the two candidate causes, in
+[docs/plans/open/rgm-109b-orientation-residual.md](../plans/open/rgm-109b-orientation-residual.md),
+and is deliberately parked: 2 s on a 400 to 570 s flight is 0.3 %.
 
-The kinematic figures are quoted on-bearing only. Their run-to-run spread is wider than most of the
-effects being measured, for the reason in the next section, and they are not comparable between
-ranges.
+Kinematic figures carry a wider run-to-run spread than most of the effects being measured, for the
+reason in the next section, and are not comparable between ranges. The 2026-09-08 pairs show it
+plainly: `yj-20` gave +3.3 then -1.3 s and `hhq-9b` -2.2 then +2.4 s, a 4.6 s spread each on about
+123 s of flight, which is inside their own 1.4 to 4.3 % floor. Read a single kinematic shot as one
+draw from that band, never as a point measurement.
 
 ### These figures are measured against isolated targets
 
@@ -113,6 +134,10 @@ kinematic measurement should be read against that band, not treated as a point v
 - **Constant-velocity target prediction.** The lead is `targetPos + targetVel · t`, with the same
   evasive-manoeuvre boost the game's own estimator applies. A target that turns hard mid-flight is
   not modelled.
+- **An off-bearing launch is under-charged by 1 to 2 s.** Measured on four ammunition, scaling
+  with how long the round spends turning ([§6.1](#61-accuracy)). The largest systematic error
+  left; tracked and parked in
+  [docs/plans/open/rgm-109b-orientation-residual.md](../plans/open/rgm-109b-orientation-residual.md).
 - **The per-axis turn split is not modelled.** Both mover paths spend one combined rotation
   budget, and the model matches that ([§3.1](03-trajectory.md#heading)). What it does not carry
   is the game's split into separate yaw and pitch budgets, which needs a `TerminalVerticalTurnRate`
