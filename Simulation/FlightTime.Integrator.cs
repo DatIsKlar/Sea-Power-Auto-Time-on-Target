@@ -299,11 +299,22 @@ namespace AutoTOT
         private readonly struct StageProfile
         {
             internal readonly float FinalDist, FinalAlt, TermDist, TermAlt, DescentDeg, DescentOnsetDeg;
+            /// <summary>Altitude of the outer cruise leg, before the final-flight phase begins.</summary>
+            internal readonly float CruiseAlt;
+            /// <summary>Where the final-flight phase begins, and the altitude it commands. The game
+            /// runs these as two stages with two altitudes; see the note in ResolveStageProfile.</summary>
+            internal readonly float FinalFlightDist, FinalFlightAlt;
+            /// <summary>Distance-to-target outside which the round enters the loft at all. 0 = the
+            /// ammunition has no sea-skimming boundary, so it always lofts.</summary>
+            internal readonly float LoftEntryDist;
             internal StageProfile(float finalDist, float finalAlt, float termDist, float termAlt,
-                                  float descentDeg, float descentOnsetDeg)
+                                  float descentDeg, float descentOnsetDeg, float cruiseAlt,
+                                  float finalFlightDist, float finalFlightAlt, float loftEntryDist)
             {
                 FinalDist = finalDist; FinalAlt = finalAlt; TermDist = termDist;
                 TermAlt = termAlt; DescentDeg = descentDeg; DescentOnsetDeg = descentOnsetDeg;
+                CruiseAlt = cruiseAlt; FinalFlightDist = finalFlightDist;
+                FinalFlightAlt = finalFlightAlt; LoftEntryDist = loftEntryDist;
             }
         }
 
@@ -326,12 +337,82 @@ namespace AutoTOT
                 termDist = Mathf.Max(
                     termDist - maxVelKn * GameUnits.KnotsToUnityPerSecond * ap._searchForTargetsTime, 0f);
             }
+            // Two altitudes, not one. The game runs MaintainSeaSkimming at SeaSkimmingAlt and
+            // MaintainFinalFlightAlt at FinalFlightPhaseAlt (Missile.cs:614-647), and switches
+            // between them at FinalFlightPhaseDistToTarget. Collapsing them is close enough on a
+            // long shot, where most of the cruise really is sea-skimming, and wrong on a shot that
+            // starts inside the final-flight distance: an ss-n-3b at 91 km flew the whole way at
+            // 1312 ft while the model held 13200 ft, worth -4.4s on a 199s flight.
+            //
+            // The game parses FinalFlightPhaseAlt with SeaSkimmingAlt as its default
+            // (AmmunitionParameters.cs:1704-1719), so for an ammunition that does not distinguish
+            // the two these are equal and the switch below is inert. That is the common case.
+            float cruiseAlt = ap._seaSkimmingAltUnity > 0f ? ap._seaSkimmingAltUnity : finalAlt;
+            float finalFlightAlt = ap._finalFlightPhaseAltUnity > 0f
+                                 ? ap._finalFlightPhaseAltUnity : cruiseAlt;
+            // NOT clamped to the loft boundary, deliberately: the game tests this distance on its
+            // own, and for a LoftToSkim=False round it is the point that ends the loft as well.
+            float finalFlightDist = ap._finalFlightPhaseDistToTargetUnity;
+            // The real loft-entry test. See the note on the phase selector in FlightTime.Solve.cs.
+            float loftEntryDist = Mathf.Max(ap._seaSkimmingStartDistToTargetUnity, 0f);
+            // finalAlt is left exactly as it was and now feeds ONLY this fallback. Twelve shipped
+            // ammunition declare no TerminalAlt while giving different sea-skimming and
+            // final-flight altitudes, so redefining it here would silently move their terminal leg.
             float termAlt = ap._terminalAltUnity > 0f ? ap._terminalAltUnity : finalAlt;
             float descentDeg = ap._finalFlightPhaseMaxAngle > SetAngleEpsilonDeg ? ap._finalFlightPhaseMaxAngle
                              : (ap._seaSkimmingMaxDescentAngle > SetAngleEpsilonDeg ? ap._seaSkimmingMaxDescentAngle : DefaultDescentDeg);
             float descentOnsetDeg = Mathf.Max(descentDeg,
                 Mathf.Max(ap._finalFlightPhaseMaxAngle, ap._seaSkimmingMaxDescentAngle));
-            return new StageProfile(finalDist, finalAlt, termDist, termAlt, descentDeg, descentOnsetDeg);
+            return new StageProfile(finalDist, finalAlt, termDist, termAlt, descentDeg, descentOnsetDeg,
+                                    cruiseAlt, finalFlightDist, finalFlightAlt, loftEntryDist);
+        }
+
+        /// <summary>
+        /// Distance-to-target at which a lofting missile stops flying at <c>MaxLoftVelocity</c>,
+        /// for the ammunition that does not stop at the boundary <see cref="ResolveStageProfile"/>
+        /// names. Returns 0 when the ordinary boundary applies.
+        ///
+        /// <para><b>Why this is not the stage-profile distance.</b> The game gives a missile
+        /// <c>_maxLoftVelocityInKnots</c> only while its flight stage is <c>MaintainLoftAlt</c>
+        /// (<c>Missile.cs:3143</c>), and BOTH distance-based exits from that stage sit behind one
+        /// local flag (<c>Missile.cs:614-647</c>):</para>
+        /// <code>
+        /// else if (flag2 &amp;&amp; magnitude &lt; _finalFlightPhaseDistToTargetUnity &amp;&amp; flag &amp;&amp; num &lt;= 3) -> MaintainFinalFlightAlt
+        /// else if (magnitude &lt; _seaSkimmingStartDistToTargetUnity &amp;&amp; flag &amp;&amp; num &lt;= 2 &amp;&amp; ...)  -> MaintainSeaSkimming
+        /// else if (num &lt;= 1)                                                            -> MaintainLoftAlt
+        /// </code>
+        /// <para><c>Missile.cs:413</c> clears that flag for the whole flight when the ammunition
+        /// declares <c>RequiresTargetToProceed</c>, and only seeker activation with a permitted
+        /// target sets it back (<c>Missile.cs:426-433</c>). So neither declared distance takes
+        /// effect until the seeker comes up, and the missile holds loft speed until then. Activation
+        /// is <c>ShouldActivateMissileSeeker</c> (<c>BearingLaunchPrediction.cs:97-108</c>): inside
+        /// the active range, or inside the passive range, or unconditionally for TV homing.</para>
+        ///
+        /// <para>The ALTITUDE schedule is unaffected and stays where <see cref="ResolveStageProfile"/>
+        /// puts it. Telemetry on both affected rounds shows the descent to sea-skimming altitude
+        /// happening at the declared distance while the speed does not change: an ss-n-3b at 316 km
+        /// came down from 104 u to 59.9 u at 130 nmi and held 1150 kn for a further 148 km.</para>
+        ///
+        /// <para>Measured against the two ammunition this reaches, the predicted boundary lands on
+        /// the observed stage change: ss-n-3b 1378 u predicted against 1381 u observed, ss-n-3
+        /// 595 u against 595 u.</para>
+        /// </summary>
+        /// <returns>Flat distance to target in Unity units, or 0 when no hold applies.</returns>
+        private static float ResolveLoftSpeedHoldDist(AmmunitionParameters ap)
+        {
+            // Every term is a gate the game applies before it can clear the flag. Missing any one
+            // of them leaves flag true, the ordinary ladder runs, and the stage profile is right.
+            if (!ap._requiresTargetToProceed) return 0f;
+            // Missile.cs:382. The flag only exists inside this branch.
+            if (!ap._midCourseCorrection.AllowsLauncherGuidance) return 0f;
+            // Missile.cs:411. Unguided rounds never take the clearing branch.
+            if (ap._guidanceType == AmmunitionParameters.GuidanceType.None) return 0f;
+            // BearingLaunchPrediction.cs:103. A TV seeker reports active at any range, so the hold
+            // is over before it starts.
+            if (ap._guidanceType == AmmunitionParameters.GuidanceType.TVHoming) return 0f;
+            // Either range activates the seeker, so the hold ends at whichever is reached first,
+            // which is the larger distance.
+            return Mathf.Max(Mathf.Max(ap._seekerActiveRange, ap._seekerPassiveRange), 0f);
         }
 
         /// <summary>
@@ -456,7 +537,11 @@ namespace AutoTOT
                 if (!nonKin && _dragMethod == null) return false;
 
                 Vector3 launchPos = launch.Valid ? launch.PosU : unit.transform.position;
-                Vector3 targetPos = target.transform.position;
+                // The override is set only by the retargeting diagnostic; see LaunchState.TargetPosU.
+                // Velocity still comes from the live target, which is right: a ship's course holds
+                // far better over a flight than its position does.
+                Vector3 targetPos = (launch.Valid && launch.TargetPosU != Vector3.zero)
+                                  ? launch.TargetPosU : target.transform.position;
                 Vector3 targetVel = target._velocityVecInUnity;
                 bool isAir = unit.IsAirUnit;
 
@@ -507,7 +592,10 @@ namespace AutoTOT
 
                 StageProfile stage = ResolveStageProfile(ap, maxVelKn);
                 float finalDist = stage.FinalDist;
-                float finalAlt = stage.FinalAlt;
+                float cruiseAlt = stage.CruiseAlt;
+                float finalFlightDist = stage.FinalFlightDist;
+                float finalFlightAlt = stage.FinalFlightAlt;
+                float loftEntryDist = stage.LoftEntryDist;
                 float termDist = stage.TermDist;
                 float termAlt = stage.TermAlt;
                 float descentDeg = stage.DescentDeg;
@@ -564,6 +652,23 @@ namespace AutoTOT
 
                 Vector2[] altNodes = null;
                 float flatDistTotal = GameMath.FlatDistance(targetPos, launchPos);
+
+                // The hold needs BOTH conditions, and the launch range is why it is resolved here
+                // rather than beside the stage profile.
+                //
+                // `lofting`: an ammunition whose loft ceiling is at or below the launch altitude
+                // never gets loft speed to hold.
+                //
+                // `flatDistTotal > finalDist`: the flag at Missile.cs:413 stops a round LEAVING
+                // MaintainLoftAlt. It has no say in whether the round ever ENTERS it, which is
+                // decided coming out of ToBearing and is not gated on the flag. A round launched
+                // already inside the sea-skimming boundary goes ToBearing -> MaintainSeaSkimming
+                // and flies the whole way at cruise speed. Observed on an ss-n-3b at 224 km:
+                // `ToBearing -> MaintainSeaSkimming at t+15.4s, flat 3260u`, peak speed 900 kn
+                // against a 1150 kn loft speed, and the model's own `climb 0.0s` agrees. Holding
+                // loft speed there cost +59.1s on 2026-09-08, against -0.4s before the hold existed.
+                float loftSpeedHoldDist = (lofting && flatDistTotal > finalDist)
+                                        ? ResolveLoftSpeedHoldDist(ap) : 0f;
                 if (isTerminalLoft && _altNodesMethod != null && flatDistTotal > 1f)
                 {
                     try
@@ -590,6 +695,16 @@ namespace AutoTOT
                         // Both values, so the ini default and the rail's real orientation can be
                         // compared directly on one line.
                         $", iniPitch {(launchPitchIni >= 0f ? launchPitchIni.ToString("0.0") + "°" : "n/a")}" +
+                        // The loft-speed boundary, so a shot records whether the seeker-range hold
+                        // applied and where. "none" means the stage profile's own boundary is in
+                        // force, which is the case for all but two ammunition in the shipped set.
+                        $", loftHold {(loftSpeedHoldDist > 0f ? loftSpeedHoldDist.ToString("0") + "u" : "none")}" +
+                        // The two phase-1 altitudes and the boundary between them, plus the
+                        // loft-entry distance, so a traced shot records which legs it should have
+                        // flown without anyone having to re-read the ini.
+                        $", loftEntry {(loftEntryDist > 0f ? loftEntryDist.ToString("0") + "u" : "none")}" +
+                        $", cruiseAlt {cruiseAlt * GameUnits.MetersPerUnity / 0.3048f:0}ft" +
+                        $", finalFlight {finalFlightDist:0}u @ {finalFlightAlt * GameUnits.MetersPerUnity / 0.3048f:0}ft" +
                         // Sampled on the fired-shot path: the planning-path launch-rail reading goes
                         // stale because the ship keeps turning between planning and launch.
                         $", railAz {railAzTxt}");
@@ -605,7 +720,9 @@ namespace AutoTOT
                     descentDeg,
                     descentOnsetDeg,
                     dragFactor,
-                    finalAlt,
+                    cruiseAlt,
+                    finalFlightAlt,
+                    finalFlightDist,
                     finalDist,
                     flatDistTotal,
                     initialPhaseDur,
@@ -614,6 +731,8 @@ namespace AutoTOT
                     isTerminalLoft,
                     launchPitch,
                     loftAlt,
+                    loftEntryDist,
+                    loftSpeedHoldDist,
                     loftVelKn,
                     lofting,
                     maxFlight,

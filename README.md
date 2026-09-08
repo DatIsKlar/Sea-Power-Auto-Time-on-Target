@@ -121,7 +121,7 @@ without a full restart leaves the mod listed but inactive in-game.
 Confirm in `<Sea Power>/BepInEx/LogOutput.log`:
 
 ```
-[AutoTOT] Auto Time-on-Target v0.1.5 loaded (Enabled=True, Armed=False, Unity=...)
+[AutoTOT] Auto Time-on-Target v0.2.0 loaded (Enabled=True, Armed=False, Unity=...)
 ```
 
 **Keep exactly one copy installed.** If you are also subscribed to the Workshop

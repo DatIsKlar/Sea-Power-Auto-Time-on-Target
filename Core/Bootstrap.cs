@@ -21,7 +21,7 @@ namespace AutoTOT
 
         // Mod version. Keep in sync with AutoTOT.csproj <Version> and the [ACPlugin]
         // attribute in AnchorChainEntry.cs (which references this constant).
-        internal const string Version = "0.1.5";
+        internal const string Version = "0.2.0";
 
         internal static ManualLogSource Log = BepInEx.Logging.Logger.CreateLogSource("AutoTOT");
         public static Harmony Harmony { get; private set; }

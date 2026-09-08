@@ -393,7 +393,8 @@ namespace AutoTOT
                 GUILayout.BeginHorizontal();
                 GUILayout.Label(UnitNaming.SafeName(ship), _ship);
                 GUILayout.FlexibleSpace();
-                if (_group.Count > 0 && GUILayout.Button("remove", _btnSmall, GUILayout.Width(64)))
+                if (_group.Count > 0 && GUILayout.Button("REMOVE", _btnDanger, GUILayout.Width(ClearButtonW),
+                                                         GUILayout.Height(RowHeight)))
                     _group.Remove(ship);
                 GUILayout.EndHorizontal();
                 bool any = false;
@@ -424,7 +425,7 @@ namespace AutoTOT
             DrawDivider();
 
             GUILayout.BeginHorizontal();
-            bool auto = DrawCheckbox(Coordinator.Active, $"Also auto-coordinate normal group orders ({ToggleHint()})");
+            bool auto = DrawCheckbox(Coordinator.Active, "Auto-coordinate group orders");
             if (auto != Coordinator.Active)
             {
                 Coordinator.Active = auto;

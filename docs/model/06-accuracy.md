@@ -5,7 +5,9 @@
 ## 6.1 Accuracy
 
 Measured against real flights on the beta branch, integrator owning every shot with no fallback.
-*Gap* = estimate − actual flight time; positive means the estimate ran long.
+*Gap* = actual flight time − the estimate made at launch, matching what the `gap` line in the log
+reports (`LaunchDiagnostics.cs:366`). **Positive means the estimate ran SHORT** and the round arrived
+later than predicted; negative means it ran long and the round arrived early.
 
 | shot | class | launch | geometry | gap | flight |
 |---|---|---|---|---|---|
@@ -17,12 +19,36 @@ Measured against real flights on the beta branch, integrator owning every shot w
 | ss-n-19 | non-kinematic lofter | 45° | on-bearing / 72° off | -0.7 / +0.2 / +0.2 s | 387 s |
 | rgm-109b | non-kinematic cruise | 90° | on-bearing | -1.1 s | 500 s |
 | rgm-109b | non-kinematic cruise | 90° | **abeam** | +0.9 / +1.0 s | 500 s |
+| ss-n-3b | non-kinematic lofter, seeker-gated | 25° | 77° off, four ranges | -0.4 / -1.0 / -2.5 / -2.7 s | 197 / 585 / 729 / 580 s |
+| ss-n-3 | non-kinematic lofter, seeker-gated | 0.5° | on-bearing, three ranges | -0.2 / -0.3 / -0.8 s | 565 / 418 / 708 s |
+| ss-n-22b | non-kinematic lofter | 15° | on-bearing, two ranges | -0.6 / -0.3 s | 224 / 115 s |
+| ss-n-22 | non-kinematic sea-skimmer | 15° | on-bearing | +0.1 s | 119 s |
+| ss-n-12 | non-kinematic lofter | 17.5° | on-bearing, three ranges | -0.4 / +1.0 / +0.5 s | 423 / 254 / 143 s |
+| ss-n-19 | non-kinematic lofter | 45° | on-bearing, three ranges | -0.5 / +0.7 / +0.1 s | 437 / 302 / 170 s |
 | hhq-9b | kinematic terminal-loft | 90° | on-bearing | -0.8 s | 102 s |
 | yj-20 | kinematic high ballistic lofter | 90° | on-bearing | +1.4 s | 180 s |
 
-**Non-kinematic mean |gap| 0.49 s, maximum 1.1 s**, across fifteen measurements. Flights span 40 s
-to 16 minutes. For comparison, the game's own `EstimateShot` is 6 to 33 s off on the same lofting
+**Non-kinematic mean |gap| 0.55 s, maximum 2.7 s**, across thirty-six measurements. Flights span
+40 s to 16 minutes. For comparison, the game's own `EstimateShot` is 3 to 69 s off on the same
 shots.
+
+The 2026-09-08 validation set, nine solo shots at isolated targets across six ammunition and ranges
+from 90 to 320 km, came in at **mean |gap| 0.51 s, maximum 1.0 s**.
+
+Three defects were closed that day, all of them one model field standing in for two distinct game
+stages, and all three invisible until an ammunition or a launch range exercised the difference
+([§3.3](03-trajectory.md#33-the-stage-model)):
+
+| defect | worst measured | after |
+|---|---|---|
+| loft speed ended at the sea-skimming boundary rather than at seeker activation | -72.0 s, `ss-n-3b` | -1.0 s |
+| phase 1 held one altitude where the game holds two | -4.4 s, `ss-n-3b` at 91 km | -0.4 s |
+| the loft was entered on an ammunition property rather than on launch range | +11.6 s, `ss-n-12` at 167 km | +1.0 s |
+
+The `ss-n-3b` rows above still carry 1.0 to 2.7 s at long range, the largest residual in the table.
+Roughly 1.7 s of the original 2.7 s was the second defect. What remains is the same order as the
+`rgm-109b` orientation residual, and `ss-n-3b` is the only entry fired 77° off the bow while also
+lofting, so it is parked with that one rather than treated separately.
 
 Where several figures are given, the shot was fired in more than one launch geometry, or at more
 than one range. Launch geometry is listed because it is not incidental: a launcher that cannot train

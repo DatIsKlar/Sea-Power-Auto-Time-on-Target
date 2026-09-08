@@ -606,7 +606,10 @@ namespace AutoTOT
                     if (sh.Target == t) { orders++; rounds += Mathf.Max(1, sh.Salvo); }
                 foreach (Coordinator.Shot sh in collected)
                     if (sh.Target == t) { orders++; rounds += Mathf.Max(1, sh.Salvo); }
-                GUILayout.Label($"{orders} order(s)  ·  {rounds} round(s)", _row);
+                // One line, never wrapped: at RowHeight a second line would be drawn below the
+                // row's own box and overlap the target line under it.
+                GUILayout.Label($"{orders} order(s)  ·  {rounds} round(s)", _rowOneLine,
+                                GUILayout.ExpandWidth(false));
                 GUI.color = Color.white;
 
                 GUILayout.FlexibleSpace();
@@ -615,7 +618,7 @@ namespace AutoTOT
                 // accepted is held by the coordinator, and CLEAR is the way to drop those.
                 // Removes the whole group the player is looking at, staged rows and collected
                 // in-game orders alike. Anything else makes the button lie about what it acts on.
-                if (GUILayout.Button("remove", _btnSmall, GUILayout.Width(64), GUILayout.Height(RowHeight)))
+                if (GUILayout.Button("REMOVE", _btnDanger, GUILayout.Width(ClearButtonW), GUILayout.Height(RowHeight)))
                 {
                     _strike.RemoveAll(sh => sh.Target == removing);
                     Coordinator.RemoveStrikeIntents(removing);
@@ -753,12 +756,17 @@ namespace AutoTOT
         private void DrawScaleControl()
         {
             GUI.color = TextDim;
-            GUILayout.Label("Scale", _hdr, GUILayout.Height(RowHeight));
+            // _hdrCenterV, not _hdr: the default label margin makes an _hdr claim RowHeight+8,
+            // which grows the footer row past the fixed-height items beside it and leaves the
+            // steppers sitting off the checkbox's centre line.
+            GUILayout.Label("Scale", _hdrCenterV, GUILayout.Height(RowHeight));
             GUI.color = Color.white;
-            if (GUILayout.Button("–", _btn, GUILayout.Width(30)))
+            // Same style, size and centred read-out as the salvo steppers: both are a value
+            // between two steps, so they should not be two different-looking controls.
+            if (GUILayout.Button("–", _btnStep, GUILayout.Width(StepButtonW), GUILayout.Height(RowHeight)))
                 Bootstrap.SetUiScaleMultiplier(Bootstrap.UiScaleMultiplier - UiScaleStep);
-            GUILayout.Label($"{Bootstrap.UiScaleMultiplier:0.0}×", _row, GUILayout.Width(36));
-            if (GUILayout.Button("+", _btn, GUILayout.Width(30)))
+            GUILayout.Label($"{Bootstrap.UiScaleMultiplier:0.0}×", _rowCenter, GUILayout.Width(36));
+            if (GUILayout.Button("+", _btnStep, GUILayout.Width(StepButtonW), GUILayout.Height(RowHeight)))
                 Bootstrap.SetUiScaleMultiplier(Bootstrap.UiScaleMultiplier + UiScaleStep);
         }
 

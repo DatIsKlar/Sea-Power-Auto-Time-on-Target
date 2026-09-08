@@ -142,17 +142,66 @@ Three phases, selected each step by remaining horizontal distance to the predict
 
 | phase | selected when | altitude | speed target |
 |---|---|---|---|
-| 0: loft | lofting, and beyond `finalDist` | `loftAlt` from the game's `LoftCap` | `_maxLoftVelocityInKnots` |
-| 1: final / sea-skim | within `finalDist` | `finalAlt` | `_maxVelocityInKnots` |
+| 0: loft | lofting, launched beyond `loftEntryDist`, and beyond `finalDist` | `loftAlt` from the game's `LoftCap` | `_maxLoftVelocityInKnots` |
+| 1: cruise | within `finalDist` | `cruiseAlt`, or `finalFlightAlt` within `finalFlightDist` | `_maxVelocityInKnots`, held at loft speed outside `loftSpeedHoldDist` |
 | 2: terminal | within `diveStart` | `termAlt` | `_terminalVelocityInKnots` |
 
-Boundaries come straight from the `.ini`, with `_loftToSkim` selecting which pair applies:
+Boundaries come straight from the `.ini`, with `_loftToSkim` selecting which distance bounds phase 1:
 
 ```
-toSkim    = _loftToSkim && _seaSkimmingStartDistToTargetUnity > 0
-finalDist = toSkim ? _seaSkimmingStartDistToTargetUnity : _finalFlightPhaseDistToTargetUnity
-finalAlt  = toSkim ? _seaSkimmingAltUnity              : _finalFlightPhaseAltUnity
+toSkim         = _loftToSkim && _seaSkimmingStartDistToTargetUnity > 0
+finalDist      = toSkim ? _seaSkimmingStartDistToTargetUnity : _finalFlightPhaseDistToTargetUnity
+cruiseAlt      = _seaSkimmingAltUnity
+finalFlightAlt = _finalFlightPhaseAltUnity
+finalFlightDist= _finalFlightPhaseDistToTargetUnity
+loftEntryDist  = _seaSkimmingStartDistToTargetUnity
 ```
+
+### Entering the loft depends on the launch range, not on the ammunition
+
+A round enters the loft only if it was **launched** outside `_seaSkimmingStartDistToTargetUnity`.
+Coming out of `ToBearing` the stage is not `MaintainLoftAlt`, so the
+`_loftToSkim || stage != MaintainLoftAlt` clause at `Missile.cs:641` is true for every ammunition
+and the sea-skimming branch wins. Once there, the stage rank is 2 and the loft branch, which
+requires rank 1 or less, is unreachable for the rest of the flight.
+
+So `_loftToSkim` does not decide whether a round lofts. It decides what happens to a round that is
+already lofted, meaning it was launched outside the boundary: `False` keeps it lofted until the
+final-flight distance, `True` drops it to sea-skimming at the boundary.
+
+The model's own `lofting` flag is `loftAlt > launchAlt`, a property of the ammunition that is true
+at every range, so it says a round *can* loft rather than that it *will*. The launch-range test is
+applied separately in the phase selector. It bites only where `finalDist` is smaller than the
+sea-skimming boundary, which is the `LoftToSkim=False` case: `wp_ss-n-12` between 50 and 100 nmi and
+`wp_ss-n-19` between 80 and 100 nmi. Measured before the test existed, the model climbed to 44300
+and 50000 ft while both rounds sea-skimmed, for +11.6 s and -4.8 s. The signs differ because a long
+spurious loft repays its climb at loft speed and a short one does not.
+
+### Phase 1 has two altitudes
+
+The game runs `MaintainSeaSkimming` at `SeaSkimmingAlt` and `MaintainFinalFlightAlt` at
+`FinalFlightPhaseAlt`, switching at `FinalFlightPhaseDistToTarget`. Phase 1 covers both, so it holds
+`cruiseAlt` outside that distance and `finalFlightAlt` within it.
+
+The game parses `FinalFlightPhaseAlt` with `SeaSkimmingAlt` as its default
+(`AmmunitionParameters.cs:1704-1719`), so for most ammunition the two are equal and the switch is
+inert. Where they differ it matters most on a shot that starts inside the final-flight distance and
+so never sea-skims at all: an `ss-n-3b` fired at 91 km flew its whole flight at 1312 ft while a
+single-altitude model held 13200 ft, worth -4.4 s on a 199 s flight.
+
+### Loft speed can outlast the loft altitude
+
+The game gives a round `_maxLoftVelocityInKnots` only while its stage is `MaintainLoftAlt`
+(`Missile.cs:3143`), and **both** distance-based exits from that stage sit behind a local flag that
+`RequiresTargetToProceed` holds false until the seeker activates (`Missile.cs:413`, activation at
+`BearingLaunchPrediction.cs:97-108`). Such a round descends to sea-skimming altitude on cue and
+keeps flying at loft speed until `max(_seekerActiveRange, _seekerPassiveRange)`.
+
+`loftSpeedHoldDist` carries that distance, and phase 1 holds the loft speed outside it while the
+altitude schedule proceeds normally. Three shipped ammunition declare the flag and only the two
+SS-N-3 variants also loft; for everything else the hold is zero and the code path is unchanged.
+Before it existed the SS-N-3B was 72 s fast and the SS-N-3 51 s fast, constant in seconds at every
+range beyond the sea-skimming boundary.
 
 ### Launch and ToBearing command the maximum speed
 

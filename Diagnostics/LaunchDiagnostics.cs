@@ -55,6 +55,13 @@ namespace AutoTOT
                                            // Ground truth for the integrator's stage-speed schedule.
             public float PeakAltU;         // max altitude (Unity units) seen in flight ; loft-arc height.
             public float LastSpeedKn;      // most-recent speed (kn) ; approx terminal/impact speed.
+            // The shooter's state at launch, so a round that switched targets can be re-estimated
+            // against the ship it actually hit. Captured at first sighting, which is within a tick
+            // of the round leaving the rail. Zero position = not captured.
+            public Vector3 LaunchPosU;
+            public float LaunchVelKn;
+            public ObjectBase Shooter;     // needed to re-run the estimate; always guard, it can die
+            public string ShooterAmmoId;
             public bool Coordinated;       // captured at first sighting: is this a missile AutoTOT
                                            // fired (target has an EngagementBoard row)? Scopes all
                                            // verbose diagnostics to our own shots (not defensive SAMs).
@@ -249,6 +256,11 @@ namespace AutoTOT
                         PeakAltU = verbose && w.transform != null ? w.transform.position.y : 0f,
                         LastSpeedKn = verbose ? w._velocityInKnots : 0f,
                         PeakSpeedKn = verbose ? w._velocityInKnots : 0f,
+                        LaunchPosU = w._launchPlatform != null ? w._launchPlatform.transform.position
+                                                              : Vector3.zero,
+                        LaunchVelKn = w._launchPlatform != null ? w._launchPlatform._velocityInKnots : 0f,
+                        Shooter = w._launchPlatform,
+                        ShooterAmmoId = (w._ap != null ? w._ap._ammunitionFileName : null),
                         Coordinated = coordinated,
                         LastStage = w._flightStage,
                     };
@@ -275,6 +287,77 @@ namespace AutoTOT
                 WeaponBase w = kv.Key;
                 if (w == null || w.IsDestroyed || w._type != ObjectBase.ObjectType.Missile)
                     _trackerScratch.Add(w);
+            }
+        }
+
+
+        /// <summary>
+        /// The estimator gap for a round whose seeker switched, measured against the ship it
+        /// actually hit. The strict <c>gap</c> line stays suppressed for these, so nothing here can
+        /// be mistaken for a reference measurement; this is a second, differently named line.
+        ///
+        /// <para><b>Why this exists.</b> Against a formation most rounds switch, so most rounds
+        /// report no estimator measurement at all, and any error that only appears under formation
+        /// conditions is invisible by construction. In one 152-order strike, 15 of 16 rounds that
+        /// would otherwise have reported a gap were suppressed. A formation strike is also what
+        /// players actually fly, so without this a user's log says nothing about the model.</para>
+        ///
+        /// <para><b>Why it cannot be precise, stated in the line itself.</b> The substitute's
+        /// position AT LAUNCH was never recorded, because which ship a seeker will pick is not known
+        /// in advance and snapshotting every candidate per round is exactly the per-round work that
+        /// has cost frames before. It is back-projected from the impact position instead, so the
+        /// answer carries the error in that back-projection: a ship that turned or changed speed
+        /// during the flight was not where this puts it. The line prints how far it rewound and the
+        /// tolerance that implies, so the number is never read as tighter than it is.</para>
+        ///
+        /// <para>Good to a few seconds, which is the point. Every estimator defect found so far has
+        /// been 4 to 72 s.</para>
+        /// </summary>
+        private static void LogSubstituteGap(FlightSample s, float flightTime)
+        {
+            ObjectBase sub = s.CurrentTarget;
+            if (sub == null || sub.IsDestroyed) return;
+            if (s.Shooter == null || s.Shooter.IsDestroyed) return;
+            if (s.ShooterAmmoId == null || s.LaunchPosU == Vector3.zero) return;
+            if (flightTime <= 0f) return;
+            try
+            {
+                // Rewind the substitute along its own velocity to where it was when this round left
+                // the rail. Straight-line, deliberately: a curve fitted to one velocity sample would
+                // be a guess dressed as precision.
+                Vector3 subVel = sub._velocityVecInUnity;
+                Vector3 subAtLaunch = sub.transform.position - subVel * flightTime;
+                float rewoundM = (sub.transform.position - subAtLaunch).magnitude
+                                 * GameUnits.MetersPerUnity;
+
+                var launch = new FlightTime.LaunchState(s.LaunchPosU, s.LaunchVelKn,
+                                                        Vector3.zero, subAtLaunch);
+                float est = FlightTime.EstimateFromLaunch(s.Shooter, s.ShooterAmmoId, sub, launch);
+                if (est <= FlightTime.MinValidSeconds)
+                {
+                    Bootstrap.Log.LogInfo(
+                        $"[AutoTOT] gap-sub {s.AmmoName} -> {s.CurrentTargetName}: no estimate, the " +
+                        "integrator declined for the substitute's launch geometry.");
+                    return;
+                }
+                // Tolerance: the rewind distance is the part of the geometry we had to reconstruct,
+                // so express it in seconds at the speed this round actually averaged.
+                float meanSpeedMs = (flightTime > 0f)
+                    ? (s.LaunchPosU - sub.transform.position).magnitude
+                      * GameUnits.MetersPerUnity / flightTime
+                    : 0f;
+                string tol = meanSpeedMs > 1f
+                    ? $"about {rewoundM / meanSpeedMs:0.#}s"
+                    : "unknown";
+                Bootstrap.Log.LogInfo(
+                    $"[AutoTOT] gap-sub {s.AmmoName} -> {s.CurrentTargetName} " +
+                    $"(seeker switched from {s.TargetName}): est {est:0.0}s, actual {flightTime:0.0}s, " +
+                    $"gap {flightTime - est:+0.0;-0.0}s | APPROXIMATE: the substitute's launch " +
+                    $"position was back-projected {rewoundM / 1000f:0.0}km, tolerance {tol}");
+            }
+            catch (System.Exception e)
+            {
+                ModLog.VerboseWarn("substitute gap failed", e);
             }
         }
 
@@ -352,6 +435,7 @@ namespace AutoTOT
                                 $"[AutoTOT] gap {s.AmmoName} -> {s.TargetName}: SKIPPED, seeker switched to " +
                                 $"{s.CurrentTargetName}. Flight {flightTime:0.0}s is to that ship; " +
                                 $"simEst {s.KinEstAtLaunch:0.0}s was for the assigned one. Not estimator error.");
+                            LogSubstituteGap(s, flightTime);
                         }
                         else if (s.KinEstAtLaunch > 0f && hit && Coordinator.TraceFlightModel)
                         {

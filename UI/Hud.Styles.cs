@@ -45,9 +45,6 @@ namespace AutoTOT
         private GUIStyle _rowCenter, _hdrCenterV;
         // Condensed list line, for the per-order breakdown under a strike target.
         private GUIStyle _rowSmall;
-        // In-list "remove". Same ghost role as _btn, at list-text size: it acts on one row and
-        // should not out-weigh the row it acts on.
-        private GUIStyle _btnSmall;
         // The title bar's help button: _btnSecondary sized to the full header height, with its
         // vertical padding dropped so the text centres in that box instead of riding high.
         private GUIStyle _btnHelp;
@@ -238,9 +235,12 @@ namespace AutoTOT
             SetStates(_btnSecondary, _outlineTex, _outlineHoverTex, _outlineHoverTex, _outlineTex,
                       TextMain, Color.white);
 
-            _btnSmall = new GUIStyle(_btn) { fontStyle = FontStyle.Normal, fontSize = FontSizeBody };
             _btnHelp = new GUIStyle(_btnSecondary) { padding = new RectOffset(8, 8, 0, 0) };
-            _btnStep = new GUIStyle(_btn) { fontSize = FontSizeBody };
+            // Normal weight, not _btn's bold: a stepper row reads "– 4 +" as one line of text, and
+            // the count between them is a plain label. Bold steppers around a normal count looked
+            // like two different fonts. Same style whatever the step size, so "–5"/"–10" under a
+            // held modifier are the same control as "–", only wider.
+            _btnStep = new GUIStyle(_btn) { fontStyle = FontStyle.Normal, fontSize = FontSizeBody };
 
             // Destructive: empties a list. Flat and dim at rest so it never competes with a commit
             // button, amber on hover so the consequence is stated before the click.

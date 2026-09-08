@@ -157,13 +157,29 @@ namespace AutoTOT
             internal readonly Vector3 PosU;         // shooter position at launch, Unity units
             internal readonly float   VelKnots;     // shooter speed at launch
             internal readonly Vector3 HeadingFlat;  // rail bearing at launch, flat; zero = unknown
+            /// <summary>
+            /// Where the TARGET was when this shot was taken. Zero = use the target's live position,
+            /// which is the normal case and every existing caller.
+            ///
+            /// Only set by the retargeting diagnostic, which asks "what would the model have
+            /// predicted for a shot at the ship this round actually hit". That ship's position at
+            /// launch was never recorded, because nobody knows in advance which ship a seeker will
+            /// pick, so it is back-projected from where the ship was at impact. Passing the live
+            /// position instead would bias the answer long by the whole distance the ship covered
+            /// during the flight.
+            /// </summary>
+            internal readonly Vector3 TargetPosU;
 
             internal LaunchState(Vector3 posU, float velKnots, Vector3 headingFlat)
+                : this(posU, velKnots, headingFlat, Vector3.zero) { }
+
+            internal LaunchState(Vector3 posU, float velKnots, Vector3 headingFlat, Vector3 targetPosU)
             {
                 Valid = true;
                 PosU = posU;
                 VelKnots = Mathf.Max(velKnots, 0f);
                 HeadingFlat = headingFlat;
+                TargetPosU = targetPosU;
             }
         }
 

@@ -16,6 +16,17 @@ namespace AutoTOT
         ///
         /// Fields that the loop mutates are carried as their INITIAL values and unpacked into locals.
         /// </summary>
+        /// <summary>
+        /// Which of the two cruise-leg altitudes applies at this distance. The game runs
+        /// <c>MaintainSeaSkimming</c> and <c>MaintainFinalFlightAlt</c> as separate stages with
+        /// separate altitudes and switches at <c>FinalFlightPhaseDistToTarget</c>
+        /// (<c>Missile.cs:614-647</c>). Inert when the ammunition declares no final-flight distance,
+        /// or declares the same altitude for both, which is the common case.
+        /// </summary>
+        private static float CruiseOrFinalFlightAlt(float flatDist, float finalFlightDist,
+                                                    float finalFlightAlt, float cruiseAlt)
+            => (finalFlightDist > 0f && flatDist <= finalFlightDist) ? finalFlightAlt : cruiseAlt;
+
         internal readonly struct SolveInput
         {
             internal readonly Vector2[]   AltNodes;
@@ -25,7 +36,12 @@ namespace AutoTOT
             internal readonly float       DescentDeg;
             internal readonly float       DescentOnsetDeg;
             internal readonly float       DragFactor;
-            internal readonly float       FinalAlt;
+            /// <summary>Altitude of the outer cruise leg, outside <see cref="FinalFlightDist"/>.</summary>
+            internal readonly float       CruiseAlt;
+            /// <summary>Where the final-flight leg begins, and the altitude it commands. 0 dist = no
+            /// such leg, and the switch is inert. See FlightTime.Integrator.ResolveStageProfile.</summary>
+            internal readonly float       FinalFlightAlt;
+            internal readonly float       FinalFlightDist;
             internal readonly float       FinalDist;
             internal readonly float       FlatDistTotal;
             internal readonly float       InitialPhaseDur;
@@ -34,6 +50,12 @@ namespace AutoTOT
             internal readonly bool        IsTerminalLoft;
             internal readonly float       LaunchPitch;
             internal readonly float       LoftAlt;
+            /// <summary>Launch range outside which the round enters the loft at all. 0 = no
+            /// sea-skimming boundary, so it always lofts.</summary>
+            internal readonly float       LoftEntryDist;
+            /// <summary>Flat distance inside which loft speed ends, when the ordinary stage boundary
+            /// does not apply. 0 = no hold. See FlightTime.Integrator.ResolveLoftSpeedHoldDist.</summary>
+            internal readonly float       LoftSpeedHoldDist;
             internal readonly float       LoftVelKn;
             internal readonly bool        Lofting;
             internal readonly float       MaxFlight;
@@ -68,7 +90,9 @@ namespace AutoTOT
                 float descentDeg,
                 float descentOnsetDeg,
                 float dragFactor,
-                float finalAlt,
+                float cruiseAlt,
+                float finalFlightAlt,
+                float finalFlightDist,
                 float finalDist,
                 float flatDistTotal,
                 float initialPhaseDur,
@@ -77,6 +101,8 @@ namespace AutoTOT
                 bool isTerminalLoft,
                 float launchPitch,
                 float loftAlt,
+                float loftEntryDist,
+                float loftSpeedHoldDist,
                 float loftVelKn,
                 bool lofting,
                 float maxFlight,
@@ -110,7 +136,9 @@ namespace AutoTOT
                 DescentDeg = descentDeg;
                 DescentOnsetDeg = descentOnsetDeg;
                 DragFactor = dragFactor;
-                FinalAlt = finalAlt;
+                CruiseAlt = cruiseAlt;
+                FinalFlightAlt = finalFlightAlt;
+                FinalFlightDist = finalFlightDist;
                 FinalDist = finalDist;
                 FlatDistTotal = flatDistTotal;
                 InitialPhaseDur = initialPhaseDur;
@@ -119,6 +147,8 @@ namespace AutoTOT
                 IsTerminalLoft = isTerminalLoft;
                 LaunchPitch = launchPitch;
                 LoftAlt = loftAlt;
+                LoftEntryDist = loftEntryDist;
+                LoftSpeedHoldDist = loftSpeedHoldDist;
                 LoftVelKn = loftVelKn;
                 Lofting = lofting;
                 MaxFlight = maxFlight;
@@ -171,7 +201,9 @@ namespace AutoTOT
             float       descentDeg             = i.DescentDeg;
             float       descentOnsetDeg        = i.DescentOnsetDeg;
             float       dragFactor             = i.DragFactor;
-            float       finalAlt               = i.FinalAlt;
+            float       cruiseAlt              = i.CruiseAlt;
+            float       finalFlightAlt         = i.FinalFlightAlt;
+            float       finalFlightDist        = i.FinalFlightDist;
             float       finalDist              = i.FinalDist;
             float       flatDistTotal          = i.FlatDistTotal;
             float       initialPhaseDur        = i.InitialPhaseDur;
@@ -180,6 +212,8 @@ namespace AutoTOT
             bool        isTerminalLoft         = i.IsTerminalLoft;
             float       launchPitch            = i.LaunchPitch;
             float       loftAlt                = i.LoftAlt;
+            float       loftEntryDist          = i.LoftEntryDist;
+            float       loftSpeedHoldDist      = i.LoftSpeedHoldDist;
             float       loftVelKn              = i.LoftVelKn;
             bool        lofting                = i.Lofting;
             float       maxFlight              = i.MaxFlight;
@@ -271,11 +305,41 @@ namespace AutoTOT
                     if (diveStart > 0f && flatDist <= diveStart)
                     { stageTgt = termVelKn; stageAlt = termAlt; phase = 2; }
                     else if (finalDist > 0f && flatDist <= finalDist)
-                    { stageTgt = maxVelKn; stageAlt = finalAlt; phase = 1; }
-                    else if (lofting)
+                    {
+                        phase = 1;
+                        stageAlt = CruiseOrFinalFlightAlt(flatDist, finalFlightDist,
+                                                          finalFlightAlt, cruiseAlt);
+                        // The altitude schedule ends here, the speed may not. An ammunition that
+                        // requires a target to proceed stays in MaintainLoftAlt, and so at loft
+                        // speed, until its seeker activates, which is further in than this
+                        // boundary. It still descends on cue, which is why only stageTgt is held.
+                        stageTgt = (loftSpeedHoldDist > 0f && flatDist > loftSpeedHoldDist)
+                                 ? loftVelKn : maxVelKn;
+                    }
+                    // A round only enters the loft if it was LAUNCHED outside the sea-skimming
+                    // boundary. Coming out of ToBearing the stage is not MaintainLoftAlt, so the
+                    // `_loftToSkim || stage != MaintainLoftAlt` clause at Missile.cs:641 is true for
+                    // every ammunition and the sea-skimming branch wins; once there, `num` is 2 and
+                    // the loft branch (`num <= 1`) is unreachable for the rest of the flight.
+                    // `lofting` alone is a property of the AMMUNITION (loftAlt > launchAlt) and is
+                    // true at every range, so it says the round CAN loft, not that it WILL.
+                    //
+                    // Tested on the launch RANGE rather than the running distance: entry is decided
+                    // once, at ToBearing, and cannot be re-entered later.
+                    //
+                    // Measured 2026-09-08 inside the band where the two disagree: ss-n-12 at 90.6nmi
+                    // +11.6s and ss-n-19 at 91.5nmi -4.8s, the model climbing to 44300 and 50000ft
+                    // while both rounds sea-skimmed. The signs differ because a long spurious loft
+                    // repays its climb at loft speed and a short one does not.
+                    else if (lofting && (loftEntryDist <= 0f || flatDistTotal > loftEntryDist))
                     { stageTgt = loftVelKn; stageAlt = loftAlt; phase = 0; }
                     else
-                    { stageTgt = maxVelKn; stageAlt = finalAlt; phase = 1; }
+                    {
+                        phase = 1;
+                        stageAlt = CruiseOrFinalFlightAlt(flatDist, finalFlightDist,
+                                                          finalFlightAlt, cruiseAlt);
+                        stageTgt = maxVelKn;
+                    }
 
                     float altErr = stageAlt - pos.y;
                     float targetPitch = 0f;

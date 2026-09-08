@@ -31,6 +31,7 @@ churn and defensive-SAM launches do not drown the log.
 | `stage-obs` | the live missile's own flight-stage transitions, one line per change: `prev -> next`, sim time, flat and slant distance, altitude, speed |
 | `drag-break` | live `CalculateDrag` component split (aero / induced / gravity), the seeker's **lock HELD/DROPPED** state, and the `targetAlt` fed |
 | `gap` | the outcome: `simEst` vs `actual`, plus `peakAlt`, `realPeakSpd`, `termSpd`, and `legacyEst`. Replaced by `SKIPPED, seeker switched` when the round struck a ship other than the one it was ordered against, since that difference measures formation geometry rather than the estimator |
+| `gap-sub` | the same measurement for a round whose seeker switched, taken against the ship it actually hit. Deliberately a separate name: it is **approximate** and must never be recorded in the accuracy table. The substitute's position at launch is not recorded, so it is back-projected from the impact position, and the line prints how far it rewound and the tolerance that implies. Good to a few seconds, which is enough to catch the class of defect worth reporting |
 | `impact` | flight time, final range, and `[RETARGETED -> <ship>]` when the seeker switched ships mid-flight |
 | `stage-src` | the game's own `CreateWaypointConfigs` plan, dumped per config |
 
