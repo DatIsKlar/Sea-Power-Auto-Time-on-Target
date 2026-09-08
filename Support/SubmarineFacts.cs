@@ -78,7 +78,20 @@ namespace AutoTOT
             if (!(unit is Submarine sub) || sub.SP == null) return 0f;
 
             float targetFt = LaunchTargetDepthFt(s.MaxLaunchDepthFt);
-            if (s.DepthFt - targetFt <= 0f) return 0f;    // already there: exact, no estimate
+
+            // The game's own gate decides this, not a depth comparison. WeaponSystemLauncher.cs:419
+            // blocks on `y < -MaxDepth && (MaxDepth > 0 || isSubmerged())`, so a weapon declaring
+            // MaxDepth 0 is gated on isSubmerged() alone: a boat running with its deck awash at 2 ft
+            // is NOT submerged, is free to fire, and owes no ascent at all.
+            //
+            // Comparing DepthFt against targetFt instead charged such a boat a full ascent it never
+            // performs. That is two faults in one: a launch lead the coordinator then builds the
+            // shared impact time on, and a panel warning telling the player to come to launch depth
+            // while they are already at it. It also over-charged a boat sitting inside a nonzero
+            // ceiling but above the depth the launcher commands, the 18.2s-predicted-versus-4.0s-
+            // observed case. LaunchBlocked is that gate, already evaluated in the snapshot.
+            if (!s.LaunchBlocked) return 0f;    // ready where it floats: exact, no estimate
+            if (s.DepthFt - targetFt <= 0f) return 0f;
 
             SubmarineAscent.State st = new SubmarineAscent.State
             {
