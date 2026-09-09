@@ -561,8 +561,10 @@ anchor's `LaunchTimes` list.
 
 Detection is disappearance-based: after the scan, the tracker is walked; any key where
 `w == null || w.IsDestroyed || w._type != Missile` is collected (LaunchDiagnostics.cs).
-For each vanished missile: `flightTime = LastSeenTime - LaunchTime`; outcome is `"HIT"` if
-`LastDistM <= HitRangeM` (500 m), else `"ended"` (LaunchDiagnostics.cs). Residual is
+For each vanished missile: `flightTime = LastSeenTime - LaunchTime`; outcome is `"ARRIVED"` if
+`LastDistM <= HitRangeM` (500 m), else `"ended"` (LaunchDiagnostics.cs). Arrival is not a
+confirmed hit: the round left the tracker while it was close, and it may have been shot down on
+final approach. Residual is
 printed only if `PredictedImpact >= 0f`: `residual = LastSeenTime - PredictedImpact`
 (observed impact − anchor-finalized predicted impact). The predicted impact is stamped
 from `EngagementBoard.TryGetPredictedImpact` at sample creation and survives target death
@@ -954,7 +956,7 @@ set on the main thread cannot leak to a concurrent call on another thread, and v
 | `PlannerTaskPriority` | 1000 | Coordinator.cs | Task priority for planner-issued orders |
 | `EngageGrace` | 8 s | EngagementBoard.cs | Sim seconds a fired target's row stays listed after going idle |
 | `ExpectationMarginSim` | 10 s | LaunchDiagnostics.cs | Slack added beyond computed ripple time in the expectation deadline |
-| `HitRangeM` | 500 m | LaunchDiagnostics.cs | A missile vanishing closer than this to its target counts as HIT |
+| `HitRangeM` | 500 m | LaunchDiagnostics.cs | A missile vanishing closer than this to its target is reported ARRIVED, which is proximity at disappearance rather than confirmed impact |
 | `CacheTtlSeconds` | 0.5 s | FlightTime.cs, LauncherFacts.cs | Kinematic estimate and launcher facts cache TTL (real time) |
 | `TtlCache` default capacity | 512 | TtlCache.cs | Soft cap; expired-first purge, else full wipe |
 | `GateDeadlineSeconds` | 120 s | Bootstrap.cs | Mod-menu read deadline; load anyway on timeout |

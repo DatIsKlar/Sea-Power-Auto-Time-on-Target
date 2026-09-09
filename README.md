@@ -330,6 +330,14 @@ All settings take effect live when edited (BepInEx reloads the file; no restart 
   `τ_form` term and lands within ~±2s at mid/long range. Remaining: at **close
   range** the terminal seeker trips before the group forms, so grouped salvos land
   ~10–20s early (they still converge).
+- **Shots at aircraft arrive a few seconds early.** Coordinating anti-air missiles
+  works and the mod does not stop you, but the flight model was built and measured
+  against surface targets. Over three shots at an airliner at 6,000 ft, 20,000 ft and
+  35,000 ft, all at 119 km, arrivals ran 5 to 6 s ahead of the predicted time, about
+  6 percent of a 80 s flight. The error does not grow with target altitude; the same
+  missile family runs about 3 percent long against a ship, so most of this is a
+  per-weapon bias rather than anything about the target being airborne. Treat air
+  coordination as approximate.
 - Coordination groups by shared **target** within the collection window; orders
   spaced further apart form separate batches.
 - Coordinates **across** orders/missile types, not **within** one salvo: a single

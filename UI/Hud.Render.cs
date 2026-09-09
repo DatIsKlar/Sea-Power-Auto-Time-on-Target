@@ -474,12 +474,19 @@ namespace AutoTOT
                 // follower it is not, and lands on the arrival time. The role is not known until
                 // commit, so warn on the condition the picker can see: the delay is nonzero. At
                 // launch depth it is zero and the timing is exact.
-                float subDelay = LaunchEnvelope.TimeToReady(ship, r.AmmoId);
-                if (subDelay > 0f)
+                float envelopeDelay = LaunchEnvelope.TimeToReady(ship, r.AmmoId);
+                if (envelopeDelay > 0f)
                 {
+                    // The same delay covers a boat that must rise and an aircraft that must descend,
+                    // so the text has to name the platform. It said "submerged" for both, which told
+                    // a pilot their aircraft was under water.
+                    bool air = ship is Aircraft || ship is Helicopter;
                     GUI.color = Warn;
-                    GUILayout.Label($"     ⚠ submerged : ~{subDelay:0}s to reach launch depth, timing estimated; " +
-                                    "come to launch depth for exact coordination", _row);
+                    GUILayout.Label(air
+                        ? $"     ⚠ outside launch altitude : ~{envelopeDelay:0}s to descend into the " +
+                          "launch band, timing estimated; fly in the band for exact coordination"
+                        : $"     ⚠ submerged : ~{envelopeDelay:0}s to reach launch depth, timing " +
+                          "estimated; come to launch depth for exact coordination", _row);
                     GUI.color = Color.white;
                 }
             }

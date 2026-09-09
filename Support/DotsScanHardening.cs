@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
+using System.IO;
 using System.Reflection;
 using HarmonyLib;
 
@@ -157,11 +159,16 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// Catch-all: if a scan filter throws (the invalid-culture GetName() case), swallow the
-        /// exception and report it once. Returning null from a finalizer suppresses the
-        /// exception; the caller then sees the method's result/outputs at their defaults, which
-        /// for every known filter variant means "does not reference entities", so the
-        /// unnameable assembly is skipped and mission load continues.
+        /// The failure this shield exists for: <c>Assembly.GetName()</c> on an assembly whose name
+        /// carries an invalid culture, which throws out of a DOTS scan filter and takes mission load
+        /// with it. Returning null from a finalizer suppresses the exception; the caller then sees
+        /// the method's outputs at their defaults, which for every known filter variant means "does
+        /// not reference entities", so the unnameable assembly is skipped and load continues.
+        ///
+        /// NARROW, deliberately. This used to swallow every exception from a patched scan method,
+        /// which would have hidden an unrelated DOTS fault inside the mod's own shield and left
+        /// nobody able to see it. Anything that is not the documented failure is reported and
+        /// RE-THROWN, so the game behaves exactly as it would without the mod.
         /// </summary>
         private static Exception ShieldFinalizer(Exception __exception)
         {
@@ -169,7 +176,25 @@ namespace AutoTOT
                 return null;
 
             ReportOnce(__exception);
-            return null;
+            return IsAssemblyNameFailure(__exception) ? null : __exception;
+        }
+
+        /// <summary>
+        /// True for the invalid-assembly-name failure, at any depth: the throw arrives wrapped when
+        /// the scan filter is itself called through reflection. Matched on the exception type plus
+        /// the name of the parameter it faults on, because the message text is culture-dependent and
+        /// cannot be compared against a fixed string.
+        /// </summary>
+        private static bool IsAssemblyNameFailure(Exception ex)
+        {
+            for (Exception e = ex; e != null; e = e.InnerException)
+            {
+                if (e is CultureNotFoundException) return true;
+                if (e is FileLoadException || e is BadImageFormatException) return true;
+                if (e is ArgumentException a &&
+                    string.Equals(a.ParamName, "name", StringComparison.Ordinal)) return true;
+            }
+            return false;
         }
 
         private static void ReportOnce(Exception ex)

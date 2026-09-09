@@ -597,6 +597,71 @@ namespace AutoTOT
         }
 
         /// <summary>
+        /// One exit for an anchor that will never finish its ripple, whatever removed it: a
+        /// destroyed shooter, a destroyed target, or a dispatch the game refused.
+        ///
+        /// Three cases, and the middle one is finding 1 of
+        /// docs/plans/open/BETA-RELEASE-AUDIT-PLAN.md.
+        ///
+        /// <list type="bullet">
+        /// <item>Not yet released. Nothing has changed for the survivors, so the impact stands and
+        /// <see cref="PromoteNewAnchor"/> hands the role over with it.</item>
+        /// <item>Released, no round observed. This was the unrecoverable one. The entry left
+        /// <c>_scheduled</c> with <c>Fired</c> set and <c>RippleDone</c> false, and only
+        /// UpdateAnchorTracking sets <c>RippleDone</c>, which walks <c>_scheduled</c>. So the
+        /// followers held on an anchor that no loop could reach any more, with no timeout, for the
+        /// rest of the mission. They are freed here and the strike is re-anchored on the
+        /// longest-enroute survivor, retimed from now, because the old impact came from a shot that
+        /// never existed.</item>
+        /// <item>Released with rounds away. The last prediction was built from real launches, so it
+        /// is the best answer available and it is locked. Followers free on RippleDone.</item>
+        /// </list>
+        ///
+        /// Idempotent: an anchor already marked RippleDone is left alone.
+        /// </summary>
+        private static void RetireAnchor(Scheduled lost, float simNow, string reason)
+        {
+            if (lost == null || !lost.IsAnchor || lost.RippleDone) return;
+
+            if (!lost.Fired)
+            {
+                PromoteNewAnchor(lost, simNow);
+                return;
+            }
+
+            lost.RippleDone = true;   // whatever follows, no follower may wait on this entry again
+
+            if (lost.LaunchTimes.Count > 0)
+            {
+                if (VerboseLog)
+                    Bootstrap.Log.LogInfo(
+                        $"[AutoTOT] anchor retired {lost.Item?.AmmoId} from " +
+                        $"{UnitNaming.SafeName(lost.Item?.Unit)} ({reason}) with " +
+                        $"{lost.LaunchTimes.Count} round(s) away; impact locked at sim " +
+                        $"{lost.ImpactAtSim:0.0} for the orders still held.");
+                return;
+            }
+
+            bool rehomed = PromoteAbandonedAnchor(lost, simNow);
+            if (!rehomed)
+            {
+                if (lost.BoardTargets != null)
+                    for (int j = 0; j < lost.BoardTargets.Count; j++)
+                        EngagementBoard.Drop(lost.BoardTargets[j]);
+                else if (lost.Item?.Target != null)
+                    EngagementBoard.Drop(lost.Item.Target);
+            }
+
+            Bootstrap.Log.LogWarning(
+                $"[AutoTOT] anchor retired {lost.Item?.AmmoId} from " +
+                $"{UnitNaming.SafeName(lost.Item?.Unit)} ({reason}) having launched nothing: " +
+                (rehomed
+                    ? "strike re-anchored on the longest-enroute survivor and retimed."
+                    : "no survivor to re-anchor on, engagement dropped so other shooters are not " +
+                      "held against it."));
+        }
+
+        /// <summary>
         /// Re-elect an anchor after the sitting one is abandoned having launched NOTHING, and give
         /// the strike an impact time the survivors can still make.
         ///

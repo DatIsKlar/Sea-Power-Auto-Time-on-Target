@@ -191,7 +191,8 @@ namespace AutoTOT
             Bootstrap.Log.LogInfo(
                 $"[AutoTOT Profiling] {_frameCount} frames: tick {Ms(Stage.Tick):F1}ms total, {Ms(Stage.Tick) * perFrame:F3}ms avg, WORST {_maxTickMs:F2}ms (release {_maxTickReleaseMs:F2}ms)\n" +
                 $"  frame {frameAvg:F2}ms avg ({1000.0 / (frameAvg > 0.001 ? frameAvg : 1):F0} fps), worst {_maxFrameMs:F2}ms => AutoTOT {autoTotMs:F2}ms/frame = {share:F1}% (tick + UI)\n" +
-                $"  release staleness: {_releaseCount} released, estimate age {staleAvg:F2}s avg, {_maxReleaseStaleness:F2}s worst (sim seconds)\n" +
+                $"  release staleness: {_releaseCount} orders released, age of the flight estimate each " +
+                $"one released against {staleAvg:F2}s avg, {_maxReleaseStaleness:F2}s worst (sim seconds)\n" +
                 $"  Diag {Ms(Stage.Diag):F1}ms: scan {_accScanLoopMs:F1} | finalize {_accFinalizeMs:F1} | cleanup {_accCleanupMs:F1} (weapons {LaunchDiagnostics.LastWeaponCount}, tracked {LaunchDiagnostics.LastTrackedMissiles}, uncredited {LaunchDiagnostics.UncreditedLaunches})\n" +
                 $"  Commit {Ms(Stage.Commit):F1}ms | Anchor {Ms(Stage.Anchor):F1}ms (PredictAnchorImpact {Ms(Stage.AnchorPredict):F1}ms) | Release {Ms(Stage.Release):F1}ms (avg sched {_accScheduled * perFrame:F1})\n" +
                 $"    -> FlightTime.Estimate: {Ms(Stage.FlightEstimate):F1}ms over {N(Counter.FlightCalls)} calls ({N(Counter.FlightCalls) * perFrame:F2}/frame)\n" +
@@ -201,7 +202,10 @@ namespace AutoTOT
                 $"       deferred (proximity gate): {N(Counter.FlightDeferred)} | budget-skipped: {N(Counter.FlightBudgetSkipped)}\n" +
                 $"       async: {FlightTime.WorkerCount} workers, {N(Counter.FlightQueued)} queued, {FlightTime.AsyncCompleted} completed, {FlightTime.AsyncDeclined} declined, depth {FlightTime.QueueDepth}/{FlightTime.InFlight} in-flight" +
                 (FlightTime.VerifySolve ? $" | verify {FlightTime.VerifyChecked} checked, {FlightTime.VerifyMismatched} MISMATCHED" : "") + "\n" +
-                $"       model: {ModelStats.Sims} sims, {ModelStats.Steps} steps ({stepsPerSim} avg), setup {ModelStats.SetupMs:F1}ms + loop {ModelStats.LoopMs:F1}ms, {usPerKStep:F0}us/1k steps\n" +
+                $"       model: {ModelStats.Sims} sims, {ModelStats.Steps} steps ({stepsPerSim} avg), " +
+                $"setup {ModelStats.SetupMs:F1}ms + loop {ModelStats.LoopMs:F1}ms (WALL time summed across " +
+                $"main and worker threads, so it exceeds the frame budget it is measured beside), " +
+                $"{usPerKStep:F0}us/1k steps\n" +
                 $"       tiers: integrator {ModelStats.TierCount(ModelStats.Tier.Integrator)}, waypoint {ModelStats.TierCount(ModelStats.Tier.Waypoint)}, maxRange {ModelStats.TierCount(ModelStats.Tier.MaxRangePrecise)}, failed {ModelStats.TierCount(ModelStats.Tier.Failed)}, integrator declined {ModelStats.Stalls}\n" +
                 $"    -> UI (outside tick): {Ms(Stage.UiEstimate):F1}ms over {N(Counter.UiEstimateCalls)} calls\n" +
                 $"    -> GroupDelay: {Ms(Stage.GroupDelay):F1}ms over {N(Counter.GroupDelayCalls)} calls\n" +

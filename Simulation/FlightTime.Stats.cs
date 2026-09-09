@@ -100,11 +100,23 @@ namespace AutoTOT
             Interlocked.Increment(ref _tier[(int)t]);
         }
 
+        /// <summary>
+        /// Clear the counters between profiling runs.
+        ///
+        /// Under the same lock the accumulators are merged with. A worker can be inside LoopDone
+        /// while the main thread resets, and an unsynchronised reset there either loses the worker's
+        /// contribution or, for the doubles, publishes a torn value: the next report then shows a
+        /// loop time that never happened. The lock is taken twice per sim, so a reset joining that
+        /// queue costs nothing measurable.
+        /// </summary>
         internal static void Reset()
         {
-            Sims = 0; Steps = 0; Stalls = 0;
-            SetupMs = LoopMs = 0d;
-            for (int i = 0; i < _tier.Length; i++) _tier[i] = 0;
+            lock (_sync)
+            {
+                Sims = 0; Steps = 0; Stalls = 0;
+                SetupMs = LoopMs = 0d;
+                for (int i = 0; i < _tier.Length; i++) _tier[i] = 0;
+            }
         }
     }
 }

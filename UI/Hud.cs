@@ -350,10 +350,19 @@ namespace AutoTOT
             _win.height = _open ? _expandedH
                                 : CollapsedH + (_showHelp ? HelpOverlayHeight() : 0f);
 
+            // The restore has to survive a throw. DrawWindow deliberately re-throws after logging,
+            // and an escaping exception used to leave GUI.matrix scaled for the rest of the frame,
+            // so every other IMGUI window in the game drew at this panel's scale.
             Matrix4x4 prevMatrix = GUI.matrix;
-            GUI.matrix = Matrix4x4.TRS(Vector3.zero, Quaternion.identity, new Vector3(s, s, 1f));
-            _win = GUI.Window(WindowId, _win, DrawWindow, GUIContent.none, _winStyle);
-            GUI.matrix = prevMatrix;
+            try
+            {
+                GUI.matrix = Matrix4x4.TRS(Vector3.zero, Quaternion.identity, new Vector3(s, s, 1f));
+                _win = GUI.Window(WindowId, _win, DrawWindow, GUIContent.none, _winStyle);
+            }
+            finally
+            {
+                GUI.matrix = prevMatrix;
+            }
 
             // Keep the window on-screen.
             _win.x = Mathf.Clamp(_win.x, -_win.width + OffscreenMargin, sw - OffscreenMargin);
@@ -371,7 +380,7 @@ namespace AutoTOT
             {
                 DrawWindowInner(id);
             }
-            catch (System.Exception e)
+            catch (System.Exception e) when (RestoreSharedSkin())
             {
                 if (e.Message != _lastDrawError)
                 {
@@ -505,6 +514,19 @@ namespace AutoTOT
         // we never restyle other mods' IMGUI (the BepInEx console and so on) via the shared skin.
         // Both the shooter list and the strike list need it, hence the pair.
         private GUIStyle _prevVBar, _prevVThumb, _prevHBar, _prevHThumb;
+
+        /// <summary>
+        /// Put the shared skin back if a draw threw between the push and the pop, then decline to
+        /// handle the exception. Written as an exception FILTER so the restore runs before the stack
+        /// unwinds any further, and the throw still reaches the game exactly as before. Without it a
+        /// single failed frame left every other IMGUI window in the process wearing this panel's
+        /// scrollbars for the rest of the session.
+        /// </summary>
+        private bool RestoreSharedSkin()
+        {
+            if (_prevVBar != null) PopScrollSkin();
+            return false;
+        }
 
         private void PushScrollSkin()
         {
@@ -705,6 +727,24 @@ namespace AutoTOT
         }
 
         /// <summary>
+        /// Rounds of this ammunition the ship owes to orders that are not this target's: staged in
+        /// the panel against another target, plus everything the coordinator is holding or has
+        /// dispatched without seeing away. The magazine analogue of <see cref="StagedElsewhere"/>,
+        /// which answers the same question for guidance channels.
+        /// </summary>
+        private int AmmoCommittedElsewhere(ObjectBase ship, string ammoId)
+        {
+            int n = Coordinator.AmmoOutstanding(ship, ammoId);
+            for (int i = 0; i < _strike.Count; i++)
+            {
+                Coordinator.Shot s = _strike[i];
+                if (s.Unit == ship && s.AmmoId == ammoId && s.Target != _target)
+                    n += Mathf.Max(1, s.Salvo);
+            }
+            return n;
+        }
+
+        /// <summary>
         /// True if anything staged in the panel has filled its shooter's guidance channels. The
         /// coordinator's own flag cannot see planner picks until the strike is fired, and the title
         /// bar is the only place this is readable with the panel collapsed.
@@ -764,6 +804,13 @@ namespace AutoTOT
                 // magazine reserve), not the ship-wide inventory ; otherwise the salvo picker could
                 // request rounds sitting behind an unusable launcher, and the strike fires short.
                 int stock = Mathf.Min(kv.Value, LauncherFactsSource.AvailableRounds(ship, kv.Key));
+                // Rounds of this ammunition already spoken for elsewhere: staged at ANOTHER target
+                // in this panel, held by the coordinator, or dispatched and not yet away. The
+                // channel cap below subtracts its own kind of commitment, but ordinary ammunition
+                // has no channel cap at all, so before this a ship could be staged past its
+                // magazine simply by visiting two targets. Finding 11 of
+                // docs/plans/open/BETA-RELEASE-AUDIT-PLAN.md.
+                stock = Mathf.Max(0, stock - AmmoCommittedElsewhere(ship, kv.Key));
                 if (stock <= 0) continue;   // nothing physically firable: the row has no purpose
                 // Second cap: a radio-command weapon that cannot group holds one fire-control
                 // channel per round in flight, so the boat physically cannot put up more than it

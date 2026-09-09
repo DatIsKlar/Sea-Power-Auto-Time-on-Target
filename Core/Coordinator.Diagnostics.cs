@@ -551,33 +551,6 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// D7: a shooter that was inside its launch envelope at commit and has since left it. Only
-        /// EnvelopeTracked orders are refreshed, and that flag is set from a commit-time delay
-        /// greater than zero, so a platform that was ready is never asked again.
-        ///
-        /// The value is read for the log and thrown away: nothing here feeds StartupLead, so release
-        /// timing is identical with the diagnostic on or off. One line per order.
-        /// </summary>
-        private static void DiagnoseUntrackedEnvelope(Scheduled s, Intent it, float simNow)
-        {
-            if (!VerboseLog || s.Fired || it.EnvelopeTracked || s.LoggedUntrackedEnvelope) return;
-            if (!(it.Unit is Aircraft) && !(it.Unit is Submarine)) return;
-            if (simNow - s.LastUntrackedEnvelopeSim < EnvelopeRefreshSim) return;
-            s.LastUntrackedEnvelopeSim = simNow;
-
-            float now = LaunchEnvelope.TimeToReady(it.Unit, it.AmmoId);
-            if (now <= 0f) return;
-            s.LoggedUntrackedEnvelope = true;
-
-            float held = s.ScheduledAtSim >= 0f ? simNow - s.ScheduledAtSim : -1f;
-            Bootstrap.Log.LogWarning(
-                $"[AutoTOT] envelope-untracked {it.AmmoId} from {UnitNaming.SafeName(it.Unit)} " +
-                $"[{PlatformTag(it.Unit)}]: 0.0s at commit so it is not tracked, now {now:0.0}s " +
-                $"after {held:0.0}s held. Its startupLead is {it.StartupLead:0.0}s and will not be " +
-                $"updated. D7 of the beta-release audit.");
-        }
-
-        /// <summary>
         /// D9: what a whole strike asks of one shooter's magazine, against what that shooter can
         /// actually fire. The panel caps each ROW at the launcher-available count, but only the
         /// guidance-channel budget is shared across targets, so ammunition that is not channel-capped
@@ -642,6 +615,9 @@ namespace AutoTOT
         /// Exact ammunition match, unlike the guidance accounting, because magazines are per
         /// ammunition while channels belong to a shared sensor.
         /// </summary>
+        internal static int AmmoOutstanding(ObjectBase unit, string ammoId)
+            => OutstandingRounds(unit, ammoId);
+
         private static int OutstandingRounds(ObjectBase unit, string ammoId)
         {
             int n = 0;

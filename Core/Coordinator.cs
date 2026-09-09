@@ -272,8 +272,6 @@ namespace AutoTOT
             public float LeftScheduleSim = -1f;
             public bool LoggedOrphan;
             public float ScheduledAtSim = -1f;
-            public float LastUntrackedEnvelopeSim = float.NegativeInfinity;
-            public bool LoggedUntrackedEnvelope;
         }
 
         /// <summary>The batch's anchor and held items (fired anchors stay in until their ripple finalizes).</summary>
@@ -490,17 +488,8 @@ namespace AutoTOT
             // strike: arming one is an explicit request to collect what you order next, so it
             // collects on its own. Gating it behind Active made the strike hotkey look broken
             // unless auto happened to be on, a dependency nothing in the UI stated.
-            if (!Active && _strikeBatch == null)
-            {
-                // D2 (alt-h-not-collecting): an order that reaches the launcher while the panel
-                // believes a strike is armed is the whole bug, and it leaves no trace today. This
-                // fires only for orders this gate actually turns away, so it is not chatty.
-                Bootstrap.Log.LogInfo(
-                    $"[AutoTOT] not collected: auto off and no strike armed " +
-                    $"({UnitNaming.SafeName(unit)} -> {UnitNaming.SafeName(target)}, {ammoId} x{shots}, " +
-                    $"auto={autoAttack}).");
-                return false;
-            }
+            bool autoOff = !Active && _strikeBatch == null;
+
             if (autoAttack) return false;          // only player-issued orders
             if (unit == null || target == null) return false;
             if (!unit.IsPlayerObject) return false;
@@ -514,6 +503,22 @@ namespace AutoTOT
 
             if (!unit.DoesAmmoMatchTarget(ammo._ap, target, out _))
                 return false; // weapon cannot engage this target type
+
+            // The auto-off report, moved BELOW the eligibility checks. Up at the top it fired for
+            // the AI's own orders, for gunfire and for anything the mod would never have taken, so
+            // a normal mission printed it repeatedly and it said nothing. Here it names only an
+            // order AutoTOT could have coordinated and deliberately did not, which is the question
+            // it exists to answer (D2 of the strike-arm investigation). Verbose, because a player
+            // who has switched auto off is not asking to be told about it.
+            if (autoOff)
+            {
+                if (VerboseLog)
+                    Bootstrap.Log.LogInfo(
+                        $"[AutoTOT] not collected: auto off and no strike armed " +
+                        $"({UnitNaming.SafeName(unit)} -> {UnitNaming.SafeName(target)}, " +
+                        $"{ammoId} x{shots}).");
+                return false;
+            }
 
             Batch batch = _strikeBatch;
             bool createdBatch = false;
@@ -798,6 +803,14 @@ namespace AutoTOT
             // from the shot counts, so they must see the counts that will actually be ordered. This
             // is also the only place the intercepted-order path is covered, since orders issued in
             // the game's own interface never pass through the planner's per-row cap.
+            RevalidateCommit(b.Items);
+            if (b.Items.Count == 0)
+            {
+                Bootstrap.Log.LogWarning(
+                    "[AutoTOT] every order in this strike was dropped at commit: no shooter still " +
+                    "has a usable weapon for its target. Nothing was fired.");
+                return;
+            }
             ClampToGuidanceChannels(b.Items);
             if (b.Items.Count == 0)
             {
@@ -870,7 +883,18 @@ namespace AutoTOT
             System.Text.StringBuilder ascTrace = VerboseLog ? new System.Text.StringBuilder() : null;
             it.EnvelopeLead = LaunchEnvelope.TimeToReady(it.Unit, it.AmmoId, ascTrace);
             it.StartupLead += it.EnvelopeLead;
-            it.EnvelopeTracked = it.EnvelopeLead > 0f;
+            // Tracked for every platform whose launch envelope can CHANGE while the order is held,
+            // not only for one that owed transit time at commit. An aircraft inside its band can
+            // climb out of it, and a boat at launch depth can be ordered deeper; both used to be
+            // marked ready once and never asked again, so the order released against a startup lead
+            // that had stopped being true. A surface ship is ready where it stands and needs no
+            // tracking. Finding 8 of docs/plans/open/BETA-RELEASE-AUDIT-PLAN.md.
+            //
+            // The too-low aircraft case is the one this matters most for: LaunchEnvelope returns 0
+            // there deliberately (climb is energy-limited and the model will not fabricate it), so
+            // the commit-time value cannot distinguish "ready" from "not modelled".
+            it.EnvelopeTracked = it.EnvelopeLead > 0f
+                              || it.Unit is Aircraft || it.Unit is Submarine;
             // The seed description is written by whichever model ran, so this line is platform
             // agnostic. It used to be gated on a SubmarineFacts snapshot, which silently suppressed
             // the whole line for aircraft and left an aircraft residual impossible to localise.

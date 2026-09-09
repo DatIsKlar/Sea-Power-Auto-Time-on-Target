@@ -126,11 +126,38 @@ namespace AutoTOT
             else UiScaleMultiplier = v;
         }
 
+        /// <summary>
+        /// One-time startup. Re-entrant by the <see cref="_initialized"/> guard, which is set only
+        /// once initialization has SUCCEEDED: setting it first meant a throw part way through left
+        /// the flag true and the mod half-built, with a config loaded, patches possibly applied and
+        /// no pump, and every later call turned away at the door. On failure the state is put back
+        /// to "not initialized" and the coordinator is disabled, so a broken load behaves like an
+        /// absent mod rather than like a live one with pieces missing.
+        /// </summary>
         private static void Init()
         {
-            if (_initialized) return;
-            _initialized = true;
+            if (_initialized || _initializing) return;
+            _initializing = true;
+            try
+            {
+                InitCore();
+                _initialized = true;
+            }
+            catch (Exception e)
+            {
+                Coordinator.Enabled = false;
+                Log.LogError($"[AutoTOT] initialization failed, so the mod is standing down:\n{e}");
+            }
+            finally
+            {
+                _initializing = false;
+            }
+        }
 
+        private static bool _initializing;
+
+        private static void InitCore()
+        {
             LoadConfig();
 
             // Forward uncaught Unity/game-side exceptions into the BepInEx log so a
@@ -155,6 +182,7 @@ namespace AutoTOT
             }
             catch (Exception e)
             {
+                // Rethrown into Init, which reports it and leaves the mod disabled.
                 Log.LogError($"[AutoTOT] Harmony PatchAll failed, so the mod will not function:\n{e}");
                 throw;
             }
@@ -290,8 +318,11 @@ namespace AutoTOT
 
             // Threads are started once and not re-read on SettingChanged: stopping and restarting a
             // pool mid-mission would strand queued work.
+            // A hand-set count is clamped too. The field is free text in a config file, and a
+            // mistyped 400 would start four hundred threads on a machine with sixteen cores.
             int threads = _cfgEstimatorThreads.Value;
             if (threads < 0) threads = Mathf.Clamp(SystemInfo.processorCount / 4, 1, 4);
+            else threads = Mathf.Min(threads, Mathf.Max(1, SystemInfo.processorCount));
             FlightTime.StartWorkers(threads);
 
             Coordinator.Enabled = _cfgEnabled.Value;  // master switch, startup-only (see ApplyConfig)

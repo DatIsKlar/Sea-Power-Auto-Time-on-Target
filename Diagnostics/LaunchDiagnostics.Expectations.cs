@@ -94,7 +94,11 @@ namespace AutoTOT
 
         private const float ExpectationMarginSim = 10f; // slack (sim s) beyond the computed ripple time
 
-        private const float HitRangeM = 500f;           // closer than this when a missile vanishes => counted as a HIT
+        // A missile that disappears within this range of its target is reported as ARRIVED. It is
+        // not proof of a hit: the round is gone from the tracker and it was close, which is as much
+        // as the tracker can know. It may have been shot down on final approach or have gone in the
+        // water. The label used to say HIT, which claimed more than the evidence supports.
+        private const float HitRangeM = 500f;
 
         /// <summary>
         /// D1: the declared warm-up against the one this launcher actually sat through, plus the

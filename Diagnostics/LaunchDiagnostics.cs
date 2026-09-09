@@ -511,11 +511,13 @@ namespace AutoTOT
                     if (s.Coordinated && (Coordinator.VerboseLog || Coordinator.TraceFlightModel))
                     {
                         // The predicate, not its rendering: the two gap branches below used to
-                        // re-test this by comparing the display string back to "HIT".
+                        // re-test this by comparing the display string back to the label.
                         bool hit = s.LastDistM <= HitRangeM;
-                        string outcome = hit ? "HIT" : "ended";
+                        // ARRIVED, not HIT: see HitRangeM. Everything downstream still keys off the
+                        // predicate rather than off this string.
+                        string outcome = hit ? "ARRIVED" : "ended";
                         // Did the seeker end up on a different ship than the one this round was
-                        // assigned? If so LastDistM is measured to the SUBSTITUTE, and "HIT" means it
+                        // assigned? If so LastDistM is measured to the SUBSTITUTE, and ARRIVED means it
                         // killed something, just not what was ordered. ReferenceEquals throughout,
                         // deliberately: UnityEngine.Object overloads == so a DESTROYED object compares
                         // equal to null, which would hide the switch the moment the substitute sank.

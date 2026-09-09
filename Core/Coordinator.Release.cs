@@ -121,9 +121,13 @@ namespace AutoTOT
                 if (it.Unit == null || it.Unit.IsDestroyed || it.Target == null || it.Target.IsDestroyed)
                 {
                     bool shooterGone = it.Unit == null || it.Unit.IsDestroyed;
-                    NoteScheduleExit(s, simNow, shooterGone ? "shooter destroyed" : "target destroyed");
+                    string reason = shooterGone ? "shooter destroyed" : "target destroyed";
+                    NoteScheduleExit(s, simNow, reason);
                     _scheduled.RemoveAt(i);
-                    if (s.IsAnchor && !s.Fired) PromoteNewAnchor(s, simNow);
+                    // Every removal of an anchor goes through one exit. Before, only an anchor that
+                    // had NOT released was handed over, and one that had released without launching
+                    // took its followers' release condition with it. See RetireAnchor.
+                    if (s.IsAnchor) RetireAnchor(s, simNow, reason);
                     // Never fires, so the target may never get a fired row, which is what the board's
                     // prune keys off. Drop it now or it leaks until the next mission Reset().
                     DropImpactDataIfUnscheduled(it.Target);
@@ -169,7 +173,6 @@ namespace AutoTOT
                 }
 
                 RefreshEnvelopeLead(s, it, simNow);
-                DiagnoseUntrackedEnvelope(s, it, simNow);
 
                 float releaseGate = it.ReleaseLead + it.StartupLead + groupDelay + lookahead;
                 float flightNow = ResolveFlightEstimate(s, it, simNow, timeLeft, releaseGate);
@@ -229,7 +232,20 @@ namespace AutoTOT
                     // Age of the estimate this release used: what the per-frame sim cap costs in
                     // freshness. 0 = recomputed this frame, -1 = no estimate was ever taken.
                     CoordinatorProfiler.ReleaseStaleness(s.LastFlightEst >= 0f ? simNow - s.LastFlightEstSim : -1f);
-                    Fire(it, s.IsAnchor ? s : null);
+                    if (!Fire(it, s.IsAnchor ? s : null))
+                    {
+                        // The game refused it. An anchor that cannot fire must hand the strike over
+                        // rather than leave its followers waiting for a ripple that will never
+                        // start; it is already out of _scheduled below, or still in it as an anchor,
+                        // so retire it through the one exit. A follower has spent its release window
+                        // and is simply gone, which the warning above states.
+                        if (s.IsAnchor)
+                        {
+                            int at = _scheduled.IndexOf(s);
+                            if (at >= 0) _scheduled.RemoveAt(at);
+                            RetireAnchor(s, simNow, "the game refused the order");
+                        }
+                    }
                 }
             }
         }
@@ -295,6 +311,8 @@ namespace AutoTOT
 
             // Before the formation flags and PrepareIntent below, both of which are derived from the
             // shot counts and from which orders survive.
+            RevalidateCommit(items);
+            if (items.Count == 0) return;
             ClampToGuidanceChannels(items);
             if (items.Count == 0) return;
             DiagnoseAggregateStock(items);
@@ -665,6 +683,99 @@ namespace AutoTOT
             return false;
         }
 
+        // Scratch for the commit revalidation, reused so a commit allocates nothing.
+        private static readonly List<Intent> _revalDropped = new List<Intent>();
+        private static readonly Dictionary<string, int> _revalBudget = new Dictionary<string, int>();
+
+        /// <summary>
+        /// Last check before a strike is scheduled: is every order still one the game would accept,
+        /// and does the magazine actually hold the rounds it promises?
+        ///
+        /// A strike can be staged over minutes. In that time a shooter or a target can die, a
+        /// launcher can be destroyed, and rounds can be spent by an earlier order or by the ship's
+        /// own automatic fire. Commit used to check none of it: it trimmed guidance channels and
+        /// scheduled whatever was left, so an order could be timed, held, and released against a
+        /// magazine that had emptied. Finding 11 of docs/plans/open/BETA-RELEASE-AUDIT-PLAN.md.
+        ///
+        /// Runs BEFORE <see cref="ClampToGuidanceChannels"/> and before PrepareIntent, because both
+        /// derive from the shot counts and from which orders survive. Every reduction is stated: a
+        /// strike that quietly shrinks is worse than one that says what it lost.
+        /// </summary>
+        private static void RevalidateCommit(List<Intent> items)
+        {
+            if (items == null || items.Count == 0) return;
+            _revalDropped.Clear();
+            _revalBudget.Clear();
+
+            for (int i = 0; i < items.Count; i++)
+            {
+                Intent it = items[i];
+                if (it == null) { continue; }
+
+                if (it.Unit == null || it.Unit.IsDestroyed || it.Target == null || it.Target.IsDestroyed)
+                {
+                    _revalDropped.Add(it);
+                    Bootstrap.Log.LogWarning(
+                        $"[AutoTOT] order dropped at commit: {it.AmmoId} from " +
+                        $"{UnitNaming.SafeName(it.Unit)} -> {UnitNaming.SafeName(it.Target)}, " +
+                        $"{(it.Unit == null || it.Unit.IsDestroyed ? "the shooter" : "the target")} " +
+                        $"is gone. The rest of the strike is unaffected.");
+                    continue;
+                }
+
+                Ammunition ammo = it.Unit.getAmmunitionByName(it.AmmoId);
+                if (ammo?._ap == null || !it.Unit.DoesAmmoMatchTarget(ammo._ap, it.Target, out _))
+                {
+                    _revalDropped.Add(it);
+                    Bootstrap.Log.LogWarning(
+                        $"[AutoTOT] order dropped at commit: {it.Unit.getUIDAndName()} can no longer " +
+                        $"engage {it.Target.getUIDAndName()} with {it.AmmoId}.");
+                }
+            }
+            for (int i = 0; i < _revalDropped.Count; i++) items.Remove(_revalDropped[i]);
+            _revalDropped.Clear();
+            if (items.Count == 0) return;
+
+            // Magazine, aggregated per shooter and ammunition across the WHOLE commit and against
+            // what the ship already owes. Trimmed in list order, so the targets staged first keep
+            // their rounds, which is the same rule the channel clamp uses.
+            for (int i = 0; i < items.Count; i++)
+            {
+                Intent it = items[i];
+                if (it == null) continue;
+                string key = it.Unit.GetInstanceID() + "|" + it.AmmoId;
+                if (!_revalBudget.TryGetValue(key, out int left))
+                {
+                    left = Mathf.Max(0, LauncherFactsSource.AvailableRounds(it.Unit, it.AmmoId)
+                                        - OutstandingRounds(it.Unit, it.AmmoId));
+                }
+
+                int want = Mathf.Max(1, it.Shots);
+                int give = Mathf.Min(want, left);
+                _revalBudget[key] = left - give;
+                if (give == want) continue;
+
+                if (give <= 0)
+                {
+                    _revalDropped.Add(it);
+                    Bootstrap.Log.LogWarning(
+                        $"[AutoTOT] order dropped at commit: {it.Unit.getUIDAndName()} has no " +
+                        $"{it.AmmoId} left for {it.Target.getUIDAndName()}; the rounds went to the " +
+                        $"targets staged before it.");
+                }
+                else
+                {
+                    it.Shots = give;
+                    Bootstrap.Log.LogWarning(
+                        $"[AutoTOT] order reduced at commit: {it.Unit.getUIDAndName()} can supply " +
+                        $"{give} of {want} {it.AmmoId} for {it.Target.getUIDAndName()}. The strike " +
+                        $"is timed on what will actually fly.");
+                }
+            }
+            for (int i = 0; i < _revalDropped.Count; i++) items.Remove(_revalDropped[i]);
+            _revalDropped.Clear();
+        }
+
         private static void ClampToGuidanceChannels(List<Intent> items)
         {
             _channelCappedShooters.Clear();
@@ -815,13 +926,24 @@ namespace AutoTOT
             }
         }
 
-        private static void Fire(Intent it, Scheduled sched)
+        /// <summary>
+        /// Hand one order to the game. Returns false when the game did not take it, which the caller
+        /// must act on: finding 4 of docs/plans/open/BETA-RELEASE-AUDIT-PLAN.md. This used to catch
+        /// the exception, log it, and then mark the engagement fired and register a launch
+        /// expectation anyway, so the mod believed rounds were coming that nothing had accepted, and
+        /// a follower had already been dropped from the schedule by its caller.
+        ///
+        /// Not retried here. An exception can be thrown after the game accepted the task, and a
+        /// retry would then order the salvo twice; the honest move is to report the order as failed
+        /// and let the player reissue it.
+        /// </summary>
+        private static bool Fire(Intent it, Scheduled sched)
         {
             ObjectBase unit = it.Unit;
             ObjectBase target = it.Target;
 
-            if (unit == null || unit.IsDestroyed) return;
-            if (target == null || target.IsDestroyed) return;
+            if (unit == null || unit.IsDestroyed) return false;
+            if (target == null || target.IsDestroyed) return false;
 
             InsertEngageTask_Patch.Bypass = true;
             bool inserted = false;
@@ -833,12 +955,6 @@ namespace AutoTOT
             }
             catch (System.Exception e)
             {
-                // D4 of the beta-release audit. The order is still marked fired below, and a
-                // follower has already been removed from _scheduled by its caller, so the mod
-                // believes rounds are coming that the game never accepted. The behaviour is
-                // deliberately unchanged for now: the diagnostic states the consequence, and the
-                // fix waits until a run shows this can happen at all. Zero instances in the 17
-                // logs held in Users's Logs as of 2026-09-09.
                 Bootstrap.Log.LogError($"[AutoTOT] launch failed for {unit.getUIDAndName()}: {e}");
             }
             finally
@@ -847,21 +963,23 @@ namespace AutoTOT
             }
 
             if (!inserted)
+            {
                 Bootstrap.Log.LogWarning(
                     $"[AutoTOT] dispatch-failed {it.AmmoId} from {unit.getUIDAndName()} -> " +
-                    $"{target.getUIDAndName()}: InsertEngageTask threw, but the order is being marked " +
-                    $"fired and {Mathf.Max(1, it.Shots)} round(s) expected anyway " +
-                    $"({(sched != null && sched.IsAnchor ? "ANCHOR, its followers are timed off launches that may never come" : "follower, already removed from the schedule")}). " +
-                    $"D4 of the beta-release audit.");
+                    $"{target.getUIDAndName()}: the game refused the order, so its " +
+                    $"{Mathf.Max(1, it.Shots)} round(s) are NOT coming and nothing has been " +
+                    $"reserved or expected for them. Reissue the order if you still want it.");
+                return false;
+            }
 
             EngagementBoard.MarkFired(target);
             LaunchDiagnostics.RegisterExpectation(it, sched);
-            // Hold this order's channels until its rounds actually appear. Only on a dispatch the
-            // game accepted: an order it refused occupies nothing.
-            if (inserted) ReserveDispatched(it, GameClock.SimNow());
+            // Hold this order's channels until its rounds actually appear.
+            ReserveDispatched(it, GameClock.SimNow());
 
             if (VerboseLog)
                 Bootstrap.Log.LogInfo($"[AutoTOT] launched {unit.getUIDAndName()} -> {target.getUIDAndName()}");
+            return true;
         }
     }
 }
