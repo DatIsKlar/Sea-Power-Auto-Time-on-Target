@@ -75,7 +75,27 @@ namespace AutoTOT
             // every launch. Measured per state in the 2026-09-06 engage-state trace; see
             // docs/plans/open/launcher-startup-delay.md.
             public float LauncherCycle;
+
+            // D: what a launcher that has never fired owes before its first round, over and above
+            // LauncherCycle: the magazine hoist plus the two fixed states after it. Zero for a
+            // parallel-reload (VLS) mount and zero once the ship's launchers have all fired.
+            public float ColdStart;
         }
+
+        /// <summary>
+        /// ChoosingContainer, the magazine picking which round to send up. No declared field backs
+        /// it: the field probe found none within tolerance on either branch. Observed 1.67, 1.67,
+        /// 1.68, 2.00, 2.00, 2.67, 2.67, 3.00 s across five orders, which is the game's 0.333 s tick
+        /// times five to nine. The mean is taken rather than the worst, so the error is centred.
+        /// </summary>
+        private const float ContainerChoiceSeconds = 2.2f;
+
+        /// <summary>
+        /// AligningLauncher, the last state before the round leaves. Observed 1.33 s on every one of
+        /// seven launches, at relative bearings from -21 to +10 degrees and on both game branches,
+        /// so it is a fixed cost and not the bearing-dependent slew its name suggests.
+        /// </summary>
+        private const float LauncherAlignSeconds = 1.33f;
 
         /// <summary>
         /// Engage states that mean "a launch is under way", as opposed to idle, blocked or refused.
@@ -253,7 +273,7 @@ namespace AutoTOT
 
         private static void LogStartupTerms(ObjectBase ship, string ammoId, WeaponParameters vwp,
                                             float acquisition, float total, float hatchCycle,
-                                            float launcherCycle)
+                                            float launcherCycle, float coldStart)
         {
             if (!Coordinator.VerboseLog || ship == null || vwp == null) return;
             string key = ship.GetInstanceID() + "/" + ammoId;
@@ -263,12 +283,18 @@ namespace AutoTOT
                 $"[AutoTOT] launcher-startup {ammoId} from {ship.getUIDAndName()}: total {total:0.00}s = " +
                 $"preLaunch {vwp._preLaunchDelay:0.00}s + halfReaction {0.5f * vwp._maxReactiontime:0.00}s " +
                 $"+ acquisition {acquisition:0.00}s " +
-                $"+ launcherCycle {launcherCycle:0.00}s | " +
+                $"+ launcherCycle {launcherCycle:0.00}s " +
+                $"+ coldStart {coldStart:0.00}s | " +
                 // The two terms LauncherCycle is made of, kept separate so a residual can be
                 // attributed to one of them. "none" is a launcher position absent from the ammo's
                 // table, where the game skips the gate; 0.00s is a weapon that declares no warm-up.
                 $"onRailWarmup {DeclaredWarmupText(ship, ammoId)}, " +
                 $"hatchCycle {hatchCycle:0.00}s | " +
+                // The cold-start terms, kept separate so a residual can be attributed to one of
+                // them: the hoist is declared, the other two are measured constants.
+                $"magazineReload {vwp._magazineReloadTime:0.00}s, " +
+                $"perContainer {vwp._perContainerReload}, " +
+                $"anyLauncherCold {LauncherProbe.AnyLauncherCold(ship, ammoId)} | " +
                 $"targetAcqTime {vwp._targetAcquisitionTime:0.00}s, " +
                 $"automatic {AutomaticText(vwp)}, standalone {vwp._worksStandalone}, " +
                 $"actActive {ReactionFlag(ship, "ActActive")}, orientActive {ReactionFlag(ship, "OrientActive")}, " +
@@ -394,10 +420,32 @@ namespace AutoTOT
             // resolution that measured it.
             float acquisition = AcquisitionSeconds(ship, vwp);
             f.LauncherCycle = NonNegativeFinite(DeclaredWarmup(ship, ammoId) + f.HatchCycleSeconds);
+
+            // D: the magazine hoist and the two fixed states after it, paid by a launcher that has
+            // not fired yet. Item 6 of docs/plans/open/launcher-startup-delay.md.
+            //
+            // A magazine-fed rail launcher lifts its first round from below deck before it can
+            // shoot, which the game runs as the WarmingUp engage state. The mod already reads that
+            // duration as ReloadGap and already excludes parallel-reload cells with the same
+            // _perContainerReload gate, but only ever charged it BETWEEN waves, so the first round
+            // of the first order was free. On a Kidd-class MK26 that is the largest startup error
+            // on record: 11.69 s observed against 0.00 s predicted, all of it before round one.
+            //
+            // Measured over five orders on two missions: WarmingUp 7.06 / 7.03 / 6.83 s against a
+            // declared 7.00, then ChoosingContainer 1.67 to 3.00 s and AligningLauncher 1.33 s
+            // every single time. The last two carry no declared field, so they are the constants
+            // below rather than a lookup; AligningLauncher did not vary with relative bearing over
+            // -21 to +10 degrees, so it is not the slew it looks like.
+            f.ColdStart = 0f;
+            if (!f.PerContainer && vwp._magazineReloadTime > 0f
+                && LauncherProbe.AnyLauncherCold(ship, ammoId))
+                f.ColdStart = NonNegativeFinite(vwp._magazineReloadTime
+                                                + ContainerChoiceSeconds + LauncherAlignSeconds);
+
             f.StartupDelay = NonNegativeFinite(vwp._preLaunchDelay + 0.5f * vwp._maxReactiontime
-                                               + acquisition + f.LauncherCycle);
+                                               + acquisition + f.LauncherCycle + f.ColdStart);
             LogStartupTerms(ship, ammoId, vwp, acquisition, f.StartupDelay, f.HatchCycleSeconds,
-                            f.LauncherCycle);
+                            f.LauncherCycle, f.ColdStart);
 
             // (see AcquisitionSeconds for the third term)
 
