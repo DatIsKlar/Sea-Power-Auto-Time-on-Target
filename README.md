@@ -345,6 +345,22 @@ All settings take effect live when edited (BepInEx reloads the file; no restart 
   missile family runs about 3 percent long against a ship, so most of this is a
   per-weapon bias rather than anything about the target being airborne. Treat air
   coordination as approximate.
+- **A trainable launcher that has to unmask spreads its own salvo, and nothing can
+  stop it.** On a mount with launchers on both beams (Kidd/Chandler Mk26, Kynda), the
+  rounds that already bear fire at once; the rest wait for the ship to turn far enough
+  to bring the other launcher into arc. The ship only begins turning after the order is
+  given, and a round the game has decided to fire cannot be held back, so the spread is
+  unavoidable. Measured on a Chandler firing three SM-2: rounds 1 and 2 away together,
+  round 3 **25.7 s later** at 60 degrees of relative bearing, arriving 23.8 and 21.8 s
+  apart. The shared impact time also follows the **last** round, so the earlier ones read
+  as early against it. Order such a ship only what its bearing launchers can fire, or
+  accept the spread.
+- **Trainable magazine launchers pay a warm-up on their first shot.** A cold Mk26 lifts
+  its first round from the magazine before it can fire (7 s on SM-2). This is modelled
+  from the game's own declared value and applies from the first shot, so it needs nothing
+  from you; the launcher goes cold again after 30 minutes at rest. About 4 s of container
+  selection and launcher training on top of it is not modelled and shows as a late bias
+  on those mounts only. VLS cells are unaffected.
 - Coordination groups by shared **target** within the collection window; orders
   spaced further apart form separate batches.
 - Coordinates **across** orders/missile types, not **within** one salvo: a single
