@@ -264,6 +264,16 @@ namespace AutoTOT
             public Scheduled Anchor;               // followers only: the anchor they sync to
             public bool LoggedAnchorWait;          // one "waiting for anchor" line per follower
             public bool LoggedEnvelopeResidual;         // one asc-residual line per anchor
+
+            // Phase 1 diagnostics of docs/plans/open/BETA-RELEASE-AUDIT-PLAN.md. D1 asks whether a
+            // follower can be left holding on an anchor that has left _scheduled: the follower keeps
+            // a reference to the anchor object, so the anchor has to say when it went. -1 = still
+            // scheduled. D7 needs the hold's own age, which nothing recorded.
+            public float LeftScheduleSim = -1f;
+            public bool LoggedOrphan;
+            public float ScheduledAtSim = -1f;
+            public float LastUntrackedEnvelopeSim = float.NegativeInfinity;
+            public bool LoggedUntrackedEnvelope;
         }
 
         /// <summary>The batch's anchor and held items (fired anchors stay in until their ripple finalizes).</summary>
@@ -525,6 +535,21 @@ namespace AutoTOT
             // order back would launch exactly the unguidable rounds this is preventing. True means
             // "the game must not fire this", and by not queueing it the order is dropped outright.
             int room = GuidanceRoom(unit, ammoId);
+            // D3 of the beta-release audit, intake side. `room` is budget arithmetic over the
+            // CACHED cap; the occupancy text is a live read of the same sensors. When a second order
+            // arrives during the first one's launcher warm-up, the reservation for the dispatched
+            // order has already been dropped (CommittedUnfired skips Fired items) while the sensor
+            // has not yet taken the rounds up, so the two disagree and this line records it.
+            if (VerboseLog)
+            {
+                string occ = LauncherFactsSource.GuidanceOccupancyText(unit, ammoId);
+                if (!string.IsNullOrEmpty(occ))
+                    Bootstrap.Log.LogInfo(
+                        $"[AutoTOT] channels-intake {ammoId} from {unit.getUIDAndName()}: asked for " +
+                        $"{shots}, room {(room == int.MaxValue ? "uncapped" : room.ToString())}, " +
+                        $"committedUnfired {CommittedUnfired(unit, ammoId)}, staged " +
+                        $"{StagedRounds(unit, ammoId)}, live {occ}. D3 of the beta-release audit.");
+            }
             if (room <= 0)
             {
                 if (createdBatch) _openBatches.Remove(target);
@@ -603,6 +628,13 @@ namespace AutoTOT
         internal static void Tick()
         {
             float simNow = GameClock.SimNow();
+
+            // D2 and D10 of the beta-release audit. Both run before the profiler's Tick stage, so
+            // neither is charged to a stage it did not spend. D2 states what is still live while the
+            // master switch is off; D10 states whether the engagement board is being pruned. See
+            // docs/plans/open/BETA-RELEASE-AUDIT-PLAN.md.
+            DiagnoseDisabledWork(simNow);
+            DiagnoseBoardCensus(simNow);
 
             CoordinatorProfiler.Begin(CoordinatorProfiler.Stage.Tick);
 
@@ -769,6 +801,7 @@ namespace AutoTOT
                     "limit; nothing was fired.");
                 return;
             }
+            DiagnoseAggregateStock(b.Items);
 
             foreach (Intent it in b.Items)
                 PrepareIntent(it);
@@ -906,7 +939,7 @@ namespace AutoTOT
             Scheduled anchorSched = null;
             foreach (Intent it in items)
             {
-                Scheduled s = new Scheduled { Item = it, ImpactAtSim = baseImpact };
+                Scheduled s = new Scheduled { Item = it, ImpactAtSim = baseImpact, ScheduledAtSim = GameClock.SimNow() };
                 if (it == anchorItem)
                 {
                     s.IsAnchor = true;

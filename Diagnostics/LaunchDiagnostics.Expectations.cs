@@ -284,6 +284,7 @@ namespace AutoTOT
                     e.Launched++;
                     e.LastLaunchSim = launchStamp;
                     if (e.Launched == 1) ScoreEnvelopeLead(e, launchStamp);
+                    LogChannelOccupancy(platform, ammoFile, e, launchStamp);
                     // Feed the batch anchor's live impact prediction (observation anchoring).
                     if (e.Linked != null && e.Linked.IsAnchor && !e.Linked.RippleDone)
                     {
@@ -330,6 +331,28 @@ namespace AutoTOT
             }
 
             WarnUncredited(platform, ammoFile, tgt, w);
+        }
+
+        /// <summary>
+        /// D3 of docs/plans/open/BETA-RELEASE-AUDIT-PLAN.md: the guiding sensor's live occupancy as
+        /// each round of a channel-limited order leaves the rail, beside how many of that order's
+        /// rounds are still to come.
+        ///
+        /// The reservation the coordinator holds is released the moment an order is DISPATCHED, but
+        /// the sensor channels it needs fill one by one as the rounds LAUNCH. This line is the launch
+        /// side of that comparison; the intake side is logged by the coordinator when it decides
+        /// whether a new order fits. Silent for ammunition that is not channel-limited.
+        /// </summary>
+        private static void LogChannelOccupancy(ObjectBase platform, string ammoFile,
+                                                LaunchExpectation e, float launchStamp)
+        {
+            if (!Coordinator.VerboseLog) return;
+            string occ = LauncherFactsSource.GuidanceOccupancyText(platform, ammoFile);
+            if (string.IsNullOrEmpty(occ)) return;
+            Bootstrap.Log.LogInfo(
+                $"[AutoTOT] channels-launch {ammoFile} from {UnitNaming.SafeName(platform)} at sim " +
+                $"{launchStamp:0.0}: round {e.Launched} of {e.Requested} away, {occ}. " +
+                $"D3 of the beta-release audit.");
         }
 
         /// <summary>

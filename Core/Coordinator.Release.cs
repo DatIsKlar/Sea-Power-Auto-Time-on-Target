@@ -120,6 +120,8 @@ namespace AutoTOT
 
                 if (it.Unit == null || it.Unit.IsDestroyed || it.Target == null || it.Target.IsDestroyed)
                 {
+                    bool shooterGone = it.Unit == null || it.Unit.IsDestroyed;
+                    NoteScheduleExit(s, simNow, shooterGone ? "shooter destroyed" : "target destroyed");
                     _scheduled.RemoveAt(i);
                     if (s.IsAnchor && !s.Fired) PromoteNewAnchor(s, simNow);
                     // Never fires, so the target may never get a fired row, which is what the board's
@@ -151,6 +153,10 @@ namespace AutoTOT
                 if (!s.IsAnchor && s.Anchor != null && s.Anchor.Fired &&
                     !s.Anchor.RippleDone && s.Anchor.LaunchTimes.Count == 0)
                 {
+                    // D1: the hold is bounded by RippleDone, which only UpdateAnchorTracking sets,
+                    // and that loop walks _scheduled. An anchor that has left it can no longer reach
+                    // this follower. Says so once rather than holding in silence.
+                    DiagnoseOrphanedFollower(s, simNow);
                     if (VerboseLog && !s.LoggedAnchorWait)
                     {
                         s.LoggedAnchorWait = true;
@@ -163,6 +169,7 @@ namespace AutoTOT
                 }
 
                 RefreshEnvelopeLead(s, it, simNow);
+                DiagnoseUntrackedEnvelope(s, it, simNow);
 
                 float releaseGate = it.ReleaseLead + it.StartupLead + groupDelay + lookahead;
                 float flightNow = ResolveFlightEstimate(s, it, simNow, timeLeft, releaseGate);
@@ -290,6 +297,7 @@ namespace AutoTOT
             // shot counts and from which orders survive.
             ClampToGuidanceChannels(items);
             if (items.Count == 0) return;
+            DiagnoseAggregateStock(items);
 
             _targetScratch.Clear();
             foreach (Intent it in items)
@@ -645,19 +653,35 @@ namespace AutoTOT
             if (target == null || target.IsDestroyed) return;
 
             InsertEngageTask_Patch.Bypass = true;
+            bool inserted = false;
             try
             {
                 unit.InsertEngageTask(it.AmmoId, target, Vector3.zero, it.Shots, it.Priority,
                     autoAttack: false, markAsReturned: false, isFormationAttack: it.IsFormation);
+                inserted = true;
             }
             catch (System.Exception e)
             {
+                // D4 of the beta-release audit. The order is still marked fired below, and a
+                // follower has already been removed from _scheduled by its caller, so the mod
+                // believes rounds are coming that the game never accepted. The behaviour is
+                // deliberately unchanged for now: the diagnostic states the consequence, and the
+                // fix waits until a run shows this can happen at all. Zero instances in the 17
+                // logs held in Users's Logs as of 2026-09-09.
                 Bootstrap.Log.LogError($"[AutoTOT] launch failed for {unit.getUIDAndName()}: {e}");
             }
             finally
             {
                 InsertEngageTask_Patch.Bypass = false;
             }
+
+            if (!inserted)
+                Bootstrap.Log.LogWarning(
+                    $"[AutoTOT] dispatch-failed {it.AmmoId} from {unit.getUIDAndName()} -> " +
+                    $"{target.getUIDAndName()}: InsertEngageTask threw, but the order is being marked " +
+                    $"fired and {Mathf.Max(1, it.Shots)} round(s) expected anyway " +
+                    $"({(sched != null && sched.IsAnchor ? "ANCHOR, its followers are timed off launches that may never come" : "follower, already removed from the schedule")}). " +
+                    $"D4 of the beta-release audit.");
 
             EngagementBoard.MarkFired(target);
             LaunchDiagnostics.RegisterExpectation(it, sched);

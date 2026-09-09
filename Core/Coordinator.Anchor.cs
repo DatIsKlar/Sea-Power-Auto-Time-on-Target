@@ -347,6 +347,7 @@ namespace AutoTOT
                 if (it.Target == null || it.Target.IsDestroyed)
                 {
                     a.RippleDone = true;
+                    NoteScheduleExit(a, simNow, "anchor target destroyed after launch");
                     _scheduled.RemoveAt(i);
                     Bootstrap.Log.LogInfo(
                         $"[AutoTOT] anchor target lost after launch ({it.AmmoId} from " +
@@ -467,6 +468,7 @@ namespace AutoTOT
                 if (complete || stalled)
                 {
                     a.RippleDone = true;
+                    NoteScheduleExit(a, simNow, complete ? "ripple complete" : "ripple stalled");
                     _scheduled.RemoveAt(i);   // its caches are fields, so they go with it
                     float span = (k > 1) ? a.LaunchTimes[k - 1] - a.LaunchTimes[0] : 0f;
 
@@ -478,6 +480,9 @@ namespace AutoTOT
                     // definition. See docs/plans/open/aircraft-anchor-impact-slide.md.
                     if (stalled && !complete && k > 0)
                     {
+                        // D6 of the beta-release audit, before the re-prediction so the terms
+                        // reported are the ones it is about to use.
+                        LogStallCentering(a, it, n, k, span, interval);
                         float onObserved = PredictAnchorImpact(a, it, k, k, interval, simNow,
                                                                out AnchorPredictTerms stallTerms);
                         if (stallTerms.Valid) pred = onObserved;

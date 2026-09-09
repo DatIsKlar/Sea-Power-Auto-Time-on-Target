@@ -181,10 +181,11 @@ namespace AutoTOT
             if (modOk && Input.GetKeyDown(Bootstrap.ToggleKey))
             {
                 Coordinator.Active = !Coordinator.Active;
+                LogDisabledEntry("auto-coordination toggle");
                 Bootstrap.Log.LogInfo($"[AutoTOT] auto-coordination {(Coordinator.Active ? "ON" : "OFF")}");
             }
-            if (modOk && Input.GetKeyDown(Bootstrap.StrikeArmKey)) ToggleStrikeArmed();
-            if (modOk && Input.GetKeyDown(Bootstrap.FireStrikeKey)) FireStrikeNow();
+            if (modOk && Input.GetKeyDown(Bootstrap.StrikeArmKey)) { LogDisabledEntry("strike arm"); ToggleStrikeArmed(); }
+            if (modOk && Input.GetKeyDown(Bootstrap.FireStrikeKey)) { LogDisabledEntry("fire strike"); FireStrikeNow(); }
 
             // A mission end clears the coordinator, and with it every unit the staged strike points
             // at. Checked here rather than in OnGUI so the list cannot be rendered stale for a frame.
@@ -211,7 +212,48 @@ namespace AutoTOT
 
             HandleDragInput();
             HandleResizeInput();
+            // D2 of the beta-release audit: this path runs whether or not OnGUI will paint, so with
+            // the master switch off or the indicator hidden the panel can still hold mouse capture
+            // over a rectangle the player cannot see. The capture itself is deliberately left
+            // unchanged here; the diagnostic says whether it happens.
+            bool willDraw = Coordinator.Enabled && Bootstrap.ShowIndicator;
             UpdateMouseCapture();
+            if (willDraw) _loggedDisabledCapture = false;
+            else if (_lastOverUi) LogDisabledCapture();
+        }
+
+        // D2, panel side. One line per transition rather than one per frame.
+        private bool _loggedDisabledCapture;
+        private static int _drewFrame = -1;
+
+        private void LogDisabledCapture()
+        {
+            if (_loggedDisabledCapture) return;
+            _loggedDisabledCapture = true;
+            Bootstrap.Log.LogWarning(
+                $"[AutoTOT] disabled-capture: the panel is holding mouse capture while it will not " +
+                $"draw (Enabled={Coordinator.Enabled}, ShowIndicator={Bootstrap.ShowIndicator}); " +
+                $"the map may not receive this click. D2 of the beta-release audit.");
+        }
+
+        private static void LogDisabledEntry(string what)
+        {
+            if (Coordinator.Enabled) return;
+            Bootstrap.Log.LogWarning(
+                $"[AutoTOT] disabled-hotkey: {what} ran with Enabled=false. " +
+                $"D2 of the beta-release audit.");
+        }
+
+        /// <summary>
+        /// D10 of the beta-release audit: whether OnGUI has painted since the last board census.
+        /// The engagement board's only prune path is CollectSalvos, which is called from the draw
+        /// path, so the census needs to know whether that path ran.
+        /// </summary>
+        internal static bool DrewSinceLastCensus()
+        {
+            bool drew = _drewFrame >= 0;
+            _drewFrame = -1;
+            return drew;
         }
 
         private void OnEnable()
@@ -268,6 +310,7 @@ namespace AutoTOT
         private void OnGUI()
         {
             if (!Coordinator.Enabled || !Bootstrap.ShowIndicator || !InMission() || !_visible) return;
+            _drewFrame = Time.frameCount;   // D10: the board's prune path only runs from here
             EnsureStyles();
 
             // Everything below works in scaled GUI space (see EffectiveScale). sw/sh are the

@@ -25,6 +25,12 @@ namespace AutoTOT
             internal string AmmoId;
             internal ObjectBase Target;
             internal float Result;
+            // D5 and D6 of docs/plans/open/BETA-RELEASE-AUDIT-PLAN.md. CapturedSim is the sim time
+            // the input snapshot was built on the main thread; a result's freshness currently starts
+            // when it is PUBLISHED, which is a later and more flattering moment. Diagnostic only:
+            // nothing gates on either field yet.
+            internal float CapturedSim;
+            internal float CapturedReal;
         }
 
         private static readonly ConcurrentQueue<SolveRequest> _pending = new ConcurrentQueue<SolveRequest>();
@@ -54,6 +60,17 @@ namespace AutoTOT
         internal static int InFlight => _inFlight.Count;
         internal static long AsyncCompleted;
         internal static long AsyncDeclined;
+
+        // D5. A worker that throws never enqueues its request, so its key stays in _inFlight and
+        // every later RequestRefresh for that key reports "already queued" and keeps handing out the
+        // previous value. These three say whether that can happen in play: a fault count that is not
+        // a shutdown abort, and the age of the oldest key still in flight.
+        internal static long WorkerFaults;
+        internal static long WorkerAborts;
+        private static readonly Dictionary<TofKey, float> _inFlightSince = new Dictionary<TofKey, float>();
+        // Written by DrainCompleted, read by the census line. Real seconds, main thread only.
+        internal static float LastPublishAgeReal;
+        internal static float MaxPublishAgeReal;
 
         /// <summary>Worker count. 0 disables the pipeline and everything runs synchronously.</summary>
         internal static int WorkerCount { get; private set; }
@@ -112,10 +129,19 @@ namespace AutoTOT
                         _done.Enqueue(r);
                     }
                 }
+                catch (ThreadAbortException)
+                {
+                    // Process shutdown. Counted rather than logged: the six of these in the tester
+                    // logs are all immediately after the final "coordinator state reset", and a key
+                    // poisoned at shutdown costs nothing. Kept separate from WorkerFaults so a real
+                    // mid-mission fault cannot hide among them. D5.
+                    Interlocked.Increment(ref WorkerAborts);
+                }
                 catch (Exception e)
                 {
                     // A worker must never die: the queue would fill and every refresh would stall.
                     // The one log call in the mod that runs off the main thread; see ModLog's note.
+                    Interlocked.Increment(ref WorkerFaults);
                     ModLog.Warn("solve worker", e);
                 }
             }
@@ -137,10 +163,13 @@ namespace AutoTOT
             ModelStats.SetupDone();                      // setup ran here, on the main thread
 
             _inFlight.Add(key);
+            _inFlightSince[key] = Time.realtimeSinceStartup;
             _pending.Enqueue(new SolveRequest
             {
                 Key = key, Input = input, Ap = ap,
                 Unit = unit, AmmoId = ammoId, Target = target,
+                CapturedSim = GameClock.SimNow(),
+                CapturedReal = Time.realtimeSinceStartup,
             });
             _signal.Release();
             return true;
@@ -157,7 +186,11 @@ namespace AutoTOT
                 // Not in flight means a mission reset dropped this request while a worker was still
                 // running it. Its ids belong to the previous mission, so the answer is discarded.
                 if (!_inFlight.Remove(r.Key)) continue;
+                _inFlightSince.Remove(r.Key);
                 AsyncCompleted++;
+                // D6: how old the geometry behind this answer is by the time anything can read it.
+                LastPublishAgeReal = Time.realtimeSinceStartup - r.CapturedReal;
+                if (LastPublishAgeReal > MaxPublishAgeReal) MaxPublishAgeReal = LastPublishAgeReal;
 
                 if (VerifySolve) VerifyAgainstMainThread(r);
 
@@ -202,10 +235,47 @@ namespace AutoTOT
             while (_pending.TryDequeue(out _)) { }
             while (_done.TryDequeue(out _)) { }
             _inFlight.Clear();
+            _inFlightSince.Clear();
+            LastPublishAgeReal = 0f;
+            MaxPublishAgeReal = 0f;
             AsyncCompleted = 0;
             AsyncDeclined = 0;
             VerifyChecked = 0;
             VerifyMismatched = 0;
+        }
+
+        /// <summary>
+        /// D5 and D6 of the beta-release audit, as one line on a sim-time cadence.
+        ///
+        /// The two questions it answers. Can a key be stranded in flight, which would leave every
+        /// later caller on a stale value forever? `oldestInFlight` is the answer: it should stay
+        /// within a tick or two of the solve time and fall back to 0. And how old is the geometry
+        /// behind a published async result by the time anything reads it? `publishAge` is that,
+        /// measured from the main-thread capture rather than from the publish.
+        ///
+        /// Main thread only. Silent when the pool is off or nothing has run.
+        /// </summary>
+        internal static void LogAsyncCensus()
+        {
+            if (_workers == null) return;
+            if (AsyncCompleted == 0 && _inFlight.Count == 0 && WorkerFaults == 0) return;
+
+            float now = Time.realtimeSinceStartup;
+            float oldest = 0f;
+            foreach (KeyValuePair<TofKey, float> kv in _inFlightSince)
+            {
+                float age = now - kv.Value;
+                if (age > oldest) oldest = age;
+            }
+
+            string faults = WorkerFaults > 0
+                ? $", workerFaults {WorkerFaults} (NOT shutdown aborts, a key may be stranded)"
+                : ", workerFaults 0";
+            Bootstrap.Log.LogInfo(
+                $"[AutoTOT] estimator-census: inFlight {_inFlight.Count}, queued {_pending.Count}, " +
+                $"completed {AsyncCompleted}, declined {AsyncDeclined}, oldestInFlight {oldest:0.00}s, " +
+                $"publishAge last {LastPublishAgeReal:0.00}s max {MaxPublishAgeReal:0.00}s, " +
+                $"aborts {WorkerAborts}{faults}. D5 and D6 of the beta-release audit.");
         }
 
         /// <summary>

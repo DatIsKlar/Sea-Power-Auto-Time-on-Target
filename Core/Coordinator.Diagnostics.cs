@@ -373,6 +373,261 @@ namespace AutoTOT
             return "ship";
         }
 
+        // ------------------------------------------------------------------------------------
+        // Phase 1 diagnostics, docs/plans/open/BETA-RELEASE-AUDIT-PLAN.md. Each of these exists to
+        // prove or kill one finding of that audit before its fix is written. All six were found by
+        // reading the source, so none has ever been seen in a log; that is what they are here to
+        // settle. Nothing below changes a timing decision.
+        // ------------------------------------------------------------------------------------
+
+        /// <summary>Cadence for the two per-tick census lines. Sim time, so a paused game is quiet
+        /// and time compression does not multiply the output.</summary>
+        private const float CensusIntervalSim = 30f;
+
+        private static float _lastDisabledLogSim = float.NegativeInfinity;
+        private static int _lastDisabledScheduled = -1;
+        private static float _lastCensusSim = float.NegativeInfinity;
+        private static int _lastCensusRows = -1;
+
+        /// <summary>
+        /// D2: what is still live while the master switch is off. `Enabled=false` stops intake
+        /// (Coordinator.TryIntercept) and drawing (Hud.OnGUI) but not this tick, so an order that was
+        /// already scheduled can still reach the launcher after the player has switched the mod off.
+        ///
+        /// Ungated and at WARNING when work is actually held, because that is the case the finding is
+        /// about and a normal run must not be able to hide it. Silent when the state is empty, which
+        /// is the expected result and the one that kills the finding.
+        /// </summary>
+        private static void DiagnoseDisabledWork(float simNow)
+        {
+            if (Enabled)
+            {
+                _lastDisabledScheduled = -1;
+                return;
+            }
+
+            int held = _scheduled.Count;
+            int open = _openBatches.Count;
+            bool armed = _strikeBatch != null;
+            if (held == 0 && open == 0 && !armed)
+            {
+                _lastDisabledScheduled = 0;
+                return;
+            }
+
+            // On the first tick after the switch goes off, and then only when the count moves or the
+            // cadence expires. A held order can sit for minutes and one line a minute is enough to
+            // show it is still there.
+            bool changed = held != _lastDisabledScheduled;
+            if (!changed && simNow - _lastDisabledLogSim < CensusIntervalSim) return;
+            _lastDisabledScheduled = held;
+            _lastDisabledLogSim = simNow;
+
+            Bootstrap.Log.LogWarning(
+                $"[AutoTOT] disabled-work: Enabled=false but the coordinator is still ticking with " +
+                $"{held} scheduled order(s), {open} open batch(es), strikeArmed={armed}. " +
+                $"These can still dispatch. D2 of the beta-release audit.");
+        }
+
+        /// <summary>
+        /// D10: whether the engagement board is being pruned. Its only prune path is CollectSalvos,
+        /// which the HUD calls from inside OnGUI, so hiding the panel or disabling the indicator
+        /// stops the cleanup. `panelDrawn` says whether the panel painted since the last census, so
+        /// a rising row count beside `panelDrawn=False` is the finding, and a falling one kills it.
+        /// </summary>
+        private static void DiagnoseBoardCensus(float simNow)
+        {
+            if (!VerboseLog) return;
+            if (simNow - _lastCensusSim < CensusIntervalSim) return;
+            _lastCensusSim = simNow;
+
+            // Same cadence, and the same kind of question, so it rides along rather than keeping
+            // its own timer. Before the quiet-board return: the estimator census is about the solve
+            // pool, which runs whether or not anything is being engaged.
+            FlightTime.LogAsyncCensus();
+
+            EngagementBoard.Census(simNow, out int rows, out int fired, out float oldest);
+            bool panelDrawn = Hud.DrewSinceLastCensus();
+            // Quiet when there is nothing to say: an empty board that stays empty is not a finding.
+            if (rows == 0 && _lastCensusRows <= 0) { _lastCensusRows = rows; return; }
+            _lastCensusRows = rows;
+
+            Bootstrap.Log.LogInfo(
+                $"[AutoTOT] board-census {rows} row(s), {fired} fired, oldest fired {oldest:0.0}s ago, " +
+                $"panelDrawn={panelDrawn}, scheduled {_scheduled.Count}. D10 of the beta-release audit.");
+        }
+
+        /// <summary>
+        /// D1: a follower still holding on an anchor that has left _scheduled. The hold in
+        /// ReleaseDueLaunches waits for the anchor's first launch and is bounded by RippleDone, which
+        /// only UpdateAnchorTracking can set, and that loop walks _scheduled. An anchor removed from
+        /// it after being marked Fired therefore cannot ever release its followers.
+        ///
+        /// Ungated and at WARNING: this states an invariant that should never hold, and a run that
+        /// hits it must not have to be re-flown with verbose on to see it. Once per follower.
+        /// </summary>
+        private static void DiagnoseOrphanedFollower(Scheduled s, float simNow)
+        {
+            if (s.LoggedOrphan) return;
+            Scheduled a = s.Anchor;
+            if (a == null || a.LeftScheduleSim < 0f) return;
+            s.LoggedOrphan = true;
+
+            Intent it = s.Item;
+            Intent ai = a.Item;
+            float held = s.ScheduledAtSim >= 0f ? simNow - s.ScheduledAtSim : -1f;
+            Bootstrap.Log.LogWarning(
+                $"[AutoTOT] anchor-orphaned {it.AmmoId} from {UnitNaming.SafeName(it.Unit)} -> " +
+                $"{UnitNaming.SafeName(it.Target)}: its anchor {ai?.AmmoId} from " +
+                $"{UnitNaming.SafeName(ai?.Unit)} left the schedule {simNow - a.LeftScheduleSim:0.0}s ago " +
+                $"with {a.LaunchTimes.Count} launch(es) observed and RippleDone={a.RippleDone}. " +
+                $"This order has been held {held:0.0}s and nothing can release it. " +
+                $"D1 of the beta-release audit.");
+        }
+
+        /// <summary>
+        /// D1, removal side: how many followers were still pointing at an entry as it left
+        /// _scheduled. Zero is the ordinary case and says nothing; a nonzero count on an anchor that
+        /// has fired without launching is the exact shape the finding predicts.
+        /// </summary>
+        private static void NoteScheduleExit(Scheduled s, float simNow, string reason)
+        {
+            s.LeftScheduleSim = simNow;
+            int followers = s.Followers?.Count ?? 0;
+            if (!s.IsAnchor || followers == 0) return;
+
+            int waiting = 0;
+            for (int i = 0; i < s.Followers.Count; i++)
+                if (!s.Followers[i].Fired) waiting++;
+            if (waiting == 0) return;
+
+            // Three of the four exits are recoverable and must not warn, or every ordinary strike
+            // would print one. A ripple that COMPLETES sets RippleDone, which frees the hold; an
+            // anchor that dies BEFORE releasing is re-elected by PromoteNewAnchor, which re-points
+            // every survivor; an abandoned anchor sets RippleDone and goes through
+            // PromoteAbandonedAnchor. What is left is the shape the finding is about: the anchor has
+            // dispatched, no round was ever seen, and it leaves without RippleDone, so nothing can
+            // set it afterwards and nothing can release the followers.
+            bool stranding = s.Fired && !s.RippleDone && s.LaunchTimes.Count == 0;
+            if (!stranding)
+            {
+                if (VerboseLog)
+                    Bootstrap.Log.LogInfo(
+                        $"[AutoTOT] anchor-exit {s.Item?.AmmoId} from {UnitNaming.SafeName(s.Item?.Unit)} " +
+                        $"({reason}): {waiting} of {followers} follower(s) still held, fired={s.Fired}, " +
+                        $"launches {s.LaunchTimes.Count}, RippleDone={s.RippleDone}.");
+                return;
+            }
+
+            Bootstrap.Log.LogWarning(
+                $"[AutoTOT] anchor-exit {s.Item?.AmmoId} from {UnitNaming.SafeName(s.Item?.Unit)} " +
+                $"({reason}): left the schedule after dispatch with NO launch observed and " +
+                $"RippleDone=false, holding {waiting} of {followers} follower(s). Nothing can release " +
+                $"them now. D1 of the beta-release audit.");
+        }
+
+        /// <summary>
+        /// D6: the centering term used to finalize a stalled ripple, beside the one the observed
+        /// launches would have produced. Independent salvos release half a ripple span early and the
+        /// prediction subtracts that same span back out, but the span was fixed at commit from the
+        /// FULL order while the stall re-predicts on the rounds that actually flew.
+        ///
+        /// `delta` is the error a fix would remove, stated before anything is changed. Grouped
+        /// salvos are excluded: their centering is 0 either way.
+        /// </summary>
+        private static void LogStallCentering(Scheduled a, Intent it, int requested, int observed,
+                                              float span, float interval)
+        {
+            if (!VerboseLog || it.Grouped) return;
+            float used = it.ReleaseLead;
+            float onObserved = observed > 1 ? span * 0.5f : 0f;
+            Bootstrap.Log.LogInfo(
+                $"[AutoTOT] stall-centering {it.AmmoId} from {UnitNaming.SafeName(it.Unit)}: " +
+                $"requested {requested}, observed {observed}, interval {interval:0.00}s, " +
+                $"observedSpan {span:0.0}s, centeringUsed {used:0.0}s, " +
+                $"centeringIfObserved {onObserved:0.0}s, delta {used - onObserved:+0.0;-0.0}s " +
+                $"(positive => followers released that much early). D6 of the beta-release audit.");
+        }
+
+        /// <summary>
+        /// D7: a shooter that was inside its launch envelope at commit and has since left it. Only
+        /// EnvelopeTracked orders are refreshed, and that flag is set from a commit-time delay
+        /// greater than zero, so a platform that was ready is never asked again.
+        ///
+        /// The value is read for the log and thrown away: nothing here feeds StartupLead, so release
+        /// timing is identical with the diagnostic on or off. One line per order.
+        /// </summary>
+        private static void DiagnoseUntrackedEnvelope(Scheduled s, Intent it, float simNow)
+        {
+            if (!VerboseLog || s.Fired || it.EnvelopeTracked || s.LoggedUntrackedEnvelope) return;
+            if (!(it.Unit is Aircraft) && !(it.Unit is Submarine)) return;
+            if (simNow - s.LastUntrackedEnvelopeSim < EnvelopeRefreshSim) return;
+            s.LastUntrackedEnvelopeSim = simNow;
+
+            float now = LaunchEnvelope.TimeToReady(it.Unit, it.AmmoId);
+            if (now <= 0f) return;
+            s.LoggedUntrackedEnvelope = true;
+
+            float held = s.ScheduledAtSim >= 0f ? simNow - s.ScheduledAtSim : -1f;
+            Bootstrap.Log.LogWarning(
+                $"[AutoTOT] envelope-untracked {it.AmmoId} from {UnitNaming.SafeName(it.Unit)} " +
+                $"[{PlatformTag(it.Unit)}]: 0.0s at commit so it is not tracked, now {now:0.0}s " +
+                $"after {held:0.0}s held. Its startupLead is {it.StartupLead:0.0}s and will not be " +
+                $"updated. D7 of the beta-release audit.");
+        }
+
+        /// <summary>
+        /// D9: what a whole strike asks of one shooter's magazine, against what that shooter can
+        /// actually fire. The panel caps each ROW at the launcher-available count, but only the
+        /// guidance-channel budget is shared across targets, so ammunition that is not channel-capped
+        /// can be staged twice over.
+        ///
+        /// Called once per commit, after the guidance clamp and before PrepareIntent, so the counts
+        /// are the ones that will actually be dispatched.
+        /// </summary>
+        private static readonly Dictionary<string, int> _stockScratch = new Dictionary<string, int>();
+        private static readonly Dictionary<string, int> _stockTargets = new Dictionary<string, int>();
+
+        private static void DiagnoseAggregateStock(List<Intent> items)
+        {
+            if (items == null || items.Count == 0) return;
+            _stockScratch.Clear();
+            _stockTargets.Clear();
+
+            for (int i = 0; i < items.Count; i++)
+            {
+                Intent it = items[i];
+                if (it.Unit == null || it.AmmoId == null) continue;
+                string key = it.Unit.GetInstanceID() + "|" + it.AmmoId;
+                _stockScratch.TryGetValue(key, out int n);
+                _stockScratch[key] = n + Mathf.Max(1, it.Shots);
+                _stockTargets.TryGetValue(key, out int t);
+                _stockTargets[key] = t + 1;
+            }
+
+            for (int i = 0; i < items.Count; i++)
+            {
+                Intent it = items[i];
+                if (it.Unit == null || it.AmmoId == null) continue;
+                string key = it.Unit.GetInstanceID() + "|" + it.AmmoId;
+                if (!_stockScratch.TryGetValue(key, out int requested)) continue;
+                _stockScratch.Remove(key);   // one line per shooter and ammunition, not per order
+                int targets = _stockTargets.TryGetValue(key, out int t) ? t : 1;
+                int available = LauncherFactsSource.AvailableRounds(it.Unit, it.AmmoId);
+
+                if (requested > available)
+                    Bootstrap.Log.LogWarning(
+                        $"[AutoTOT] stock-check {it.Unit.getUIDAndName()} {it.AmmoId}: requested " +
+                        $"{requested} across {targets} target(s), launchers can supply {available}. " +
+                        $"The strike is over-committed by {requested - available}. " +
+                        $"D9 of the beta-release audit.");
+                else if (VerboseLog && targets > 1)
+                    Bootstrap.Log.LogInfo(
+                        $"[AutoTOT] stock-check {it.Unit.getUIDAndName()} {it.AmmoId}: requested " +
+                        $"{requested} across {targets} target(s), available {available}. OK.");
+            }
+        }
+
         /// <summary>Verbose log for a held item dropped because its shooter or target is gone.</summary>
         private static void LogDroppedItem(Scheduled s)
         {

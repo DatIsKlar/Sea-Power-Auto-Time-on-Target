@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Reflection;
+using System.Text;
 using SeaPower;
 using UnityEngine;
 
@@ -528,6 +529,55 @@ namespace AutoTOT
         /// or launchers naming no usable guiding sensor). Used to clamp the salvo picker so an
         /// order that physically cannot fire is never issued.
         /// </summary>
+        /// <summary>
+        /// D3 of docs/plans/open/BETA-RELEASE-AUDIT-PLAN.md: a LIVE read of the guiding sensors for
+        /// this ammunition, naming each sensor, its channel count and how many weapons it is
+        /// currently guiding.
+        ///
+        /// Deliberately uncached and deliberately separate from <see cref="ComputeGuidance"/>. The
+        /// cap the coordinator reserves against is a cached snapshot of `channels - occupied`, and
+        /// the finding is that occupancy rises only as rounds LAUNCH while the reservation is
+        /// released at DISPATCH. Reading both halves at the moment of a decision is the only way to
+        /// see the two cross. Returns an empty string when the ammunition is not channel-limited.
+        /// </summary>
+        internal static string GuidanceOccupancyText(ObjectBase ship, string ammoId)
+        {
+            if (ship == null || ammoId == null) return "";
+            try
+            {
+                AmmunitionParameters ap = ship.getAmmunitionByName(ammoId)?._ap;
+                if (ap == null || !ap._requiresGuidance) return "";
+
+                var launchers = ship.GetWeaponSystemsForAmmunition(ammoId);
+                if (launchers == null || launchers.Count == 0) return "";
+
+                HashSet<SensorSystem> seen = new HashSet<SensorSystem>();
+                StringBuilder sb = new StringBuilder();
+                int free = 0;
+                for (int i = 0; i < launchers.Count; i++)
+                {
+                    var sensors = launchers[i]?._vwp?._associatedSensors;
+                    if (sensors == null) continue;
+                    for (int j = 0; j < sensors.Count; j++)
+                    {
+                        SensorSystem sn = sensors[j];
+                        if (sn == null || !CanGuide(sn, ap) || sn.Inoperable.Value) continue;
+                        if (!seen.Add(sn)) continue;
+                        int ch = WeaponChannels(sn);
+                        int occ = sn._associatedWeapons?.Count ?? 0;
+                        free += Mathf.Max(0, ch - occ);
+                        if (sb.Length > 0) sb.Append(", ");
+                        sb.Append(sn._systemName ?? "sensor").Append(" cap ")
+                          .Append(ch == int.MaxValue ? "n/a" : ch.ToString())
+                          .Append(" occupied ").Append(occ);
+                    }
+                }
+                if (sb.Length == 0) return "";
+                return $"{sb} => free {free}" + (ap._maxGroupSize > 1 ? " (groupable, not capped)" : "");
+            }
+            catch { return "occupancy err"; }
+        }
+
         internal static int GuidanceChannelCap(ObjectBase ship, string ammoId)
         {
             Facts f = Get(ship, ammoId);

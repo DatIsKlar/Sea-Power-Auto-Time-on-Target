@@ -20,6 +20,40 @@ namespace AutoTOT
         // mutated and stored back once per tracked missile per frame. As a struct that was a copy of
         // roughly twenty fields each way, and it forced the two MaybeLog helpers to take the sample
         // and hand it back so the caller could reassign it.
+        /// <summary>
+        /// D8 of docs/plans/open/BETA-RELEASE-AUDIT-PLAN.md: how much vertical the flight model
+        /// discarded on this shot.
+        ///
+        /// Order intake accepts any missile the game says can engage the target, anti-air rounds
+        /// included, but the primary integrator schedules its stage altitudes against the sea beneath
+        /// the target and stops the clock on horizontal closest approach. For a surface target those
+        /// are the same geometry. For an aircraft at altitude the modelled ground track is shorter
+        /// than the path the round actually flies, and the difference is what this reports.
+        ///
+        /// Empty for anything at or near sea level, so a normal anti-ship run is unchanged.
+        /// </summary>
+        private const float AirTargetAltFloorFt = 500f;
+
+        private static string AirTargetGeometry(WeaponBase w, ObjectBase tgt)
+        {
+            try
+            {
+                if (tgt == null || tgt.transform == null) return null;
+                float altFt = tgt.transform.position.y * GameUnits.UnityToFeet;
+                if (altFt < AirTargetAltFloorFt) return null;
+
+                Vector3 from = w._launchPlatform != null && w._launchPlatform.transform != null
+                    ? w._launchPlatform.transform.position
+                    : (w.transform != null ? w.transform.position : Vector3.zero);
+                Vector3 d = tgt.transform.position - from;
+                float flatKm = new Vector2(d.x, d.z).magnitude * GameUnits.MetersPerUnity / 1000f;
+                float slantKm = d.magnitude * GameUnits.MetersPerUnity / 1000f;
+                return $"air-target alt {altFt:0}ft, flat {flatKm:0.0}km, slant {slantKm:0.0}km, " +
+                       $"climb ignored by the model. D8 of the beta-release audit";
+            }
+            catch { return null; }
+        }
+
         private sealed class FlightSample
         {
             public float LaunchTime; public string AmmoName; public string TargetName;
@@ -62,6 +96,11 @@ namespace AutoTOT
             public float LaunchVelKn;
             public ObjectBase Shooter;     // needed to re-run the estimate; always guard, it can die
             public string ShooterAmmoId;
+            // D8 of docs/plans/open/BETA-RELEASE-AUDIT-PLAN.md. The integrator schedules stage
+            // altitudes against max(targetPos.y, 0) and ends the flight on HORIZONTAL closest
+            // approach, so for an air target it flies to the sea beneath the aircraft and never
+            // times the climb. Captured at first sighting; empty for a surface target.
+            public string AirTargetNote;
             public bool Coordinated;       // captured at first sighting: is this a missile AutoTOT
                                            // fired (target has an EngagementBoard row)? Scopes all
                                            // verbose diagnostics to our own shots (not defensive SAMs).
@@ -268,6 +307,7 @@ namespace AutoTOT
                         ShooterAmmoId = (w._ap != null ? w._ap._ammunitionFileName : null),
                         Coordinated = coordinated,
                         LastStage = w._flightStage,
+                        AirTargetNote = AirTargetGeometry(w, tgt),
                     };
                     // First sighting of this missile => it just left the rail. Credit it to the
                     // matching pending order (this branch fires exactly once per WeaponBase, so no
@@ -510,7 +550,8 @@ namespace AutoTOT
                         }
                         Bootstrap.Log.LogInfo(
                             $"[AutoTOT] impact {s.AmmoName} -> {s.TargetName}: {outcome} at sim {s.LastSeenTime:0.0} " +
-                            $"(flight {flightTime:0.0}s, final range {s.LastDistM:0} m){switched}{residual}");
+                            $"(flight {flightTime:0.0}s, final range {s.LastDistM:0} m){switched}{residual}" +
+                            (string.IsNullOrEmpty(s.AirTargetNote) ? "" : $" | {s.AirTargetNote}"));
                         // gap = actual flown time − the sim estimate captured at launch (positive =>
                         // the sim UNDER-predicts). Peak altitude and terminal speed say WHERE the gap
                         // comes from. HIT only. A RETARGETED round is excluded and reported as such:

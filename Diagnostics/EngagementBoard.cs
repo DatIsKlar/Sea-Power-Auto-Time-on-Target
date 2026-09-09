@@ -98,6 +98,30 @@ namespace AutoTOT
         internal static bool HasFired(ObjectBase target)
             => _byTarget.TryGetValue(target, out Engagement e) && e.FiredAtSim >= 0f;
 
+        /// <summary>
+        /// D10 of docs/plans/open/BETA-RELEASE-AUDIT-PLAN.md: how many rows the board is holding,
+        /// how many have fired, and the age of the oldest scheduled impact. The only prune path is
+        /// CollectSalvos, which the HUD calls while DRAWING, so the census is how a run says whether
+        /// pruning stopped when the panel was hidden. Read-only; it prunes nothing itself, which is
+        /// the point.
+        /// </summary>
+        internal static void Census(float simNow, out int rows, out int fired, out float oldestAgeSim)
+        {
+            rows = _byTarget.Count;
+            fired = 0;
+            oldestAgeSim = 0f;
+            foreach (KeyValuePair<ObjectBase, Engagement> kv in _byTarget)
+            {
+                Engagement e = kv.Value;
+                if (e.FiredAtSim >= 0f)
+                {
+                    fired++;
+                    float age = simNow - e.FiredAtSim;
+                    if (age > oldestAgeSim) oldestAgeSim = age;
+                }
+            }
+        }
+
         /// <summary>True if AutoTOT is coordinating this target (a row exists) ; i.e. a missile at
         /// it is one we fired, not an auto-fired defensive SAM. Scopes verbose per-missile
         /// diagnostics to our own shots.</summary>
