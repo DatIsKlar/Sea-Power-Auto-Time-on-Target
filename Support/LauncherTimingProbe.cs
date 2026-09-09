@@ -57,6 +57,9 @@ namespace AutoTOT
         // print the same field dump four times, and a ripple would print it once per round.
         private static readonly HashSet<string> _reported = new HashSet<string>(StringComparer.Ordinal);
 
+        // system/state pairs already folded into _coldStart, so a warm re-run does not add again.
+        private static readonly HashSet<string> _coldSeen = new HashSet<string>(StringComparer.Ordinal);
+
         // Type -> its float fields, resolved once. A ship firing a ripple walks this per round, and
         // GetFields allocates an array every call.
         private static readonly Dictionary<Type, FieldInfo[]> _floatFields = new Dictionary<Type, FieldInfo[]>();
@@ -65,6 +68,40 @@ namespace AutoTOT
         {
             _reported.Clear();
             _floatFields.Clear();
+            _coldStart.Clear();
+            _coldSeen.Clear();
+        }
+
+        /// <summary>
+        /// The states a COLD launcher walks before its first round, measured rather than declared.
+        ///
+        /// The declared route was tried and abandoned. `WarmingUp` on a Kidd/Chandler MK26 does
+        /// equal `WeaponParameters._magazineReloadTime` (7.00 s declared, 6.83 to 7.06 s observed),
+        /// but the same field reads 900.00 s on a Spruance Sea Sparrow and 600.00 s on a Type 055
+        /// HQ-10, where it is a full magazine reload cycle and no launcher ever enters the state.
+        /// `_perContainerReload` does not separate those cases: all three are False. Charging the
+        /// declared value would have added fifteen minutes of startup lead to a Sea Sparrow.
+        ///
+        /// So the cost is learned from the engage-state trace instead. A mount that never runs
+        /// these states never accumulates anything and is never charged, which is the property the
+        /// declared route could not give.
+        /// </summary>
+        private static readonly HashSet<string> ColdStartStates = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "WarmingUp", "ChoosingContainer", "AligningLauncher",
+        };
+
+        // system name -> summed cold-start seconds observed on the first launcher to walk them.
+        private static readonly Dictionary<string, float> _coldStart = new Dictionary<string, float>(StringComparer.Ordinal);
+
+        /// <summary>
+        /// Observed cold-start seconds for this launcher system, or 0 when nothing has been seen.
+        /// Only ever read for a ship with a cold launcher; see LauncherProbe.AnyLauncherCold.
+        /// </summary>
+        internal static float ColdStartSeconds(string systemName)
+        {
+            if (string.IsNullOrEmpty(systemName)) return 0f;
+            return _coldStart.TryGetValue(systemName, out float v) ? v : 0f;
         }
 
         /// <summary>
@@ -75,8 +112,25 @@ namespace AutoTOT
         internal static void OnStateLeft(ObjectBase ship, string ammoId, WeaponSystem launcher,
                                          string systemName, string state, float held)
         {
-            if (!Coordinator.VerboseLog) return;
             if (launcher == null || string.IsNullOrEmpty(state)) return;
+
+            // Accumulate BEFORE the verbose gate: the cold-start estimate is a timing input and
+            // must not depend on whether the player has logging on.
+            if (ColdStartStates.Contains(state) && held >= MinHoldSeconds && IsFinite(held)
+                && !string.IsNullOrEmpty(systemName))
+            {
+                _coldStart.TryGetValue(systemName, out float sum);
+                // First cold pass only. A warm launcher re-runs ChoosingContainer and
+                // AligningLauncher on every order, and adding those would grow the term without
+                // bound over a mission.
+                if (!_coldSeen.Contains(systemName + "/" + state))
+                {
+                    _coldSeen.Add(systemName + "/" + state);
+                    _coldStart[systemName] = sum + held;
+                }
+            }
+
+            if (!Coordinator.VerboseLog) return;
             if (held < MinHoldSeconds || !IsFinite(held)) return;
             if (ModelledStates.Contains(state)) return;
             if (!_reported.Add((systemName ?? "?") + "/" + state)) return;

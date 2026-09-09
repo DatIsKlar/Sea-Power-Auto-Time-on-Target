@@ -82,20 +82,7 @@ namespace AutoTOT
             public float ColdStart;
         }
 
-        /// <summary>
-        /// ChoosingContainer, the magazine picking which round to send up. No declared field backs
-        /// it: the field probe found none within tolerance on either branch. Observed 1.67, 1.67,
-        /// 1.68, 2.00, 2.00, 2.67, 2.67, 3.00 s across five orders, which is the game's 0.333 s tick
-        /// times five to nine. The mean is taken rather than the worst, so the error is centred.
-        /// </summary>
-        private const float ContainerChoiceSeconds = 2.2f;
 
-        /// <summary>
-        /// AligningLauncher, the last state before the round leaves. Observed 1.33 s on every one of
-        /// seven launches, at relative bearings from -21 to +10 degrees and on both game branches,
-        /// so it is a fixed cost and not the bearing-dependent slew its name suggests.
-        /// </summary>
-        private const float LauncherAlignSeconds = 1.33f;
 
         /// <summary>
         /// Engage states that mean "a launch is under way", as opposed to idle, blocked or refused.
@@ -294,6 +281,7 @@ namespace AutoTOT
                 // them: the hoist is declared, the other two are measured constants.
                 $"magazineReload {vwp._magazineReloadTime:0.00}s, " +
                 $"perContainer {vwp._perContainerReload}, " +
+                $"coldStartLearned {LauncherTimingProbe.ColdStartSeconds(vwp._systemName):0.00}s, " +
                 $"anyLauncherCold {LauncherProbe.AnyLauncherCold(ship, ammoId)} | " +
                 $"targetAcqTime {vwp._targetAcquisitionTime:0.00}s, " +
                 $"automatic {AutomaticText(vwp)}, standalone {vwp._worksStandalone}, " +
@@ -421,26 +409,25 @@ namespace AutoTOT
             float acquisition = AcquisitionSeconds(ship, vwp);
             f.LauncherCycle = NonNegativeFinite(DeclaredWarmup(ship, ammoId) + f.HatchCycleSeconds);
 
-            // D: the magazine hoist and the two fixed states after it, paid by a launcher that has
-            // not fired yet. Item 6 of docs/plans/open/launcher-startup-delay.md.
+            // D: what a launcher that has not fired yet owes before its first round. Item 6 of
+            // docs/plans/open/launcher-startup-delay.md.
             //
             // A magazine-fed rail launcher lifts its first round from below deck before it can
-            // shoot, which the game runs as the WarmingUp engage state. The mod already reads that
-            // duration as ReloadGap and already excludes parallel-reload cells with the same
-            // _perContainerReload gate, but only ever charged it BETWEEN waves, so the first round
-            // of the first order was free. On a Kidd-class MK26 that is the largest startup error
-            // on record: 11.69 s observed against 0.00 s predicted, all of it before round one.
+            // shoot, then picks a container and trains: WarmingUp, ChoosingContainer,
+            // AligningLauncher. On a Kidd-class MK26 that is the largest startup error on record,
+            // 11.69 s observed against 0.00 s predicted, all of it before round one.
             //
-            // Measured over five orders on two missions: WarmingUp 7.06 / 7.03 / 6.83 s against a
-            // declared 7.00, then ChoosingContainer 1.67 to 3.00 s and AligningLauncher 1.33 s
-            // every single time. The last two carry no declared field, so they are the constants
-            // below rather than a lookup; AligningLauncher did not vary with relative bearing over
-            // -21 to +10 degrees, so it is not the slew it looks like.
-            f.ColdStart = 0f;
-            if (!f.PerContainer && vwp._magazineReloadTime > 0f
-                && LauncherProbe.AnyLauncherCold(ship, ammoId))
-                f.ColdStart = NonNegativeFinite(vwp._magazineReloadTime
-                                                + ContainerChoiceSeconds + LauncherAlignSeconds);
+            // LEARNED, not declared, and the first build got this wrong. WarmingUp on the MK26 does
+            // equal WeaponParameters._magazineReloadTime (declared 7.00, observed 6.83 to 7.06),
+            // but the same field reads 900.00 s on a Spruance Sea Sparrow and 600.00 s on a Type
+            // 055 HQ-10, where it is a full magazine reload and no launcher ever enters the state.
+            // _perContainerReload does not separate them: all three read False. Charging the
+            // declared value would have put fifteen minutes of startup lead on a Sea Sparrow.
+            // LauncherTimingProbe accumulates the states actually walked, so a mount that never
+            // runs them is never charged and no ammunition needs a special case.
+            f.ColdStart = LauncherProbe.AnyLauncherCold(ship, ammoId)
+                ? NonNegativeFinite(LauncherTimingProbe.ColdStartSeconds(vwp._systemName))
+                : 0f;
 
             f.StartupDelay = NonNegativeFinite(vwp._preLaunchDelay + 0.5f * vwp._maxReactiontime
                                                + acquisition + f.LauncherCycle + f.ColdStart);

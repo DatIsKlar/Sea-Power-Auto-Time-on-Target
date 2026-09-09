@@ -49,7 +49,7 @@ namespace AutoTOT
         // sit on the per-order diagnostic path, and a per-frame GetField would be exactly the kind
         // of cost the HUD profiling pass went looking for.
         private static bool _reflectionResolved;
-        private static FieldInfo _onRailField, _onRailStartField, _lastLaunchField;
+        private static FieldInfo _onRailField, _onRailStartField;
         private static MethodInfo _usableMethod;
 
         private static void ResolveReflection()
@@ -62,14 +62,6 @@ namespace AutoTOT
                 const BindingFlags Inst = BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public;
                 _onRailField = launcher?.GetField("_onRail", Inst);
                 _onRailStartField = launcher?.GetField("_onRailWarmupStartTime", Inst);
-                // Sim time of this launcher's last launch, 0 while it has never fired. The magazine
-                // hoist is paid by a COLD launcher only; see AnyLauncherCold.
-                //
-                // Found by walking the hierarchy, not by a flat GetField: the field is private and
-                // declared on the WeaponSystem BASE, and a flat lookup on WeaponSystemLauncher
-                // returns null for it. That is exactly what happened on the first build, where
-                // anyLauncherCold read False on a launcher that then held WarmingUp for 6.89s.
-                _lastLaunchField = FindFieldUpHierarchy(launcher, "_lastLaunchTime");
 
                 // isWeaponSystemUsable(WeaponSystem, string, ObjectBase, bool, bool, bool). Taken by
                 // signature rather than by name alone: the class carries an Ammunition overload too,
@@ -244,26 +236,21 @@ namespace AutoTOT
 
         /// <summary>
         /// True while ANY launcher serving this ammo has never launched, so the order is likely to
-        /// be filled by one that still owes its magazine hoist.
-        ///
-        /// The hoist (`WeaponParameters._magazineReloadTime`, seen as the `WarmingUp` engage state)
-        /// is per launcher OBJECT and paid once: measured at 7.06, 7.03 and 6.83 s against a
-        /// declared 7.00 on a Kidd-class MK26, and absent from every later order on the same
-        /// launcher, including one placed 612 s later. It does NOT decay back to cold; a fresh
-        /// mission gets fresh objects, which is why every mission's first order pays it again.
+        /// be filled by one that still owes its cold-start sequence.
         ///
         /// Ship-level rather than per-object because the launcher that will take the order is not
         /// known at commit: the game filters candidates at dispatch. "Any cold" is the rule that
-        /// fits all five observed orders, including the one where two cold launchers took the order
-        /// while a warm one sat idle. When mounts are mixed it predicts the hoist for an order that
-        /// might land on a warm mount, which costs a slightly early arrival rather than the late one
-        /// that omitting it guarantees.
+        /// fits every observed order, including the one where two cold launchers took an order
+        /// while a warm one sat idle.
+        ///
+        /// The stamp is resolved from each launcher's RUNTIME type rather than from
+        /// WeaponSystemLauncher. A field declared on a derived launcher class sits BELOW that type,
+        /// so a walk starting there and going up misses it, which is why the first two builds of
+        /// this read False on a launcher that then held WarmingUp for seven seconds.
         /// </summary>
         internal static bool AnyLauncherCold(ObjectBase ship, string ammoId)
         {
             if (ship == null || ammoId == null) return false;
-            ResolveReflection();
-            if (_lastLaunchField == null) return false;   // cannot tell -> predict nothing new
 
             List<WeaponSystem> launchers;
             try { launchers = ship.GetWeaponSystemsForAmmunition(ammoId); }
@@ -274,14 +261,27 @@ namespace AutoTOT
             {
                 WeaponSystem ws = launchers[i];
                 if (ws == null) continue;
+                FieldInfo f = LastLaunchFieldFor(ws.GetType());
+                if (f == null) continue;
                 try
                 {
-                    object raw = _lastLaunchField.GetValue(ws);
-                    if (raw is float last && last <= 0f) return true;
+                    object raw = f.GetValue(ws);
+                    float last = raw is float fl ? fl : raw is double d ? (float)d : float.NaN;
+                    if (!float.IsNaN(last) && last <= 0f) return true;
                 }
                 catch { /* one unreadable launcher does not decide the ship */ }
             }
             return false;
+        }
+
+        private static readonly Dictionary<Type, FieldInfo> _lastLaunchByType = new Dictionary<Type, FieldInfo>();
+
+        private static FieldInfo LastLaunchFieldFor(Type t)
+        {
+            if (_lastLaunchByType.TryGetValue(t, out FieldInfo cached)) return cached;
+            FieldInfo f = FindFieldUpHierarchy(t, "_lastLaunchTime");
+            _lastLaunchByType[t] = f;
+            return f;
         }
 
         /// <summary>
