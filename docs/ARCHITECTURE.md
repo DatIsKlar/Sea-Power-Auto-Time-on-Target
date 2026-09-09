@@ -255,9 +255,32 @@ containers and sequences.
 
 ### StartupDelay
 
-`StartupDelay = PreLaunchDelay + ½·MaxReactiontime` (LauncherFacts.cs). Paid ONCE
-before round 1, not between rounds. Belongs in release lead as a fixed offset, not in
-`ShotInterval`.
+`StartupDelay = PreLaunchDelay + ½·MaxReactiontime + Acquisition + LauncherCycle + ColdStart`
+(LauncherFacts.cs). Paid ONCE before round 1, not between rounds. Belongs in release lead
+as a fixed offset, not in `ShotInterval`.
+
+- `Acquisition` is `ReactionTime.Acquisition(unit, vwp)` where the branch has it; the
+  public branch does not, and logs `reaction-gate: UNAVAILABLE`.
+- `LauncherCycle = max(0, DeclaredOnRailWarmup) + HatchCycleSeconds`. The declared
+  warm-up is keyed per ammo AND per launcher position, on
+  `AmmunitionParameters._launcherPositions`, not on the launcher.
+- `ColdStart` is the game's own warm-up reload, `_magazineReloadTime`, charged only when
+  a launcher serving the ammo will actually run it. The condition is read from
+  `WeaponSystemLauncher.cs:471` rather than inferred:
+
+      _hasWarmUp AND ammo._requiresWarmUp AND !IsHot AND !_perContainerReload AND !DM._disableWarmUp
+
+  All public fields, no reflection. This is what keeps the Spruance Sea Sparrow's
+  900 s and the Type 055 HQ-10's 600 s out: on those mounts `_magazineReloadTime` is an
+  ordinary magazine reload and warm-up never runs, and `_perContainerReload` is False for
+  all of them, so it cannot be the discriminator on its own. `IsHot` is cleared at
+  `WeaponSystem.cs:565` after 1800 s at rest and untasked, so the term correctly returns.
+  Measured on a Chandler Mk26: predicted 7.00 s against an observed `WarmingUp` of 6.95 s.
+
+  NOT charged: `ChoosingContainer` (1.67-3.00 s) and `AligningLauncher` (1.33 s on all
+  seven observations). Both run on a warm order too, so they are a general per-order cost
+  rather than a cold one, and nothing declared backs either. They remain as about 4 s of
+  late bias on warm-up mounts only.
 
 ### ReloadGap
 
