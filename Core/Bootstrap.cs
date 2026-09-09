@@ -222,7 +222,9 @@ namespace AutoTOT
             _config = new ConfigFile(path, true);
 
             _cfgEnabled = _config.Bind("General", "Enabled", true,
-                "Master switch for the mod. If off, the mod does nothing and the on-screen indicator is hidden.");
+                "Master switch for the mod. If off, the mod does nothing and the on-screen indicator " +
+                "is hidden. Read once at startup: changing it mid-session takes effect on the next " +
+                "game start.");
             _cfgDefaultOn = _config.Bind("General", "AutoModeOnStart", false,
                 "Whether the automatic 'coordinate normal group orders' mode is on at mission start. The planner panel works regardless of this.");
             _cfgShowIndicator = _config.Bind("Interface", "ShowIndicator", true,
@@ -292,6 +294,7 @@ namespace AutoTOT
             if (threads < 0) threads = Mathf.Clamp(SystemInfo.processorCount / 4, 1, 4);
             FlightTime.StartWorkers(threads);
 
+            Coordinator.Enabled = _cfgEnabled.Value;  // master switch, startup-only (see ApplyConfig)
             Coordinator.Active = _cfgDefaultOn.Value; // runtime toggle's starting state
 
             ApplyConfig();
@@ -299,10 +302,11 @@ namespace AutoTOT
             // One file-level subscription rather than twelve per-entry ones. ApplyConfig re-reads
             // every setting it owns, so which entry changed does not matter.
             //
-            // This also fires for the two entries ApplyConfig deliberately does NOT read, and that
+            // This also fires for the three entries ApplyConfig deliberately does NOT read, and that
             // is safe precisely because it does not read them: AutoModeOnStart seeds
-            // Coordinator.Active once above and must not re-arm mid-mission, and EstimatorThreads is
-            // read once because restarting a running pool would strand queued work.
+            // Coordinator.Active once above and must not re-arm mid-mission, EstimatorThreads is
+            // read once because restarting a running pool would strand queued work, and Enabled is
+            // the master switch, which cannot change under work already scheduled.
             _config.SettingChanged += (_, __) => ApplyConfig();
         }
 
@@ -319,7 +323,12 @@ namespace AutoTOT
 
         private static void ApplyConfig()
         {
-            Coordinator.Enabled = _cfgEnabled.Value;
+            // Enabled is deliberately absent, and is seeded once in LoadConfig instead. Applying it
+            // live meant the coordinator could be switched off while orders were already scheduled:
+            // the tick kept running, and work committed before the switch could still reach a
+            // launcher afterwards. A master switch that only takes effect on the next start has no
+            // such window, and matches how the Mods menu already gates the mod. Finding 2 of
+            // docs/plans/open/BETA-RELEASE-AUDIT-PLAN.md.
             Coordinator.DebounceSeconds = _cfgDebounce.Value;
             Coordinator.MaxWindowSeconds = _cfgMaxWindow.Value;
             Coordinator.VerboseLog = _cfgVerbose.Value;

@@ -532,8 +532,10 @@ namespace AutoTOT
         /// prediction subtracts that same span back out, but the span was fixed at commit from the
         /// FULL order while the stall re-predicts on the rounds that actually flew.
         ///
-        /// `delta` is the error a fix would remove, stated before anything is changed. Grouped
-        /// salvos are excluded: their centering is 0 either way.
+        /// `correction` is what the observed span changed the centering by. It was the error this
+        /// finding measured before the fix landed; it is now the size of the fix's effect on each
+        /// stalled salvo, which is the number a regression run reads. Grouped salvos are excluded:
+        /// their centering is 0 either way.
         /// </summary>
         private static void LogStallCentering(Scheduled a, Intent it, int requested, int observed,
                                               float span, float interval)
@@ -544,9 +546,8 @@ namespace AutoTOT
             Bootstrap.Log.LogInfo(
                 $"[AutoTOT] stall-centering {it.AmmoId} from {UnitNaming.SafeName(it.Unit)}: " +
                 $"requested {requested}, observed {observed}, interval {interval:0.00}s, " +
-                $"observedSpan {span:0.0}s, centeringUsed {used:0.0}s, " +
-                $"centeringIfObserved {onObserved:0.0}s, delta {used - onObserved:+0.0;-0.0}s " +
-                $"(positive => followers released that much early). D6 of the beta-release audit.");
+                $"observedSpan {span:0.0}s, centering {onObserved:0.0}s (commit value was " +
+                $"{used:0.0}s, correction {onObserved - used:+0.0;-0.0}s). D6 of the beta-release audit.");
         }
 
         /// <summary>
@@ -614,18 +615,45 @@ namespace AutoTOT
                 _stockScratch.Remove(key);   // one line per shooter and ammunition, not per order
                 int targets = _stockTargets.TryGetValue(key, out int t) ? t : 1;
                 int available = LauncherFactsSource.AvailableRounds(it.Unit, it.AmmoId);
+                // Rounds this ship already owes from EARLIER commits. Without these the check only
+                // saw one strike at a time, and the case the finding is about is a magazine spent
+                // across two commits a few seconds apart. Same ammunition only: a magazine is not
+                // shared the way a guidance channel is.
+                int outstanding = OutstandingRounds(it.Unit, it.AmmoId);
+                requested += outstanding;
 
+                string owed = outstanding > 0 ? $" (including {outstanding} still owed from earlier orders)" : "";
                 if (requested > available)
                     Bootstrap.Log.LogWarning(
                         $"[AutoTOT] stock-check {it.Unit.getUIDAndName()} {it.AmmoId}: requested " +
-                        $"{requested} across {targets} target(s), launchers can supply {available}. " +
-                        $"The strike is over-committed by {requested - available}. " +
+                        $"{requested} across {targets} target(s){owed}, launchers can supply " +
+                        $"{available}. The strike is over-committed by {requested - available}. " +
                         $"D9 of the beta-release audit.");
-                else if (VerboseLog && targets > 1)
+                else if (VerboseLog && (targets > 1 || outstanding > 0))
                     Bootstrap.Log.LogInfo(
                         $"[AutoTOT] stock-check {it.Unit.getUIDAndName()} {it.AmmoId}: requested " +
-                        $"{requested} across {targets} target(s), available {available}. OK.");
+                        $"{requested} across {targets} target(s){owed}, available {available}. OK.");
             }
+        }
+
+        /// <summary>
+        /// Rounds of one ammunition this ship is already committed to and has not yet put in the
+        /// air: orders scheduled and not released, plus orders dispatched whose ripple is unfinished.
+        /// Exact ammunition match, unlike the guidance accounting, because magazines are per
+        /// ammunition while channels belong to a shared sensor.
+        /// </summary>
+        private static int OutstandingRounds(ObjectBase unit, string ammoId)
+        {
+            int n = 0;
+            for (int i = 0; i < _scheduled.Count; i++)
+            {
+                Scheduled s = _scheduled[i];
+                if (s?.Item == null || s.Fired) continue;
+                if (s.Item.Unit == unit && string.Equals(s.Item.AmmoId, ammoId, StringComparison.Ordinal))
+                    n += Mathf.Max(1, s.Item.Shots);
+            }
+            n += ReservedRounds(unit, ammoId);
+            return n;
         }
 
         /// <summary>Verbose log for a held item dropped because its shooter or target is gone.</summary>

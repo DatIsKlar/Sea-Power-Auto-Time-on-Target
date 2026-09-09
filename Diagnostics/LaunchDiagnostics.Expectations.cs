@@ -254,6 +254,15 @@ namespace AutoTOT
             string ammoFile = w._ap != null ? w._ap._ammunitionFileName : null;
             if (platform == null || ammoFile == null) return;
 
+            // Release one round's worth of whatever guidance reservation its order is holding.
+            //
+            // ABOVE the empty-expectation return, deliberately, and this is not a style choice: a
+            // single-shot order creates no expectation in normal play, so a ship whose only open
+            // order is one round has an EMPTY expectation list while its reservation is live. Credit
+            // it below that return and the reservation would only ever be released by its timeout,
+            // and the ship would refuse its own next order for two minutes.
+            Coordinator.CreditReservedLaunch(platform, ammoFile);
+
             // The empty-list case is the one that matters for D5 and it used to return before any of
             // this. When an order is the LAST one open, its retirement empties the list, so a round
             // arriving afterwards was dropped at the first line and never reported. That is exactly

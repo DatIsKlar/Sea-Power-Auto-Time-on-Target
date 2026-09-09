@@ -33,6 +33,9 @@ namespace AutoTOT
         internal const float GravityKnPerMs = 9.8f * 1.94384f;
         private const float StallSpeedMultiplier = 1.1f;
         private const float CloseEnoughDistU = 3f;
+        /// <summary>Share of the launch range a round must take off the range before the
+        /// closest-approach guard will believe it has closed. See the latch note in Solve.</summary>
+        private const float RecedeCloseFraction = 0.002f;
         // Sampling cadence for the `sim-track` trace. Defined once in TelemetryCadence, because the
         // live `track` trace in LaunchDiagnostics has to sample at the same offsets for the two to
         // be comparable. Aliased here rather than called directly so the step loop, which reads

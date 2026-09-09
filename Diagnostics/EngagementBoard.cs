@@ -161,13 +161,12 @@ namespace AutoTOT
         /// Snapshot of what we're currently coordinating, grouped by target: shots still held for
         /// timing (<see cref="SalvoLine.Queued"/>) and friendly missiles already in flight at that
         /// target (<see cref="SalvoLine.InFlight"/>). Reuses <paramref name="outList"/> to avoid
-        /// per-frame allocation. Also prunes fired targets that went idle past their grace window.
+        /// per-frame allocation.
         /// </summary>
         internal static void CollectSalvos(List<SalvoLine> outList)
         {
             outList.Clear();
             _salvoMap.Clear();
-            float now = GameClock.SimNow();
 
             // Held (scheduled) shots and anchor-ripple progress.
             foreach (Coordinator.Scheduled s in Coordinator.ScheduledItems)
@@ -210,8 +209,29 @@ namespace AutoTOT
                 outList.Add(ln);
             }
 
-            // Prune fired targets that are idle and past their grace window (or gone). Never-fired
-            // rows stay ; they belong to held orders and are dropped via Drop() or Clear().
+            // Pruning is NOT done here any more. It runs on the coordinator tick, so that hiding
+            // the panel cannot stop it, and doing it here as well would only pay the cost twice.
+        }
+
+        /// <summary>
+        /// Drop fired targets that are idle and past their grace window, or gone. Never-fired rows
+        /// stay: they belong to held orders and are dropped via <see cref="Drop"/> or
+        /// <see cref="Clear"/>.
+        ///
+        /// Called from the coordinator's tick, not from the draw. It used to run only inside
+        /// <see cref="CollectSalvos"/>, which the HUD calls while painting, so hiding the panel or
+        /// turning the indicator off stopped the cleanup entirely: measured on 2026-09-09, a fired
+        /// row survived 188 s with nothing in flight and nothing scheduled, against an 8 s grace,
+        /// and only the mission reset cleared it. Finding 12 of
+        /// docs/plans/open/BETA-RELEASE-AUDIT-PLAN.md.
+        ///
+        /// Activity is recomputed here rather than read from the display scratch, for the same
+        /// reason: the scratch is only filled when something draws.
+        /// </summary>
+        internal static void Prune(float now)
+        {
+            if (_byTarget.Count == 0) return;
+
             _pruneScratch.Clear();
             foreach (KeyValuePair<ObjectBase, Engagement> kv in _byTarget)
             {
@@ -221,13 +241,20 @@ namespace AutoTOT
                 // "Active" has to include an order that has fired but whose rounds have not left
                 // the rail yet, or a slow launcher (a submarine climbing to launch depth) loses its
                 // row mid-ascent and the round that follows is treated as one we never fired.
-                bool active = (_salvoMap.TryGetValue(t, out SalvoLine ln) && (ln.Queued > 0 || ln.InFlight > 0))
-                              || LaunchDiagnostics.HasPendingLaunch(t);
+                bool active = IsStillWorking(t) || LaunchDiagnostics.HasPendingLaunch(t);
                 bool inGrace = (now - e.FiredAtSim) < EngageGrace;
                 if (t == null || t.IsDestroyed || (!active && !inGrace))
                     _pruneScratch.Add(t);
             }
             for (int i = 0; i < _pruneScratch.Count; i++) _byTarget.Remove(_pruneScratch[i]);
+        }
+
+        /// <summary>Held orders or friendly rounds still flying at this target.</summary>
+        private static bool IsStillWorking(ObjectBase target)
+        {
+            foreach (Coordinator.Scheduled s in Coordinator.ScheduledItems)
+                if (s.Item != null && ReferenceEquals(s.Item.Target, target)) return true;
+            return LaunchDiagnostics.HasInFlightAt(target);
         }
     }
 }

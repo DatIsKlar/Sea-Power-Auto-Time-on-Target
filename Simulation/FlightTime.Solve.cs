@@ -283,8 +283,26 @@ namespace AutoTOT
             // way the round is pointing, and the guard was live again by t = 2*dt. The run that
             // day still produced 0.20s eleven times; only the plausibility floor caught them.
             // `havePrev` makes the first real step the first comparison.
+            //
+            // 2026-09-09: one step of closing is still not closing. A Chandler's Harpoon sits on a
+            // canister that cannot train (`fixedRail True, containersRotatable False`), and with the
+            // target 89 degrees off the rail the round flies almost square to the line of sight. The
+            // TARGET's own motion then shortens the range for a step or two, which armed the latch,
+            // and the next step receded and ended the flight: 2.00s returned for a shot whose
+            // straight-line floor was 337.2s, eleven times across two runs. The comment above
+            // predicted this only past 90 degrees, and believed ships immune because a trainable
+            // launcher already points at the target; this launcher does not train.
+            //
+            // So the latch now needs the range to have fallen MEANINGFULLY below where it started,
+            // by more than a wobble of that kind can produce. Overflight, which is what the guard is
+            // for, clears the margin by kilometres long before the round arrives. A round that can
+            // never catch its target now runs to maxFlight and is answered by another tier, which is
+            // the honest outcome; before, it returned a fabricated 2 seconds.
+            // See finding 14 of docs/plans/open/BETA-RELEASE-AUDIT-PLAN.md.
             bool hasClosed = false;
             bool havePrev = false;
+            float startFlat = -1f;
+            float closeMargin = 0f;
 
             while (t < maxFlight)
             {
@@ -292,13 +310,23 @@ namespace AutoTOT
                 float dx = predTgt.x - pos.x, dz = predTgt.z - pos.z;
                 float flatDist = Mathf.Sqrt(dx * dx + dz * dz);
 
+                if (startFlat < 0f)
+                {
+                    startFlat = flatDist;
+                    // Proportional, with an absolute floor: a 20 km shot is gated on the floor and a
+                    // 700 km one on the fraction, so neither a short shot nor a long one can arm the
+                    // latch on noise. The floor is the same distance the arrival test uses.
+                    closeMargin = Mathf.Max(CloseEnoughDistU, startFlat * RecedeCloseFraction);
+                }
+
                 if ((flatDist > prevFlat && t > dt && hasClosed) || flatDist < CloseEnoughDistU)
                 {
                     ModelStats.LoopDone((int)(t / dt));
                     if (velKnots < ap.MinVelocity * StallSpeedMultiplier) return -1f;
                     return t;
                 }
-                if (havePrev && flatDist < prevFlat) hasClosed = true;
+                if (havePrev && flatDist < prevFlat && flatDist <= startFlat - closeMargin)
+                    hasClosed = true;
                 prevFlat = flatDist;
                 havePrev = true;
 

@@ -55,6 +55,12 @@ namespace AutoTOT
             public bool HasGuidanceSensors;   // the serving launchers declare associated sensors
             public bool GuidanceSensorReady;  // at least one of them is operable and can guide this
             public int FreeGuidanceChannels;  // int.MaxValue when the cap does not apply
+            // The sensors that actually guide this ammunition. The channel budget belongs to the
+            // SENSOR, so two ammunition types served by one radar draw on one pool; the coordinator
+            // compares these to decide whether a reservation for one competes with an order for the
+            // other. Held by reference rather than by id, because SensorSystem is not a
+            // UnityEngine.Object and has no instance id. Null when nothing guides it.
+            public SensorSystem[] GuidanceSensors;
 
             // A launcher serving this ammo is mid launch cycle. See IsPreparingToFire.
             public bool PreparingToFire;
@@ -474,6 +480,11 @@ namespace AutoTOT
             // is left uncapped rather than clamped to 0 on missing data.
             if (f.CanGroup || !f.HasGuidanceSensors || seen == null) return;
             f.FreeGuidanceChannels = free;
+
+            // The identity of the pool, not just its size.
+            SensorSystem[] ids = new SensorSystem[seen.Count];
+            seen.CopyTo(ids);
+            f.GuidanceSensors = ids;
         }
 
         // branch-divergent sensor members
@@ -576,6 +587,32 @@ namespace AutoTOT
                 return $"{sb} => free {free}" + (ap._maxGroupSize > 1 ? " (groupable, not capped)" : "");
             }
             catch { return "occupancy err"; }
+        }
+
+        /// <summary>
+        /// True when two ammunition types on one ship are guided by at least one shared sensor, so
+        /// rounds of either draw on the same channel pool.
+        ///
+        /// The reason this exists: the coordinator used to reserve channels per AMMUNITION ID, while
+        /// the budget it reserved against is a property of the guiding sensor. A ship carrying two
+        /// radio-command types served by one radar could therefore reserve the pool twice. Same
+        /// ammunition is trivially true, which keeps the old behaviour as the floor.
+        /// </summary>
+        internal static bool SharesGuidanceSensor(ObjectBase ship, string ammoA, string ammoB)
+        {
+            if (ship == null || ammoA == null || ammoB == null) return false;
+            if (string.Equals(ammoA, ammoB, StringComparison.Ordinal)) return true;
+
+            SensorSystem[] a = Get(ship, ammoA).GuidanceSensors;
+            SensorSystem[] b = Get(ship, ammoB).GuidanceSensors;
+            if (a == null || b == null || a.Length == 0 || b.Length == 0) return false;
+
+            // One or two entries each in practice, so a nested walk on reference identity. Not
+            // Equals: these are plain objects, and reference identity is exactly the question.
+            for (int i = 0; i < a.Length; i++)
+                for (int j = 0; j < b.Length; j++)
+                    if (ReferenceEquals(a[i], b[j])) return true;
+            return false;
         }
 
         internal static int GuidanceChannelCap(ObjectBase ship, string ammoId)

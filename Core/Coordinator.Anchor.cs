@@ -46,8 +46,14 @@ namespace AutoTOT
         /// No threshold and no estimator switch, so ships and aircraft run identical code and the
         /// shared impact cannot step mid-strike.
         /// </summary>
+        /// <param name="centeringOverride">
+        /// Centering to use instead of the commit-time <see cref="Intent.ReleaseLead"/>. Negative
+        /// means "use the commit value", which is every caller but the stall finalizer. See the note
+        /// on centering below.
+        /// </param>
         private static float PredictAnchorImpact(Scheduled a, Intent it, int k, int n, float interval,
-                                                 float simNow, out AnchorPredictTerms terms)
+                                                 float simNow, out AnchorPredictTerms terms,
+                                                 float centeringOverride = -1f)
         {
             terms = default;
             CoordinatorProfiler.Begin(CoordinatorProfiler.Stage.PredictFlight);
@@ -77,7 +83,15 @@ namespace AutoTOT
             float snapshot = allAway ? LaunchStateEstimate(a, it, k - 1, est) : -1f;
             bool fromLaunchState = snapshot > FlightTime.MinValidSeconds;
             float flight = fromLaunchState ? snapshot : est;
-            float centering = it.Grouped ? 0f : it.ReleaseLead;
+            // An independent salvo is released half a ripple span early so its spread of arrivals
+            // straddles the time on target, and the prediction subtracts that same half-span back
+            // out. ReleaseLead states it for the salvo that was ORDERED. When a ripple stalls, the
+            // salvo that flew is shorter, and the finalizer passes what the observed launches
+            // actually spanned. Measured on 2026-09-09 before this existed: an order of 4 that
+            // launched 3 subtracted 22.5s where the launches spanned 10.0s, so the shared impact
+            // was set 17.5s early and every follower released against it.
+            float centering = it.Grouped ? 0f
+                            : (centeringOverride >= 0f ? centeringOverride : it.ReleaseLead);
 
             terms = new AnchorPredictTerms
             {
@@ -483,8 +497,13 @@ namespace AutoTOT
                         // D6 of the beta-release audit, before the re-prediction so the terms
                         // reported are the ones it is about to use.
                         LogStallCentering(a, it, n, k, span, interval);
+                        // Centering from what flew, not from what was ordered. k == 1 spans nothing,
+                        // so it centers on the single arrival, which is the same answer a one-round
+                        // order would have produced at commit.
+                        float observedCentering = (k > 1) ? span * 0.5f : 0f;
                         float onObserved = PredictAnchorImpact(a, it, k, k, interval, simNow,
-                                                               out AnchorPredictTerms stallTerms);
+                                                               out AnchorPredictTerms stallTerms,
+                                                               observedCentering);
                         if (stallTerms.Valid) pred = onObserved;
                         LogImpactMove(a, it, pred, simNow, "stall-finalize");
                         if (a.Followers != null)

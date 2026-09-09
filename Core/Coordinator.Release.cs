@@ -393,9 +393,135 @@ namespace AutoTOT
         /// channel and is bounded by the group instead.</para>
         /// </summary>
         /// <summary>
-        /// Rounds of <paramref name="ammoId"/> this ship has committed and not yet released. Once an
-        /// order fires, its rounds occupy the guiding sensor's own channels and GuidanceChannelCap
-        /// has already subtracted them, so counting a fired order here would charge it twice.
+        /// One dispatched order whose rounds have not all left the rail yet.
+        ///
+        /// The channel budget is read as "sensor channels minus weapons the sensor is guiding", and
+        /// a weapon only joins that list when it LAUNCHES. An order that AutoTOT has handed to the
+        /// game therefore occupies nothing measurable until its ripple runs, which on a submarine
+        /// can be half a minute later. Between those two moments the rounds were invisible to both
+        /// halves of the accounting, and a second order could be accepted against channels the first
+        /// one was already going to need. Measured on 2026-09-09: a Prj.675 with a 4-channel
+        /// Front_Door took a 4-round order and then a 2-round order 26 s later, and two of the four
+        /// rounds that flew ended 2.4 km and 4.8 km short with the target still afloat.
+        /// </summary>
+        private sealed class Reservation
+        {
+            public ObjectBase Unit;
+            public string AmmoId;      // the order's ammunition id, for the sensor-sharing lookup
+            public string AmmoFile;    // AmmunitionParameters._ammunitionFileName, what a LAUNCHED
+                                       // round reports; the two are not always the same string
+            public int Shots;
+            public int Launched;
+            public float DispatchedSim;
+            public float ExpirySim;    // when the unlaunched remainder stops being reserved
+        }
+
+        private static readonly List<Reservation> _reservations = new List<Reservation>();
+
+        /// <summary>How long past its expected ripple a dispatched order keeps reserving the rounds
+        /// that have not appeared. Long enough to cover a launcher working through a slow cycle,
+        /// bounded so a dead order cannot hold a ship's channels for the rest of the mission.</summary>
+        private const float ReservationGraceSim = 120f;
+
+        /// <summary>
+        /// Reserve the rounds of a dispatched order until they are seen leaving. Only
+        /// channel-limited ammunition is tracked: everything that can form a missile group is
+        /// bounded by the group instead, so reserving it would refuse orders for no reason.
+        /// </summary>
+        private static void ReserveDispatched(Intent it, float simNow)
+        {
+            if (it?.Unit == null || it.AmmoId == null) return;
+            if (LauncherFactsSource.GuidanceChannelCap(it.Unit, it.AmmoId) == int.MaxValue) return;
+
+            int shots = Mathf.Max(1, it.Shots);
+            LauncherFactsSource.Facts f = LauncherFactsSource.Get(it.Unit, it.AmmoId);
+            float interval = (f.Valid && f.ShotInterval > 0f) ? f.ShotInterval
+                                                             : LauncherFactsSource.FallbackShotInterval;
+            float ripple = (shots - 1) * interval + Mathf.Max(0, it.Waves - 1) * (f.Valid ? f.ReloadGap : 0f);
+
+            string ammoFile = it.Unit.getAmmunitionByName(it.AmmoId)?._ap?._ammunitionFileName;
+
+            _reservations.Add(new Reservation
+            {
+                Unit = it.Unit,
+                AmmoId = it.AmmoId,
+                AmmoFile = string.IsNullOrEmpty(ammoFile) ? it.AmmoId : ammoFile,
+                Shots = shots,
+                Launched = 0,
+                DispatchedSim = simNow,
+                ExpirySim = simNow + it.StartupLead + ripple + ReservationGraceSim,
+            });
+        }
+
+        /// <summary>
+        /// Credit one observed launch against the oldest matching reservation. Called from the launch
+        /// tracker's first-sighting path, which sees every round the game puts up, so this does not
+        /// depend on the diagnostic expectation list and its verbose-only membership rule.
+        /// </summary>
+        internal static void CreditReservedLaunch(ObjectBase unit, string ammoFile)
+        {
+            if (unit == null || ammoFile == null) return;
+            for (int i = 0; i < _reservations.Count; i++)
+            {
+                Reservation r = _reservations[i];
+                if (r.Unit != unit || r.Launched >= r.Shots) continue;
+                if (!string.Equals(r.AmmoFile, ammoFile, StringComparison.Ordinal) &&
+                    !string.Equals(r.AmmoId, ammoFile, StringComparison.Ordinal)) continue;
+                r.Launched++;
+                if (r.Launched >= r.Shots) _reservations.RemoveAt(i);
+                return;
+            }
+        }
+
+        /// <summary>
+        /// Drop reservations whose rounds have arrived, whose shooter is gone, or which have waited
+        /// past their grace. Called once per tick.
+        ///
+        /// An expiry is worth a line: it means rounds were ordered, the channels were held for them,
+        /// and they never flew. That is the shortfall case seen from the guidance side.
+        /// </summary>
+        private static void PruneReservations(float simNow)
+        {
+            for (int i = _reservations.Count - 1; i >= 0; i--)
+            {
+                Reservation r = _reservations[i];
+                if (r.Unit == null || r.Unit.IsDestroyed) { _reservations.RemoveAt(i); continue; }
+                if (simNow < r.ExpirySim) continue;
+
+                _reservations.RemoveAt(i);
+                if (VerboseLog && r.Launched < r.Shots)
+                    Bootstrap.Log.LogInfo(
+                        $"[AutoTOT] reservation-expired {r.AmmoId} from {UnitNaming.SafeName(r.Unit)}: " +
+                        $"{r.Shots - r.Launched} of {r.Shots} round(s) never left in " +
+                        $"{simNow - r.DispatchedSim:0.0}s; their guidance channels are free again.");
+            }
+        }
+
+        /// <summary>
+        /// Rounds of exactly this ammunition still owed by dispatched orders. The magazine question,
+        /// as opposed to the channel question below.
+        /// </summary>
+        private static int ReservedRounds(ObjectBase unit, string ammoId)
+        {
+            int n = 0;
+            for (int i = 0; i < _reservations.Count; i++)
+            {
+                Reservation r = _reservations[i];
+                if (r.Unit != unit) continue;
+                if (!string.Equals(r.AmmoId, ammoId, StringComparison.Ordinal)) continue;
+                n += Mathf.Max(0, r.Shots - r.Launched);
+            }
+            return n;
+        }
+
+        /// <summary>
+        /// Rounds this ship has spoken for that are not yet occupying a channel: orders committed and
+        /// not released, plus orders dispatched whose rounds have not all launched.
+        ///
+        /// Counted across every ammunition that SHARES a guiding sensor with
+        /// <paramref name="ammoId"/>, because the budget belongs to the sensor rather than to the
+        /// ammunition. Rounds already in the air are deliberately absent: they appear in the sensor's
+        /// own weapon list, which the cap subtracts, and counting them here would charge them twice.
         /// </summary>
         private static int CommittedUnfired(ObjectBase unit, string ammoId)
         {
@@ -404,7 +530,16 @@ namespace AutoTOT
             {
                 Scheduled s = _scheduled[i];
                 if (s == null || s.Fired || s.Item == null) continue;
-                if (s.Item.Unit == unit && s.Item.AmmoId == ammoId) n += Mathf.Max(1, s.Item.Shots);
+                if (s.Item.Unit == unit &&
+                    LauncherFactsSource.SharesGuidanceSensor(unit, s.Item.AmmoId, ammoId))
+                    n += Mathf.Max(1, s.Item.Shots);
+            }
+            for (int i = 0; i < _reservations.Count; i++)
+            {
+                Reservation r = _reservations[i];
+                if (r.Unit != unit) continue;
+                if (!LauncherFactsSource.SharesGuidanceSensor(unit, r.AmmoId, ammoId)) continue;
+                n += Mathf.Max(0, r.Shots - r.Launched);
             }
             return n;
         }
@@ -422,7 +557,9 @@ namespace AutoTOT
             for (int i = 0; i < b.Items.Count; i++)
             {
                 Intent it = b.Items[i];
-                if (it != null && it.Unit == unit && it.AmmoId == ammoId) n += Mathf.Max(1, it.Shots);
+                if (it != null && it.Unit == unit &&
+                    LauncherFactsSource.SharesGuidanceSensor(unit, it.AmmoId, ammoId))
+                    n += Mathf.Max(1, it.Shots);
             }
             return n;
         }
@@ -511,6 +648,23 @@ namespace AutoTOT
             }
         }
 
+        /// <summary>
+        /// True when an earlier item in this commit shares <paramref name="lead"/>'s guiding sensor
+        /// on the same ship, so its pass already covered these rounds.
+        /// </summary>
+        private static bool PoolAlreadyClamped(List<Intent> items, int index, Intent lead)
+        {
+            for (int j = 0; j < index; j++)
+            {
+                Intent prior = items[j];
+                if (prior?.Unit != lead.Unit || prior.AmmoId == null) continue;
+                if (string.Equals(prior.AmmoId, lead.AmmoId, StringComparison.Ordinal)) continue;
+                if (LauncherFactsSource.SharesGuidanceSensor(lead.Unit, prior.AmmoId, lead.AmmoId))
+                    return true;
+            }
+            return false;
+        }
+
         private static void ClampToGuidanceChannels(List<Intent> items)
         {
             _channelCappedShooters.Clear();
@@ -527,6 +681,11 @@ namespace AutoTOT
                 if (lead?.Unit == null || lead.AmmoId == null) continue;
                 string key = lead.Unit.GetInstanceID() + "/" + lead.AmmoId;
                 if (!_clampSeen.Add(key)) continue;
+                // One pass per CHANNEL POOL, not per ammunition. Two radio-command types served by
+                // one radar draw on one set of channels, and budgeting them separately handed the
+                // same pool out twice. An earlier item in this same commit that shares the pool has
+                // already trimmed everything in it, this one included.
+                if (PoolAlreadyClamped(items, i, lead)) continue;
 
                 int cap = LauncherFactsSource.GuidanceChannelCap(lead.Unit, lead.AmmoId);
                 if (cap == int.MaxValue) { _channelCapWarned.Remove(key); continue; }
@@ -538,9 +697,19 @@ namespace AutoTOT
                 for (int j = 0; j < items.Count; j++)
                 {
                     Intent it = items[j];
-                    if (it != null && it.Unit == lead.Unit && it.AmmoId == lead.AmmoId)
+                    if (it != null && it.Unit == lead.Unit &&
+                        LauncherFactsSource.SharesGuidanceSensor(lead.Unit, it.AmmoId, lead.AmmoId))
                         requested += Mathf.Max(1, it.Shots);
                 }
+                // D3, commit side. The intake line only covers orders issued through the game's own
+                // interface; everything staged in the planner arrives here instead, which is the
+                // path the 2026-09-09 over-commit came in on.
+                if (VerboseLog)
+                    Bootstrap.Log.LogInfo(
+                        $"[AutoTOT] channels-commit {lead.AmmoId} from {lead.Unit.getUIDAndName()}: " +
+                        $"cap {cap}, committed-unlaunched {committed}, budget {budget}, requested " +
+                        $"{requested} | live {LauncherFactsSource.GuidanceOccupancyText(lead.Unit, lead.AmmoId)}");
+
                 if (requested <= budget) { _channelCapWarned.Remove(key); continue; }
 
                 // Trim in list order, so the targets staged first keep their full salvo and the ones
@@ -550,7 +719,9 @@ namespace AutoTOT
                 for (int j = 0; j < items.Count; j++)
                 {
                     Intent it = items[j];
-                    if (it == null || it.Unit != lead.Unit || it.AmmoId != lead.AmmoId) continue;
+                    if (it == null || it.Unit != lead.Unit ||
+                        !LauncherFactsSource.SharesGuidanceSensor(lead.Unit, it.AmmoId, lead.AmmoId))
+                        continue;
                     int give = Mathf.Min(Mathf.Max(1, it.Shots), left);
                     it.Shots = give;
                     left -= give;
@@ -685,6 +856,9 @@ namespace AutoTOT
 
             EngagementBoard.MarkFired(target);
             LaunchDiagnostics.RegisterExpectation(it, sched);
+            // Hold this order's channels until its rounds actually appear. Only on a dispatch the
+            // game accepted: an order it refused occupies nothing.
+            if (inserted) ReserveDispatched(it, GameClock.SimNow());
 
             if (VerboseLog)
                 Bootstrap.Log.LogInfo($"[AutoTOT] launched {unit.getUIDAndName()} -> {target.getUIDAndName()}");

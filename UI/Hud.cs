@@ -174,6 +174,19 @@ namespace AutoTOT
                 return;
             }
 
+            // With the master switch off the mod does nothing at all, and that has to include this
+            // component: OnGUI already refuses to paint, but Update went on running the hotkeys and
+            // the mouse capture, so an invisible panel could still arm a strike and swallow a click
+            // meant for the map. Finding 2 of docs/plans/open/BETA-RELEASE-AUDIT-PLAN.md. The switch
+            // is startup-only now, so this costs one bool per frame and never flickers.
+            if (!Coordinator.Enabled)
+            {
+                _resizing = false;
+                _dragging = false;
+                SetOverUi(false);
+                return;
+            }
+
             TrackSelection();
 
             bool modOk = Bootstrap.ToggleModifier == KeyCode.None || Input.GetKey(Bootstrap.ToggleModifier);
@@ -210,32 +223,30 @@ namespace AutoTOT
                 return;
             }
 
+            // Nothing is painted while the indicator is off, so nothing may capture the mouse over
+            // where the panel would have been. The hotkeys stay live: arming a strike still works
+            // through the game's own order interface with the panel hidden. Second half of
+            // finding 2.
+            if (!Bootstrap.ShowIndicator)
+            {
+                _resizing = false;
+                _dragging = false;
+                SetOverUi(false);
+                return;
+            }
+
             HandleDragInput();
             HandleResizeInput();
-            // D2 of the beta-release audit: this path runs whether or not OnGUI will paint, so with
-            // the master switch off or the indicator hidden the panel can still hold mouse capture
-            // over a rectangle the player cannot see. The capture itself is deliberately left
-            // unchanged here; the diagnostic says whether it happens.
-            bool willDraw = Coordinator.Enabled && Bootstrap.ShowIndicator;
             UpdateMouseCapture();
-            if (willDraw) _loggedDisabledCapture = false;
-            else if (_lastOverUi) LogDisabledCapture();
         }
 
-        // D2, panel side. One line per transition rather than one per frame.
-        private bool _loggedDisabledCapture;
         private static int _drewFrame = -1;
 
-        private void LogDisabledCapture()
-        {
-            if (_loggedDisabledCapture) return;
-            _loggedDisabledCapture = true;
-            Bootstrap.Log.LogWarning(
-                $"[AutoTOT] disabled-capture: the panel is holding mouse capture while it will not " +
-                $"draw (Enabled={Coordinator.Enabled}, ShowIndicator={Bootstrap.ShowIndicator}); " +
-                $"the map may not receive this click. D2 of the beta-release audit.");
-        }
-
+        /// <summary>
+        /// D2 of the beta-release audit, kept after the fix as a regression guard. Nothing should
+        /// reach a hotkey with the master switch off now that Update returns early, so a line here
+        /// means that early return has been bypassed.
+        /// </summary>
         private static void LogDisabledEntry(string what)
         {
             if (Coordinator.Enabled) return;

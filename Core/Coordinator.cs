@@ -619,6 +619,7 @@ namespace AutoTOT
             LauncherFactsSource.ClearCache();
             LaunchDiagnostics.Reset();
             EngagementBoard.Clear();
+            _reservations.Clear();
             _lastReleaseSimNow = -1f;
             CoordinatorProfiler.Reset();
             if (VerboseLog) Bootstrap.Log.LogInfo("[AutoTOT] coordinator state reset.");
@@ -656,6 +657,10 @@ namespace AutoTOT
             CoordinatorProfiler.Begin(CoordinatorProfiler.Stage.Anchor);
             UpdateAnchorTracking(simNow);
             CoordinatorProfiler.End(CoordinatorProfiler.Stage.Anchor);
+
+            PruneReservations(simNow);
+            // Engagement-board cleanup, on the tick rather than on the draw. See EngagementBoard.Prune.
+            EngagementBoard.Prune(simNow);
 
             CoordinatorProfiler.Begin(CoordinatorProfiler.Stage.Release);
             ReleaseDueLaunches(simNow);

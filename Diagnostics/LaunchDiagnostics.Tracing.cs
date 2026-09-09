@@ -149,6 +149,24 @@ namespace AutoTOT
             }
         }
 
+        /// <summary>
+        /// True while at least one tracked friendly round is still flying at this target. The
+        /// single-target question behind <see cref="ForEachInFlight"/>, for the engagement board's
+        /// prune, which runs on the coordinator tick and so cannot use the display scratch the
+        /// visitor fills.
+        /// </summary>
+        internal static bool HasInFlightAt(ObjectBase target)
+        {
+            if (target == null) return false;
+            foreach (KeyValuePair<WeaponBase, FlightSample> kv in _flightTracker)
+            {
+                WeaponBase w = kv.Key;
+                if (w == null || w.IsDestroyed) continue;
+                if (ReferenceEquals(w.CurrentIntendedTargetObject, target)) return true;
+            }
+            return false;
+        }
+
         // One-time per-missile line at first sighting: nominal speeds + our kinematic estimate, so a
         // late group can be read against what the game's own solo sim predicted. Flight-model trace.
         private static void LogTrackInit(WeaponBase w, float est)
