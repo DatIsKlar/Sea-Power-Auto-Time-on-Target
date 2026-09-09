@@ -45,7 +45,12 @@ Two entry paths feed the same pipeline:
   collection window.
 - **Armed strike** (Alt+H, or the panel's + TARGET / FIRE STRIKE): one
   batch that spans any number of targets and commits only when the player
-  fires it. Both entry paths above feed it while it is armed.
+  fires it. Both entry paths above feed it while it is armed. Firing does NOT
+  disarm: `ExecuteStrike` commits the batch and opens a fresh empty one, so the
+  next orders are collected into the next strike. Collection ends only at Alt+H
+  again, the panel's CLEAR, or a mission `Reset`. Arming was one-shot until
+  2026-09-09; the order given after a fire then fell through the `autoOff`
+  branch to the game uncoordinated, which read as the mode switching itself off.
 
 ### Interceptability gates
 

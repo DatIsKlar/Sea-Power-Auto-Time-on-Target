@@ -215,6 +215,13 @@ briefly while the coordinator collects all orders aimed at the same target, then
 the moment that makes impacts coincide. Guns and single-shot attacks are effectively
 unaffected; AI auto-attacks are never intercepted.
 
+### Strike collection stays on until you turn it off
+
+Alt+H toggles it. Firing the strike does **not** turn it off: the orders you give next
+are collected into a new strike, and collection ends only when you press Alt+H again,
+press **CLEAR** in the panel, or start another mission. This matters because an order
+given while collection is off goes straight to the game with no coordination at all.
+
 ## How it works
 
 Short version; pipeline detail in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md),

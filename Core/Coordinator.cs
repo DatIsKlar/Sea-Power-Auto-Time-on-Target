@@ -338,24 +338,52 @@ namespace AutoTOT
         internal static void ArmStrike()
         {
             if (_strikeBatch != null) return;
-            _strikeBatch = new Batch { IsStrike = true, FirstRealTime = Time.unscaledTime };
-            _strikeBatch.LastRealTime = _strikeBatch.FirstRealTime;
-            Bootstrap.Log.LogInfo("[AutoTOT] strike armed: orders at any target will be collected until you fire it.");
+            OpenStrikeBatch();
+            Bootstrap.Log.LogInfo("[AutoTOT] strike armed: orders at any target will be collected until you disarm it.");
         }
 
-        /// <summary>Commit the armed strike as one coordinated set. No-op if nothing is armed.</summary>
+        private static void OpenStrikeBatch()
+        {
+            _strikeBatch = new Batch { IsStrike = true, FirstRealTime = Time.unscaledTime };
+            _strikeBatch.LastRealTime = _strikeBatch.FirstRealTime;
+        }
+
+        /// <summary>
+        /// Commit the armed strike as one coordinated set, then STAY ARMED for the next one. No-op
+        /// if nothing is armed.
+        ///
+        /// Arming used to be one-shot: firing cleared the batch, and the next order the player gave
+        /// fell through TryIntercept's `autoOff` branch straight to the game, uncoordinated, with
+        /// only a verbose line to say so. That reads as the feature switching itself off mid-fight,
+        /// and it silently downgrades a real order — observed three times in the 2026-09-09 session
+        /// (`not collected: auto off and no strike armed` at a shooter that had just fired a strike).
+        /// A mode the player turned on now ends only where they turn it off: the arm hotkey toggles
+        /// it, CLEAR discards it, and a mission Reset drops it.
+        ///
+        /// The new batch opens AFTER CommitBatch so the fired orders are fully committed before
+        /// anything can land in the next one. AutoTOT's own dispatch cannot self-collect regardless,
+        /// since it runs under InsertEngageTask_Patch.Bypass.
+        /// </summary>
         internal static void ExecuteStrike()
         {
             Batch b = _strikeBatch;
-            _strikeBatch = null;
             if (b == null) return;
+            _strikeBatch = null;
             if (b.Items.Count == 0)
             {
-                Bootstrap.Log.LogInfo("[AutoTOT] strike executed with no orders; nothing to coordinate.");
+                Bootstrap.Log.LogInfo("[AutoTOT] strike executed with no orders; nothing to coordinate. Still armed.");
+                OpenStrikeBatch();
                 return;
             }
             CommitBatch(b);
+            OpenStrikeBatch();
+            Bootstrap.Log.LogInfo(
+                $"[AutoTOT] strike fired ({b.Items.Count} order(s)) and still armed: the next orders " +
+                $"you give are collected into a new strike. {StrikeDisarmHint}");
         }
+
+        /// <summary>How the player turns collection off, quoted in the fire log so the mode is never a surprise.</summary>
+        internal const string StrikeDisarmHint = "Press the strike key again, or CLEAR, to stop collecting.";
 
         /// <summary>Discard the armed strike without firing. The orders it held are never issued.</summary>
         internal static void CancelStrike()
