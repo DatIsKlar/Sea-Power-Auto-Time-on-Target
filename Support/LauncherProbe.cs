@@ -82,21 +82,6 @@ namespace AutoTOT
             }
         }
 
-        /// <summary>
-        /// A field by name anywhere in a type's hierarchy, including private members of base
-        /// classes, which <see cref="Type.GetField(string, BindingFlags)"/> does not return.
-        /// </summary>
-        private static FieldInfo FindFieldUpHierarchy(Type type, string name)
-        {
-            const BindingFlags F = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic
-                                 | BindingFlags.DeclaredOnly;
-            for (Type t = type; t != null && t != typeof(object); t = t.BaseType)
-            {
-                FieldInfo f = t.GetField(name, F);
-                if (f != null) return f;
-            }
-            return null;
-        }
 
         private static readonly object[] _usableArgs = new object[6];
 
@@ -235,53 +220,57 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// True while ANY launcher serving this ammo has never launched, so the order is likely to
-        /// be filled by one that still owes its cold-start sequence.
+        /// True when ANY launcher serving this ammo will run the game's warm-up on its next order,
+        /// which is the reload that shows up as the WarmingUp engage state.
         ///
-        /// Ship-level rather than per-object because the launcher that will take the order is not
-        /// known at commit: the game filters candidates at dispatch. "Any cold" is the rule that
-        /// fits every observed order, including the one where two cold launchers took an order
-        /// while a warm one sat idle.
+        /// This is the game's own condition, not an inference. WeaponSystemLauncher.cs:471:
         ///
-        /// The stamp is resolved from each launcher's RUNTIME type rather than from
-        /// WeaponSystemLauncher. A field declared on a derived launcher class sits BELOW that type,
-        /// so a walk starting there and going up misses it, which is why the first two builds of
-        /// this read False on a launcher that then held WarmingUp for seven seconds.
+        /// <code>
+        /// _engageState = EngageState.WarmingUp;
+        /// if (_vwp._hasWarmUp &amp;&amp; _ammoForEngage._ap._requiresWarmUp &amp;&amp; !base.IsHot)
+        /// {
+        ///     base.IsHot = true;
+        ///     if (!DM._disableWarmUp &amp;&amp; !_vwp._perContainerReload) { StartReload(); return; }
+        /// }
+        /// </code>
+        ///
+        /// So the cost is <c>_magazineReloadTime</c>, and it is paid only by a launcher that
+        /// declares a warm-up, firing ammunition that requires one, while COLD. That is why the
+        /// Spruance Sea Sparrow's 900 s and the Type 055 HQ-10's 600 s never appear: those mounts
+        /// fail the flags, and the field there is an ordinary magazine reload. Reading
+        /// <c>_perContainerReload</c> alone, as the first build did, would have charged them both.
+        ///
+        /// <c>IsHot</c> is the game's cold flag and it is public. It is set the first time the
+        /// launcher warms and cleared again at WeaponSystem.cs:565 once the mount has been at rest
+        /// and untasked for 1800 s, so this correctly goes back to true after half an hour idle.
+        /// That matches the observed runs, where a second order 612 s later skipped the warm-up.
+        ///
+        /// Ship-level because the launcher that will take the order is not known at commit: the
+        /// game filters candidates at dispatch. "Any cold" fits every observed order, including the
+        /// one where two cold launchers took an order while a warm one sat idle.
         /// </summary>
-        internal static bool AnyLauncherCold(ObjectBase ship, string ammoId)
+        internal static bool AnyLauncherNeedsWarmup(ObjectBase ship, string ammoId)
         {
-            if (ship == null || ammoId == null) return false;
+            if (ship == null || ammoId == null || DM._disableWarmUp) return false;
 
+            AmmunitionParameters ap;
             List<WeaponSystem> launchers;
-            try { launchers = ship.GetWeaponSystemsForAmmunition(ammoId); }
+            try
+            {
+                ap = ship.getAmmunitionByName(ammoId)?._ap;
+                launchers = ship.GetWeaponSystemsForAmmunition(ammoId);
+            }
             catch { return false; }
-            if (launchers == null) return false;
+            if (ap == null || !ap._requiresWarmUp || launchers == null) return false;
 
             for (int i = 0; i < launchers.Count; i++)
             {
                 WeaponSystem ws = launchers[i];
-                if (ws == null) continue;
-                FieldInfo f = LastLaunchFieldFor(ws.GetType());
-                if (f == null) continue;
-                try
-                {
-                    object raw = f.GetValue(ws);
-                    float last = raw is float fl ? fl : raw is double d ? (float)d : float.NaN;
-                    if (!float.IsNaN(last) && last <= 0f) return true;
-                }
-                catch { /* one unreadable launcher does not decide the ship */ }
+                WeaponParameters vwp = ws?._vwp;
+                if (vwp == null) continue;
+                if (vwp._hasWarmUp && !vwp._perContainerReload && !ws.IsHot) return true;
             }
             return false;
-        }
-
-        private static readonly Dictionary<Type, FieldInfo> _lastLaunchByType = new Dictionary<Type, FieldInfo>();
-
-        private static FieldInfo LastLaunchFieldFor(Type t)
-        {
-            if (_lastLaunchByType.TryGetValue(t, out FieldInfo cached)) return cached;
-            FieldInfo f = FindFieldUpHierarchy(t, "_lastLaunchTime");
-            _lastLaunchByType[t] = f;
-            return f;
         }
 
         /// <summary>

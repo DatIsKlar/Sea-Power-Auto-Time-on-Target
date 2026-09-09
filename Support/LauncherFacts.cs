@@ -79,7 +79,7 @@ namespace AutoTOT
             // D: what a launcher that has never fired owes before its first round, over and above
             // LauncherCycle: the magazine hoist plus the two fixed states after it. Zero for a
             // parallel-reload (VLS) mount and zero once the ship's launchers have all fired.
-            public float ColdStart;
+            public float ColdStart;  // the game's warm-up reload, when a cold launcher will run it
         }
 
 
@@ -281,8 +281,8 @@ namespace AutoTOT
                 // them: the hoist is declared, the other two are measured constants.
                 $"magazineReload {vwp._magazineReloadTime:0.00}s, " +
                 $"perContainer {vwp._perContainerReload}, " +
-                $"coldStartLearned {LauncherTimingProbe.ColdStartSeconds(vwp._systemName):0.00}s, " +
-                $"anyLauncherCold {LauncherProbe.AnyLauncherCold(ship, ammoId)} | " +
+                $"hasWarmUp {vwp._hasWarmUp}, " +
+                $"needsWarmup {LauncherProbe.AnyLauncherNeedsWarmup(ship, ammoId)} | " +
                 $"targetAcqTime {vwp._targetAcquisitionTime:0.00}s, " +
                 $"automatic {AutomaticText(vwp)}, standalone {vwp._worksStandalone}, " +
                 $"actActive {ReactionFlag(ship, "ActActive")}, orientActive {ReactionFlag(ship, "OrientActive")}, " +
@@ -417,16 +417,21 @@ namespace AutoTOT
             // AligningLauncher. On a Kidd-class MK26 that is the largest startup error on record,
             // 11.69 s observed against 0.00 s predicted, all of it before round one.
             //
-            // LEARNED, not declared, and the first build got this wrong. WarmingUp on the MK26 does
-            // equal WeaponParameters._magazineReloadTime (declared 7.00, observed 6.83 to 7.06),
-            // but the same field reads 900.00 s on a Spruance Sea Sparrow and 600.00 s on a Type
-            // 055 HQ-10, where it is a full magazine reload and no launcher ever enters the state.
-            // _perContainerReload does not separate them: all three read False. Charging the
-            // declared value would have put fifteen minutes of startup lead on a Sea Sparrow.
-            // LauncherTimingProbe accumulates the states actually walked, so a mount that never
-            // runs them is never charged and no ammunition needs a special case.
-            f.ColdStart = LauncherProbe.AnyLauncherCold(ship, ammoId)
-                ? NonNegativeFinite(LauncherTimingProbe.ColdStartSeconds(vwp._systemName))
+            // The gate is the game's own, read from WeaponSystemLauncher.cs:471 rather than
+            // inferred: warm-up runs, and costs _magazineReloadTime, only when the launcher
+            // declares _hasWarmUp, the ammunition sets _requiresWarmUp, the mount is not
+            // _perContainerReload, and the launcher is not already IsHot. That is what keeps the
+            // Spruance Sea Sparrow's 900 s and the Type 055 HQ-10's 600 s out: both fail the flags,
+            // and the field there is an ordinary magazine reload. An earlier build gated on
+            // _perContainerReload alone and would have charged fifteen minutes of startup lead to a
+            // Sea Sparrow. See LauncherProbe.AnyLauncherNeedsWarmup.
+            //
+            // ChoosingContainer and AligningLauncher, the two states after the warm-up, are NOT
+            // charged. They ran 1.67 to 3.00 s and 1.33 s on the MK26 and they run on a warm order
+            // too, so they are a general per-order cost rather than a cold one, and nothing
+            // declared has been found behind either. Deliberately left as residual.
+            f.ColdStart = LauncherProbe.AnyLauncherNeedsWarmup(ship, ammoId)
+                ? NonNegativeFinite(vwp._magazineReloadTime)
                 : 0f;
 
             f.StartupDelay = NonNegativeFinite(vwp._preLaunchDelay + 0.5f * vwp._maxReactiontime
