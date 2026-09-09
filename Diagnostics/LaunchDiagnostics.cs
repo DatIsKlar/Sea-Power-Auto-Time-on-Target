@@ -297,6 +297,22 @@ namespace AutoTOT
 
 
         /// <summary>
+        /// Floor on the mean speed a reconstructed substitute geometry may imply, as a fraction of
+        /// the round's own observed peak. A lofted round that decelerates into a subsonic terminal
+        /// run still averages roughly three quarters of its peak over the straight line, so 0.4
+        /// leaves room for a genuine dogleg of well over twice the direct distance before the line
+        /// goes quiet, while still catching the 19% case that started this.
+        /// </summary>
+        private const float SubGapMinMeanSpeedFraction = 0.4f;
+
+        /// <summary>Ceiling on the same quantity. A round cannot average more than its own peak, so
+        /// the physical limit is 1.0, and the slack above it is for the measurement rather than the
+        /// physics: the peak is a per-tick sample and the launch position is a snapshot, and a
+        /// flat-flying supersonic round already averages within a few percent of its peak, which is
+        /// too close to a hard 1.0 to spend a good line on.</summary>
+        private const float SubGapMaxMeanSpeedFraction = 1.1f;
+
+        /// <summary>
         /// The estimator gap for a round whose seeker switched, measured against the ship it
         /// actually hit. The strict <c>gap</c> line stays suppressed for these, so nothing here can
         /// be mistaken for a reference measurement; this is a second, differently named line.
@@ -317,6 +333,16 @@ namespace AutoTOT
         ///
         /// <para>Good to a few seconds, which is the point. Every estimator defect found so far has
         /// been 4 to 72 s.</para>
+        ///
+        /// <para><b>Why the reconstruction is checked before it is believed.</b> Two long-range
+        /// rounds once reported gaps of +270 s and +321 s here, on a strike whose strict gap was
+        /// -1.9 s. The integrator was fine: the geometry handed to it was not, because the range it
+        /// solved worked out at 56 km on a shot the launch snapshot recorded as 270 km. The old line
+        /// printed only the rewind distance, so that read as an ordinary "tolerance about 15.5s" and
+        /// the defect was only visible by working the arithmetic backwards from the printed
+        /// tolerance. The range and the implied mean speed are printed now, and a reconstruction
+        /// that would need the round to fly slower or faster than it was seen flying prints as
+        /// IMPLAUSIBLE with no gap number at all, since a wrong gap here is worse than none.</para>
         /// </summary>
         private static void LogSubstituteGap(FlightSample s, float flightTime)
         {
@@ -335,6 +361,43 @@ namespace AutoTOT
                 float rewoundM = (sub.transform.position - subAtLaunch).magnitude
                                  * GameUnits.MetersPerUnity;
 
+                // The range the estimate is actually asked to solve, and the mean speed the round
+                // would have needed to cover it in the time it flew. Both printed: this is the
+                // quantity that was wrong the one time this line lied, and neither was on it.
+                float subRangeM = (subAtLaunch - s.LaunchPosU).magnitude * GameUnits.MetersPerUnity;
+                float meanSpeedKn = subRangeM / flightTime / GameUnits.KnotsToMs;
+
+                // Plausibility ceiling, checked before the sim runs so a broken geometry costs
+                // nothing. The round's own peak speed is the reference because it is measured, not
+                // modelled: whatever the reconstruction claims, a missile cannot average more than
+                // the fastest it was ever seen going, and one that averaged a small fraction of it
+                // over a straight line would have had to fly several times the direct distance.
+                if (s.PeakSpeedKn > 1f
+                    && (meanSpeedKn > s.PeakSpeedKn * SubGapMaxMeanSpeedFraction
+                        || meanSpeedKn < s.PeakSpeedKn * SubGapMinMeanSpeedFraction))
+                {
+                    // The same range to the ASSIGNED ship, measured from the same stored launch
+                    // position, so one line separates the two candidates without another test run:
+                    // if both ranges are implausibly short then LaunchPosU is what went stale, and
+                    // if only the substitute's is short then it is the target position read here.
+                    bool haveAssigned = s.Target != null && !s.Target.IsDestroyed;
+                    float assignedKm = haveAssigned
+                        ? (s.Target.transform.position - s.LaunchPosU).magnitude
+                          * GameUnits.MetersPerUnity / 1000f
+                        : 0f;
+                    string assigned = haveAssigned
+                        ? $"{assignedKm:0.0}km"
+                        : "unavailable, assigned target gone";
+                    Bootstrap.Log.LogInfo(
+                        $"[AutoTOT] gap-sub {s.AmmoName} -> {s.CurrentTargetName} " +
+                        $"(seeker switched from {s.TargetName}): NO GAP, the reconstructed geometry " +
+                        $"is not believable. Range {subRangeM / 1000f:0.0}km over {flightTime:0.0}s " +
+                        $"needs a mean {meanSpeedKn:0}kn, and this round peaked at {s.PeakSpeedKn:0}kn " +
+                        $"| same launch position to the assigned {s.TargetName}: {assigned}, " +
+                        $"back-projected {rewoundM / 1000f:0.0}km");
+                    return;
+                }
+
                 var launch = new FlightTime.LaunchState(s.LaunchPosU, s.LaunchVelKn,
                                                         Vector3.zero, subAtLaunch);
                 float est = FlightTime.EstimateFromLaunch(s.Shooter, s.ShooterAmmoId, sub, launch);
@@ -347,17 +410,15 @@ namespace AutoTOT
                 }
                 // Tolerance: the rewind distance is the part of the geometry we had to reconstruct,
                 // so express it in seconds at the speed this round actually averaged.
-                float meanSpeedMs = (flightTime > 0f)
-                    ? (s.LaunchPosU - sub.transform.position).magnitude
-                      * GameUnits.MetersPerUnity / flightTime
-                    : 0f;
+                float meanSpeedMs = meanSpeedKn * GameUnits.KnotsToMs;
                 string tol = meanSpeedMs > 1f
                     ? $"about {rewoundM / meanSpeedMs:0.#}s"
                     : "unknown";
                 Bootstrap.Log.LogInfo(
                     $"[AutoTOT] gap-sub {s.AmmoName} -> {s.CurrentTargetName} " +
                     $"(seeker switched from {s.TargetName}): est {est:0.0}s, actual {flightTime:0.0}s, " +
-                    $"gap {flightTime - est:+0.0;-0.0}s | APPROXIMATE: the substitute's launch " +
+                    $"gap {flightTime - est:+0.0;-0.0}s | APPROXIMATE: range {subRangeM / 1000f:0.0}km " +
+                    $"(mean {meanSpeedKn:0}kn, peak {s.PeakSpeedKn:0}kn), the substitute's launch " +
                     $"position was back-projected {rewoundM / 1000f:0.0}km, tolerance {tol}");
             }
             catch (System.Exception e)
