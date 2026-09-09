@@ -155,6 +155,7 @@ namespace AutoTOT
         {
             _cache.Clear();
             _startupLogged.Clear();   // one launcher-startup line per mission, not per session
+            LauncherTimingProbe.Reset();   // and one timing-probe line per system and state
         }
         internal static long CacheHits => _cache.HitCount;
         internal static long CacheMisses => _cache.MissCount;

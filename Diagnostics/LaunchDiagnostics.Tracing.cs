@@ -87,6 +87,12 @@ namespace AutoTOT
                         $"at t+{simNow - e.RegisteredSim:0.00}s, launched {e.Launched}/{e.Requested}" +
                         $"{(t.WarmupCount > 1 ? $", warmup #{t.WarmupCount}" : "")}{Unmasking(e)}");
 
+                    // D11: if the state it just left is one the startup model does not cost, ask
+                    // which declared field carries that duration. Verbose, once per system and
+                    // state per mission. See LauncherTimingProbe.
+                    LauncherTimingProbe.OnStateLeft(e.Unit, e.AmmoId, v.System, t.SystemName,
+                                                    t.State, held);
+
                     t.State = v.State;
                     t.SinceSim = simNow;
                 }
