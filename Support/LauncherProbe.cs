@@ -64,7 +64,12 @@ namespace AutoTOT
                 _onRailStartField = launcher?.GetField("_onRailWarmupStartTime", Inst);
                 // Sim time of this launcher's last launch, 0 while it has never fired. The magazine
                 // hoist is paid by a COLD launcher only; see AnyLauncherCold.
-                _lastLaunchField = launcher?.GetField("_lastLaunchTime", Inst);
+                //
+                // Found by walking the hierarchy, not by a flat GetField: the field is private and
+                // declared on the WeaponSystem BASE, and a flat lookup on WeaponSystemLauncher
+                // returns null for it. That is exactly what happened on the first build, where
+                // anyLauncherCold read False on a launcher that then held WarmingUp for 6.89s.
+                _lastLaunchField = FindFieldUpHierarchy(launcher, "_lastLaunchTime");
 
                 // isWeaponSystemUsable(WeaponSystem, string, ObjectBase, bool, bool, bool). Taken by
                 // signature rather than by name alone: the class carries an Ammunition overload too,
@@ -83,6 +88,22 @@ namespace AutoTOT
                 Bootstrap.Log.LogWarning($"[AutoTOT] launcher-probe: reflection unavailable, " +
                                          $"per-launcher fields will read as unknown.\n{e}");
             }
+        }
+
+        /// <summary>
+        /// A field by name anywhere in a type's hierarchy, including private members of base
+        /// classes, which <see cref="Type.GetField(string, BindingFlags)"/> does not return.
+        /// </summary>
+        private static FieldInfo FindFieldUpHierarchy(Type type, string name)
+        {
+            const BindingFlags F = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic
+                                 | BindingFlags.DeclaredOnly;
+            for (Type t = type; t != null && t != typeof(object); t = t.BaseType)
+            {
+                FieldInfo f = t.GetField(name, F);
+                if (f != null) return f;
+            }
+            return null;
         }
 
         private static readonly object[] _usableArgs = new object[6];
