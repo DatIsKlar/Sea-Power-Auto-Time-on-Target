@@ -109,6 +109,29 @@ namespace AutoTOT
             // coarse to localize a transition; `stage-obs` fires on the change itself and is our
             // only direct ground truth for the region model's phase boundaries.
             public WeaponBase.FlightStage LastStage;
+            // Corpus pairing. DumpKey names the .solveinput this round was solved from, so the
+            // outcome can be filed against it; the rest is what a replay needs in order to be a
+            // fair test of the model rather than of the game's randomness.
+            public string DumpKey;
+            public float MotorPerformance = 1f;
+            public float MinCompression = float.MaxValue;
+            public float MaxCompression;
+            // The physics step the round was ACTUALLY integrated with, which is the quantity that
+            // matters rather than the compression that caused it: the game adapts it between 60 Hz
+            // and 30 Hz on frame rate, and enlarges it above 10x compression. A round flown at a
+            // steady step is reproducible whatever that step was; one whose step moved mid-flight
+            // is not.
+            public float MinFlownStep = float.MaxValue;
+            public float MaxFlownStep;
+            // Grouped flight is NOT in the integrator. MissileGroup.cs:135 cuts the leader's speed
+            // by up to 40% while the formation forms and holds followers around it, and a leader
+            // cruises at _groupLeaderAltUnity. Our only handling is GroupFormingDelay, which shifts
+            // the RELEASE time and never touches the estimate, so a grouped round's gap still
+            // carries the whole unmodelled effect. Recorded so those rounds can be scored as their
+            // own cohort instead of dragging the solo mean around.
+            public bool InGroup;
+            public bool GroupLeader;
+            public int MaxGroupSize;
         }
 
         // Sampling cadence for the `track` trace lives in TelemetryCadence, shared with the
@@ -229,6 +252,18 @@ namespace AutoTOT
                 {
                     existing.LastDistM = distM;
                     existing.LastSeenTime = simNow;
+                    // Compression band over the whole flight. Above 10x the game enlarges its own
+                    // physics step, so the round flies a different trajectory and the flight time
+                    // stops being comparable with a solve; the corpus needs to know that happened.
+                    float comp = GameTime.TimeCompression;
+                    if (comp < existing.MinCompression) existing.MinCompression = comp;
+                    if (comp > existing.MaxCompression) existing.MaxCompression = comp;
+                    float step = GameTime.fixedDeltaTime;
+                    if (step > 0f)
+                    {
+                        if (step < existing.MinFlownStep) existing.MinFlownStep = step;
+                        if (step > existing.MaxFlownStep) existing.MaxFlownStep = step;
+                    }
                     if (!ReferenceEquals(existing.CurrentTarget, tgt))
                     {
                         existing.CurrentTarget = tgt;
@@ -308,7 +343,17 @@ namespace AutoTOT
                         Coordinated = coordinated,
                         LastStage = w._flightStage,
                         AirTargetNote = AirTargetGeometry(w, tgt),
+                        DumpKey = (Coordinator.TraceFlightModel && coordinated && w._ap != null &&
+                                   w._launchPlatform != null)
+                            ? FlightTime.DumpInputFor(w._launchPlatform, w._ap._ammunitionFileName, tgt)
+                            : null,
+                        MotorPerformance = MotorPerformanceOf(w),
+                        InGroup = InGroupNow(w),
+                        GroupLeader = IsGroupLeader(w),
+                        MaxGroupSize = w._ap != null ? w._ap._maxGroupSize : 0,
                     };
+                    fresh.MinCompression = GameTime.TimeCompression;
+                    fresh.MaxCompression = GameTime.TimeCompression;
                     // First sighting of this missile => it just left the rail. Credit it to the
                     // matching pending order (this branch fires exactly once per WeaponBase, so no
                     // double count). Credited regardless of coordination (a no-op if nothing matches).
@@ -321,6 +366,35 @@ namespace AutoTOT
                     _flightTracker[w] = fresh;
                 }
             }
+        }
+
+        /// <summary>
+        /// The per-round thrust multiplier the game rolled at spawn (Missile.cs:62), or 1 when the
+        /// round is not a missile or the field is unreadable. Recorded so a replay can reproduce
+        /// the flight it is being scored against instead of averaging over the roll.
+        /// </summary>
+        private static float MotorPerformanceOf(WeaponBase w)
+        {
+            var missile = w as Missile;
+            return missile != null ? missile._motorPerformance : 1f;
+        }
+
+        /// <summary>
+        /// Is this round flying as part of a missile group right now? Read at first sighting, which
+        /// is before the formation has finished assembling, so it reports the round's INTENT to
+        /// group rather than a completed formation.
+        /// </summary>
+        private static bool InGroupNow(WeaponBase w)
+        {
+            var missile = w as Missile;
+            return missile != null && !ReferenceEquals(missile._missileGroup, null);
+        }
+
+        /// <inheritdoc cref="InGroupNow"/>
+        private static bool IsGroupLeader(WeaponBase w)
+        {
+            var missile = w as Missile;
+            return missile != null && missile.GroupLeader;
         }
 
         /// <summary>Gather trackers whose missile is gone, into the reused scratch list.</summary>
@@ -554,6 +628,19 @@ namespace AutoTOT
                             $"[AutoTOT] impact {s.AmmoName} -> {s.TargetName}: {outcome} at sim {s.LastSeenTime:0.0} " +
                             $"(flight {flightTime:0.0}s, final range {s.LastDistM:0} m){switched}{residual}" +
                             (string.IsNullOrEmpty(s.AirTargetNote) ? "" : $" | {s.AirTargetNote}"));
+                        // One corpus entry per round: the input it was solved from, and what the
+                        // round then did. Written whenever the round was dumped, arrival or not,
+                        // because a no-arrival is a fact the lab needs in order to exclude it.
+                        if (!string.IsNullOrEmpty(s.DumpKey))
+                            SolveInputDump.WriteResult(
+                                s.DumpKey, s.AmmoName, s.TargetName, flightTime, hit, s.LastDistM,
+                                retargeted, s.MotorPerformance,
+                                s.MinCompression == float.MaxValue ? 1f : s.MinCompression,
+                                s.MaxCompression,
+                                s.MinFlownStep == float.MaxValue ? 0f : s.MinFlownStep,
+                                s.MaxFlownStep, s.KinEstAtLaunch,
+                                s.InGroup, s.GroupLeader, s.MaxGroupSize);
+
                         // gap = actual flown time − the sim estimate captured at launch (positive =>
                         // the sim UNDER-predicts). Peak altitude and terminal speed say WHERE the gap
                         // comes from. HIT only. A RETARGETED round is excluded and reported as such:
