@@ -21,7 +21,9 @@ namespace AutoTOT
             internal readonly Vector2[]   AltNodes;
             internal readonly string      AmmoLabel;
             internal readonly float       BoostClimbDeg;
-            internal readonly float       DecelPerStep;
+            /// <summary>Deceleration in knots per SECOND. Held as a rate rather than a
+            /// per-step amount so the step size stays a parameter of the loop.</summary>
+            internal readonly float       DecelRate;
             internal readonly float       DescentDeg;
             internal readonly float       DescentOnsetDeg;
             internal readonly float       DragFactor;
@@ -90,7 +92,7 @@ namespace AutoTOT
                 Vector2[] altNodes,
                 string ammoLabel,
                 float boostClimbDeg,
-                float decelPerStep,
+                float decelRate,
                 float descentDeg,
                 float descentOnsetDeg,
                 float dragFactor,
@@ -139,7 +141,7 @@ namespace AutoTOT
                 AltNodes = altNodes;
                 AmmoLabel = ammoLabel;
                 BoostClimbDeg = boostClimbDeg;
-                DecelPerStep = decelPerStep;
+                DecelRate = decelRate;
                 DescentDeg = descentDeg;
                 DescentOnsetDeg = descentOnsetDeg;
                 DragFactor = dragFactor;
@@ -187,6 +189,31 @@ namespace AutoTOT
             }
         }
 
+#if AUTOTOT_OFFLINE
+        /// <summary>
+        /// Per-round thrust multiplier for a replay. The game rolls one of these per missile
+        /// (Missile.cs:62) and multiplies thrust by it; the estimator cannot know it in advance and
+        /// correctly assumes 1.0. A replay being scored against ONE recorded flight can set the
+        /// value that flight actually used, which removes the +/-2% that otherwise dominates any
+        /// single kinematic round. Offline only: the shipped mod has no such field.
+        /// </summary>
+        internal static float OfflineMotorScale = 1f;
+
+        /// <summary>
+        /// Offline entry point to the step loop, for the replay lab in tools/lab. Exists only in
+        /// the AUTOTOT_OFFLINE build; the shipped mod has no such member.
+        /// </summary>
+        internal static float SolveOffline(in SolveInput i, AmmunitionParameters ap, float dt,
+                                           out IntegratedPhases phases)
+        {
+            // The step loop calls the game's own thrust and drag helpers through reflection, so the
+            // lookup that binds them has to have run. In game this happens during startup.
+            EnsureSimLookup();
+            phases = default;
+            return Solve(in i, ap, ref phases, dt);
+        }
+#endif
+
         /// <summary>
         /// Which of the two cruise-leg altitudes applies at this distance. The game runs
         /// <c>MaintainSeaSkimming</c> and <c>MaintainFinalFlightAlt</c> as separate stages with
@@ -208,17 +235,17 @@ namespace AutoTOT
         /// CalculateThrustOverTime. Concurrent reads of those are safe.
         /// </summary>
         private static float Solve(in SolveInput i, AmmunitionParameters ap,
-                                   ref IntegratedPhases phases)
+                                   ref IntegratedPhases phases, float dt = IntegrationStepSim)
         {
             const float KU = GameUnits.KnotsToUnityPerSecond;
-            const float dt = IntegrationStepSim;
             object[] thrustArgs = new object[4];
             object[] dragArgs = new object[10];
 
             Vector2[]   altNodes               = i.AltNodes;
             string      ammoLabel              = i.AmmoLabel;
             float       boostClimbDeg          = i.BoostClimbDeg;
-            float       decelPerStep           = i.DecelPerStep;
+            float       decelRate              = i.DecelRate;
+            float       decelPerStep           = decelRate * dt;
             float       descentDeg             = i.DescentDeg;
             float       descentOnsetDeg        = i.DescentOnsetDeg;
             float       dragFactor             = i.DragFactor;
@@ -465,7 +492,7 @@ namespace AutoTOT
                         // Pitch that actually reaches stageAlt over a lookahead, clamped to the
                         // ammo's own climb/dive limits. Same lookahead the TerminalLoft node
                         // glide below uses.
-                        float holdLook = Mathf.Max(velKnots * KU * dt * LookaheadMultiplier, MinLookaheadU);
+                        float holdLook = Mathf.Max(velKnots * KU * LookaheadSim, MinLookaheadU);
                         targetPitch = Mathf.Clamp(Mathf.Atan2(altErr, holdLook) * Mathf.Rad2Deg,
                                                   -diveDeg, boostClimbDeg);
                     }
@@ -477,7 +504,7 @@ namespace AutoTOT
                         if (altNodes != null)
                         {
                             float xNow = flatDistTotal - flatDist;
-                            float look = Mathf.Max(velKnots * KU * dt * LookaheadMultiplier, MinLookaheadU);
+                            float look = Mathf.Max(velKnots * KU * LookaheadSim, MinLookaheadU);
                             float altAhead = InterpNodeAlt(altNodes, Mathf.Min(xNow + look, flatDistTotal));
                             float slopeDeg = Mathf.Atan2(pos.y - altAhead, look) * Mathf.Rad2Deg;
                             targetPitch = -Mathf.Clamp(slopeDeg, -boostClimbDeg, descentDeg);
@@ -502,8 +529,8 @@ namespace AutoTOT
                         // One RotateTowards for pitch and yaw together, as the live mover does.
                         // Unity's euler x is nose-DOWN positive, so climb-positive pitch is
                         // negated going in and read back off the forward vector coming out.
-                        Quaternion tgt = Quaternion.Euler(-targetPitch, YawOf(horizDirTarget), 0f);
-                        att = Quaternion.RotateTowards(att, tgt, stepTurnRate * dt);
+                        Quaternion tgt = GameMath.QEuler(-targetPitch, YawOf(horizDirTarget), 0f);
+                        att = GameMath.QRotateTowards(att, tgt, stepTurnRate * dt);
                         Vector3 fwd = att * Vector3.forward;
                         pitchDeg = Mathf.Asin(Mathf.Clamp(fwd.y, -1f, 1f)) * Mathf.Rad2Deg;
                         Vector3 fh = new Vector3(fwd.x, 0f, fwd.z);
@@ -519,7 +546,7 @@ namespace AutoTOT
                         // Not on the coupled path this step (initial phase, kinematic ammo, or
                         // no launch heading): keep the carried attitude in step with where the
                         // round actually points, roll zero.
-                        att = Quaternion.Euler(-pitchDeg, YawOf(horizDir), 0f);
+                        att = GameMath.QEuler(-pitchDeg, YawOf(horizDir), 0f);
                     }
                 }
                 float pitchRate = (pitchDeg - prevPitch) / dt;
@@ -531,6 +558,9 @@ namespace AutoTOT
                     thrustArgs[0] = ap; thrustArgs[1] = isAir; thrustArgs[2] = t; thrustArgs[3] = dt;
                     thrust = (float)_thrustMethod.Invoke(null, thrustArgs);
                 }
+#if AUTOTOT_OFFLINE
+                thrust *= OfflineMotorScale;
+#endif
                 bool motorBurning = thrust > 0f;
 
                 float dragThisStep = 0f;

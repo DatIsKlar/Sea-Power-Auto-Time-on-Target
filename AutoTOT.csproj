@@ -32,6 +32,12 @@
   </Target>
 
   <ItemGroup>
+    <!-- The offline replay lab under tools/ compiles the mod's own solver sources against its own
+         stubs and entry point. Those must not join the mod build. -->
+    <Compile Remove="tools/**/*.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
     <!-- BCL (Mono) -->
     <Reference Include="mscorlib"><HintPath>$(Managed)/mscorlib.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="netstandard"><HintPath>$(Managed)/netstandard.dll</HintPath><Private>false</Private></Reference>

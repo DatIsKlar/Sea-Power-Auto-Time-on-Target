@@ -7,6 +7,8 @@ namespace AutoTOT
     internal static partial class FlightTime
     {
 
+        // PHASE-0 EXPERIMENT (uncommitted): live 60 Hz physics step instead of the production
+        // 0.1s. Revert to 0.1f to restore the authoritative integrator.
         private const float IntegrationStepSim = 0.1f;
         // Altitude at which the game's air-density curve (1 - 0.00163*h)^4.256 reaches zero. Used by
         // the setup half to classify a high ballistic lofter and by the step loop to arm the vacuum
@@ -48,7 +50,10 @@ namespace AutoTOT
         private const float VacuumDivePitchThreshold = -40f;
         private const float VelocityEpsilonKn = 0.001f;
         private const float MinSpeedKn = 1f;
-        private const float LookaheadMultiplier = 20f;
+        // The altitude controller's horizon is 2.0s of flight, which used to be spelt as
+        // 20 steps of the production 0.1s step. Held in seconds so changing the step changes
+        // only the numerical resolution, not the controller.
+        private const float LookaheadSim = 2f;
         private const float MinLookaheadU = 50f;
 
         // Isolation gates. Each mirrors one piece of the live mover's behaviour, kept separate
@@ -588,6 +593,34 @@ namespace AutoTOT
             return phases.Valid;
         }
 
+        /// <summary>
+        /// Captures the solver input for ONE round and returns the key it was filed under, so the
+        /// flight tracker can pair that round's outcome with it. Null when the input cannot be
+        /// built or the dump fails.
+        ///
+        /// Called per round rather than per solve, deliberately. The estimator caches by shooter,
+        /// ammunition and target, so a solve does not correspond to a round; and the ammunition
+        /// name, the only thing a solve and a round share, repeats whenever the same weapon is
+        /// fired twice. Pairing on it filed a 396s flight against a 230s round's input.
+        /// </summary>
+        internal static string DumpInputFor(ObjectBase unit, string ammoId, ObjectBase target)
+        {
+            try
+            {
+                if (!TryKey(unit, ammoId, target, out AmmunitionParameters ap, out _)) return null;
+                // emitDiag false: sim-launch and sim-track are emitted by the estimate this round
+                // already ran, and repeating them here would double every traced line.
+                if (!TryBuildSolveInput(unit, ap, target, out SolveInput input, out _, false, default))
+                    return null;
+                return SolveInputDump.Write(input.AmmoLabel, in input, ap);
+            }
+            catch (Exception e)
+            {
+                ModLog.Warn("solve-input capture failed", e);
+                return null;
+            }
+        }
+
         private static float IntegratedEndTimeCore(ObjectBase unit, AmmunitionParameters ap,
             ObjectBase target, out IntegratedPhases phases, bool emitDiag)
             => IntegratedEndTimeCore(unit, ap, target, out phases, emitDiag, default);
@@ -692,7 +725,7 @@ namespace AutoTOT
                 float maxVelKn = Mathf.Max(ap._maxVelocityInKnots, 1f);
                 float loftVelKn = ap._maxLoftVelocityInKnots > 0f ? ap._maxLoftVelocityInKnots : maxVelKn;
                 float termVelKn = ap._terminalVelocityInKnots > 0f ? ap._terminalVelocityInKnots : maxVelKn;
-                float decelPerStep = ap._deceleration * GravityKnPerMs * IntegrationStepSim;
+                float decelRate = ap._deceleration * GravityKnPerMs;
 
                 StageProfile stage = ResolveStageProfile(ap, maxVelKn);
                 float finalDist = stage.FinalDist;
@@ -744,7 +777,7 @@ namespace AutoTOT
                 // Attitude carried ACROSS steps for the coupled turn: rebuilding it each step would
                 // refund the budget spent on roll and silently restore the independent-limit rate.
                 // Re-seeded (roll zero) on any step that does not take the coupled branch.
-                Quaternion att = Quaternion.Euler(-prevPitch, YawOf(launchHeading), 0f);
+                Quaternion att = GameMath.QEuler(-prevPitch, YawOf(launchHeading), 0f);
                 float prevFlat = float.MaxValue;
                 bool tlGliding = false;
                 // Arrival latch: has the missile reached the current phase's target altitude
@@ -829,7 +862,7 @@ namespace AutoTOT
                     altNodes,
                     ammoLabel,
                     boostClimbDeg,
-                    decelPerStep,
+                    decelRate,
                     descentDeg,
                     descentOnsetDeg,
                     dragFactor,

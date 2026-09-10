@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Same machine-local GameDir the mod build uses. -->
+  <Import Project="../../AutoTOT.local.props" Condition="Exists('../../AutoTOT.local.props')" />
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <AssemblyName>autotot-lab</AssemblyName>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <!-- Selects the managed stand-ins for Unity's engine-native quaternion factories. -->
+    <DefineConstants>$(DefineConstants);AUTOTOT_OFFLINE</DefineConstants>
+    <GameDir Condition="'$(GameDir)' == ''">$(GAME_DIR)</GameDir>
+    <Managed>$(GameDir)/Sea Power_Data/Managed</Managed>
+    <NoWarn>$(NoWarn);CS0649;CS0169</NoWarn>
+    <!-- The game assembly binds a newer System.Threading.Channels than net8.0 ships. Nothing on
+         the solve path touches it. -->
+    <MSBuildWarningsAsMessages>MSB3277</MSBuildWarningsAsMessages>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- The mod's own solver, compiled from source rather than copied, so the lab can never
+         drift from what ships. -->
+    <Compile Include="../../Simulation/*.cs" />
+    <Compile Include="../../Support/GameMath.cs" />
+    <Compile Include="../../Support/GameUnits.cs" />
+    <Compile Include="../../Support/ModLog.cs" />
+    <Compile Include="../../Support/TtlCache.cs" />
+    <Compile Include="../../Diagnostics/TelemetryCadence.cs" />
+    <Compile Include="*.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="UnityEngine.CoreModule"><HintPath>$(Managed)/UnityEngine.CoreModule.dll</HintPath></Reference>
+    <Reference Include="Seapower-Scripts"><HintPath>$(Managed)/Seapower-Scripts.dll</HintPath></Reference>
+  </ItemGroup>
+
+</Project>

@@ -11,3 +11,7 @@ CHANGELOG.md
 
 # Machine-local build paths
 AutoTOT.local.props
+
+# Offline replay lab build output
+tools/lab/bin/
+tools/lab/obj/

@@ -115,5 +115,91 @@ namespace AutoTOT
         /// </summary>
         internal static float ElevationDeg(Vector3 unitDir)
             => Mathf.Asin(Mathf.Clamp(unitDir.y, -1f, 1f)) * Mathf.Rad2Deg;
+        /// <summary>
+        /// <c>Quaternion.Euler</c> and <c>Quaternion.RotateTowards</c>, routed through here so the
+        /// step loop can run outside a live Unity engine.
+        ///
+        /// Unity implements both as engine-native calls. Outside the player they raise
+        /// SecurityException ("ECall methods must be packaged into a system module"), which would
+        /// otherwise make the integrator impossible to replay in a test harness. The
+        /// <c>AUTOTOT_OFFLINE</c> build defines managed equivalents; the shipped mod keeps calling
+        /// Unity, so production behaviour is exactly what it always was.
+        ///
+        /// The <c>Quaternion</c> STRUCT is ordinary managed code and needs no substitute: its
+        /// constructor, <c>identity</c>, <c>normalized</c>, <c>Dot</c>, <c>Angle</c> and the
+        /// vector-rotation operator all run fine outside the engine. Only these two factories do
+        /// not.
+        /// </summary>
+        internal static Quaternion QEuler(float xDeg, float yDeg, float zDeg)
+        {
+#if AUTOTOT_OFFLINE
+            // Unity composes Euler angles in Z, X, Y order, so the product is qY * qX * qZ.
+            Quaternion qx = AxisQuat(Vector3.right,   xDeg);
+            Quaternion qy = AxisQuat(Vector3.up,      yDeg);
+            Quaternion qz = AxisQuat(Vector3.forward, zDeg);
+            return Mul(Mul(qy, qx), qz);
+#else
+            return Quaternion.Euler(xDeg, yDeg, zDeg);
+#endif
+        }
+
+        /// <inheritdoc cref="QEuler"/>
+        internal static Quaternion QRotateTowards(Quaternion from, Quaternion to, float maxDegreesDelta)
+        {
+#if AUTOTOT_OFFLINE
+            float angle = Quaternion.Angle(from, to);
+            if (angle == 0f) return to;
+            return SlerpUnclamped(from, to, Mathf.Min(1f, maxDegreesDelta / angle));
+#else
+            return Quaternion.RotateTowards(from, to, maxDegreesDelta);
+#endif
+        }
+
+#if AUTOTOT_OFFLINE
+        private static Quaternion AxisQuat(Vector3 axis, float deg)
+        {
+            float h = deg * Mathf.Deg2Rad * 0.5f;
+            float s = Mathf.Sin(h);
+            return new Quaternion(axis.x * s, axis.y * s, axis.z * s, Mathf.Cos(h));
+        }
+
+        private static Quaternion Mul(Quaternion a, Quaternion b)
+            => new Quaternion(
+                a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
+                a.w * b.y + a.y * b.w + a.z * b.x - a.x * b.z,
+                a.w * b.z + a.z * b.w + a.x * b.y - a.y * b.x,
+                a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z);
+
+        /// <summary>
+        /// Shortest-arc spherical interpolation, with a linear fallback once the two orientations
+        /// are close enough that sin(theta) stops being a safe divisor.
+        /// </summary>
+        private static Quaternion SlerpUnclamped(Quaternion a, Quaternion b, float t)
+        {
+            float dot = a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w;
+            if (dot < 0f)
+            {
+                b = new Quaternion(-b.x, -b.y, -b.z, -b.w);
+                dot = -dot;
+            }
+
+            float k0, k1;
+            if (dot > 0.9995f)
+            {
+                k0 = 1f - t;
+                k1 = t;
+            }
+            else
+            {
+                float theta = Mathf.Acos(Mathf.Clamp(dot, -1f, 1f));
+                float sin = Mathf.Sin(theta);
+                k0 = Mathf.Sin((1f - t) * theta) / sin;
+                k1 = Mathf.Sin(t * theta) / sin;
+            }
+
+            return new Quaternion(k0 * a.x + k1 * b.x, k0 * a.y + k1 * b.y,
+                                  k0 * a.z + k1 * b.z, k0 * a.w + k1 * b.w).normalized;
+        }
+#endif
     }
 }

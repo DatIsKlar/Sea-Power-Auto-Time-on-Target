@@ -20,6 +20,13 @@ namespace AutoTOT
         private static bool _simulateLookedUp;
         private static bool _simIsBeta;
 
+        /// <summary>
+        /// Which game branch the integrator bound against. Recorded with every corpus entry: the
+        /// two branches expose different simulation surfaces, so a round captured on one is not
+        /// necessarily reproducible on the other.
+        /// </summary>
+        internal static bool SimIsBeta { get { EnsureSimLookup(); return _simIsBeta; } }
+
         private static MethodInfo _thrustMethod;
         private static MethodInfo _dragMethod;
 
