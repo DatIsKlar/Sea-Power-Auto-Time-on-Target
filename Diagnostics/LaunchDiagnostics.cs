@@ -129,6 +129,21 @@ namespace AutoTOT
             // the RELEASE time and never touches the estimate, so a grouped round's gap still
             // carries the whole unmodelled effect. Recorded so those rounds can be scored as their
             // own cohort instead of dragging the solo mean around.
+            // Every stage boundary the GAME crossed, as "Stage@t+12.3s". The single most
+            // localising thing a round can tell us: a flight time that disagrees says only that
+            // something is wrong, while a boost that ended two seconds late says where. Capped, so
+            // a round that oscillates between stages cannot grow this without bound.
+            public readonly List<string> StageChanges = new List<string>();
+            // Where the target was going at launch, and where it actually was at impact. The
+            // solver freezes target velocity at launch, so a target that manoeuvred afterwards is
+            // unpredictable in principle rather than mispredicted, and has to be excluded. Until
+            // now that was a judgement the user had to make by hand.
+            public Vector3 TargetPosAtLaunch;
+            public float TargetCourseAtLaunch;
+            public float TargetSpeedAtLaunch;
+            public Vector3 TargetPosAtEnd;
+            public float TargetCourseAtEnd;
+            public float TargetSpeedAtEnd;
             public bool InGroup;
             public bool GroupLeader;
             public int MaxGroupSize;
@@ -264,6 +279,10 @@ namespace AutoTOT
                         if (step < existing.MinFlownStep) existing.MinFlownStep = step;
                         if (step > existing.MaxFlownStep) existing.MaxFlownStep = step;
                     }
+                    existing.TargetPosAtEnd = tgt.transform != null ? tgt.transform.position
+                                                                    : existing.TargetPosAtEnd;
+                    existing.TargetCourseAtEnd = tgt.getHeading();
+                    existing.TargetSpeedAtEnd = tgt._velocityInKnots;
                     if (!ReferenceEquals(existing.CurrentTarget, tgt))
                     {
                         existing.CurrentTarget = tgt;
@@ -348,6 +367,9 @@ namespace AutoTOT
                             ? FlightTime.DumpInputFor(w._launchPlatform, w._ap._ammunitionFileName, tgt)
                             : null,
                         MotorPerformance = MotorPerformanceOf(w),
+                        TargetPosAtLaunch = tgt.transform != null ? tgt.transform.position : Vector3.zero,
+                        TargetCourseAtLaunch = tgt.getHeading(),
+                        TargetSpeedAtLaunch = tgt._velocityInKnots,
                         InGroup = InGroupNow(w),
                         GroupLeader = IsGroupLeader(w),
                         MaxGroupSize = w._ap != null ? w._ap._maxGroupSize : 0,
@@ -640,7 +662,12 @@ namespace AutoTOT
                                 s.MinFlownStep == float.MaxValue ? 0f : s.MinFlownStep,
                                 s.MaxFlownStep, s.KinEstAtLaunch, s.LaunchTime,
                                 s.InGroup, s.GroupLeader, s.MaxGroupSize,
-                                s.PeakSpeedKn, s.PeakAltU, s.LastSpeedKn);
+                                s.PeakSpeedKn, s.PeakAltU, s.LastSpeedKn,
+                                s.WpEstAtLaunch, s.LegacyEstAtLaunch,
+                                s.StageChanges,
+                                s.TargetCourseAtLaunch, s.TargetSpeedAtLaunch,
+                                s.TargetCourseAtEnd, s.TargetSpeedAtEnd,
+                                (s.TargetPosAtEnd - s.TargetPosAtLaunch).magnitude);
 
                         // gap = actual flown time − the sim estimate captured at launch (positive =>
                         // the sim UNDER-predicts). Peak altitude and terminal speed say WHERE the gap

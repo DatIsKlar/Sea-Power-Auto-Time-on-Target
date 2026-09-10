@@ -249,6 +249,10 @@ namespace AutoTOT
             WeaponBase.FlightStage prev = s.LastStage;
             s.LastStage = now;
 
+            // Recorded as well as logged: the log rotates, the corpus does not.
+            if (s.StageChanges.Count < 32)
+                s.StageChanges.Add($"{now}@t+{simNow - s.LaunchTime:0.0}s");
+
             float altU = w.transform != null ? w.transform.position.y : 0f;
             float slantM = GameUnits.MetersBetween(w, tgt);
             float slantU = slantM / GameUnits.MetersPerUnity;

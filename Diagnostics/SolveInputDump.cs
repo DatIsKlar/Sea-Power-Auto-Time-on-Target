@@ -142,7 +142,12 @@ namespace AutoTOT
                                          float minFlownStep, float maxFlownStep,
                                          float estAtLaunch, float launchTime,
                                          bool inGroup, bool groupLeader, int maxGroupSize,
-                                         float peakSpeedKn, float peakAltU, float lastSpeedKn)
+                                         float peakSpeedKn, float peakAltU, float lastSpeedKn,
+                                         float wpEst, float legacyEst,
+                                         List<string> stageChanges,
+                                         float targetCourse0, float targetSpeed0,
+                                         float targetCourse1, float targetSpeed1,
+                                         float targetMovedU)
         {
             // A round that finished with no input to pair against is a hole in the corpus, and the
             // only way to notice is to say so. Silence here cost six of seven rounds once.
@@ -191,6 +196,22 @@ namespace AutoTOT
                 b.AppendLine(F("PeakSpeedKn", peakSpeedKn));
                 b.AppendLine(F("PeakAltU", peakAltU));
                 b.AppendLine(F("TerminalSpeedKn", lastSpeedKn));
+                // The other estimator tiers, as they stood at launch. Recording them lets a tier
+                // be compared against the others offline, on the whole corpus, without re-flying.
+                b.AppendLine(F("WpEstAtLaunch", wpEst));
+                b.AppendLine(F("LegacyEstAtLaunch", legacyEst));
+                // Where the game changed flight stage. This is the ground truth the model's own
+                // phase boundaries have to be scored against.
+                b.AppendLine(F("StageChanges", stageChanges == null || stageChanges.Count == 0
+                                               ? "" : string.Join(";", stageChanges)));
+                // Target motion. A target that turned after launch was never predictable from a
+                // launch-time snapshot, so the lab can now exclude it rather than counting it as
+                // model error.
+                b.AppendLine(F("TargetCourseAtLaunch", targetCourse0));
+                b.AppendLine(F("TargetSpeedAtLaunch", targetSpeed0));
+                b.AppendLine(F("TargetCourseAtEnd", targetCourse1));
+                b.AppendLine(F("TargetSpeedAtEnd", targetSpeed1));
+                b.AppendLine(F("TargetMovedU", targetMovedU));
                 b.AppendLine(F("InGroup", inGroup));
                 b.AppendLine(F("GroupLeader", groupLeader));
                 b.AppendLine(F("MaxGroupSize", maxGroupSize));

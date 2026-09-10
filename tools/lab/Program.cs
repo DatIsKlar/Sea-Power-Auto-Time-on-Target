@@ -133,7 +133,9 @@ namespace AutoTOT.Lab
             var b = new System.Text.StringBuilder();
             b.AppendLine("key,ammo,target,rangeU,actualFlight,estAtLaunch,gap,arrived,finalRangeM," +
                          "retargeted,motor,minCompression,maxCompression,flownStep," +
-                         "peakSpeedKn,peakAltU,terminalSpeedKn,inGroup," +
+                         "peakSpeedKn,peakAltU,terminalSpeedKn,wpEst,legacyEst," +
+                         "targetCourse0,targetSpeed0,targetCourse1,targetSpeed1,targetMovedU," +
+                         "stageChanges,inGroup," +
                          "groupLeader,maxGroupSize,gameVersion,gameBranch,modVersion,capturedAt");
 
             int n = 0;
@@ -162,6 +164,14 @@ namespace AutoTOT.Lab
                  .Append(N(F(r, "PeakSpeedKn"))).Append(',')
                  .Append(N(F(r, "PeakAltU"))).Append(',')
                  .Append(N(F(r, "TerminalSpeedKn"))).Append(',')
+                 .Append(N(F(r, "WpEstAtLaunch"))).Append(',')
+                 .Append(N(F(r, "LegacyEstAtLaunch"))).Append(',')
+                 .Append(N(F(r, "TargetCourseAtLaunch"))).Append(',')
+                 .Append(N(F(r, "TargetSpeedAtLaunch"))).Append(',')
+                 .Append(N(F(r, "TargetCourseAtEnd"))).Append(',')
+                 .Append(N(F(r, "TargetSpeedAtEnd"))).Append(',')
+                 .Append(N(F(r, "TargetMovedU"))).Append(',')
+                 .Append(Csv(r.GetValueOrDefault("StageChanges", ""))).Append(',')
                  .Append(r.GetValueOrDefault("InGroup", "")).Append(',')
                  .Append(r.GetValueOrDefault("GroupLeader", "")).Append(',')
                  .Append(r.GetValueOrDefault("MaxGroupSize", "")).Append(',')
@@ -288,6 +298,17 @@ namespace AutoTOT.Lab
                     !B(r, "Arrived")   ? $"no arrival ({F(r, "FinalRangeM"):F0} m out)"
                   : B(r, "Retargeted") ? "seeker switched target, flight is to a different ship"
                   : I(r, "Claims") > 1 ? "several rounds shared one solver input"
+                  // The solver freezes the target's velocity at launch, so a target that turned or
+                  // changed speed afterwards was never predictable from that snapshot. Counting it
+                  // as model error would teach the model to chase something it cannot see. 20
+                  // degrees and 5 knots are loose enough to ignore station-keeping wobble.
+                  : (F(r, "TargetSpeedAtLaunch") > 0f &&
+                     Math.Abs(DeltaAngle(F(r, "TargetCourseAtLaunch"), F(r, "TargetCourseAtEnd"))) > 20f)
+                        ? $"target turned {Math.Abs(DeltaAngle(F(r, "TargetCourseAtLaunch"), F(r, "TargetCourseAtEnd"))):F0} " +
+                          "deg after launch, which no launch-time estimate could predict"
+                  : (F(r, "TargetSpeedAtLaunch") > 0f &&
+                     Math.Abs(F(r, "TargetSpeedAtEnd") - F(r, "TargetSpeedAtLaunch")) > 5f)
+                        ? $"target changed speed by {Math.Abs(F(r, "TargetSpeedAtEnd") - F(r, "TargetSpeedAtLaunch")):F0} kn after launch"
                   : (stepHi > 0f && !stepSteady)
                         ? $"physics step moved in flight ({stepLo:F4}s to {stepHi:F4}s), " +
                           "so no single step describes it"
@@ -421,6 +442,15 @@ namespace AutoTOT.Lab
                                    out float t))
                     return t;
             return 0f;
+        }
+
+        /// <summary>Signed smallest angle between two compass headings, in degrees.</summary>
+        private static float DeltaAngle(float a, float b)
+        {
+            float d = (b - a) % 360f;
+            if (d > 180f) d -= 360f;
+            if (d < -180f) d += 360f;
+            return d;
         }
 
         private static string Trim(string s, int n) => s.Length <= n ? s : s.Substring(0, n - 1) + "~";
