@@ -638,7 +638,7 @@ namespace AutoTOT
                                 s.MinCompression == float.MaxValue ? 1f : s.MinCompression,
                                 s.MaxCompression,
                                 s.MinFlownStep == float.MaxValue ? 0f : s.MinFlownStep,
-                                s.MaxFlownStep, s.KinEstAtLaunch,
+                                s.MaxFlownStep, s.KinEstAtLaunch, s.LaunchTime,
                                 s.InGroup, s.GroupLeader, s.MaxGroupSize);
 
                         // gap = actual flown time − the sim estimate captured at launch (positive =>

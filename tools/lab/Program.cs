@@ -213,7 +213,7 @@ namespace AutoTOT.Lab
         private static int Score(string[] files, float[] steps)
         {
             var rows = new List<(string Label, float Actual, float[] Est, float Flown, float FlownEst,
-                                 bool Grouped)>();
+                                 bool Grouped, float Launch, float Impact)>();
             var skipped = new List<string>();
 
             foreach (string file in files)
@@ -273,7 +273,39 @@ namespace AutoTOT.Lab
                 // models a round flying alone; the formation effect is corrected for elsewhere, on
                 // the release path, so averaging the two cohorts together would hide a real solo
                 // regression behind grouped noise and invite double-correcting the model.
-                rows.Add((label, F(r, "ActualFlight"), est, flown, flownEst, B(r, "InGroup")));
+                // Launch time: recorded directly on newer captures, and recoverable from the key
+                // ("...__t1975.7__3") on older ones, which is the solve stamp a tick before launch.
+                float launch = F(r, "LaunchTime");
+                if (launch <= 0f) launch = LaunchTimeFromKey(
+                    r.GetValueOrDefault("Key", Path.GetFileNameWithoutExtension(file)));
+
+                rows.Add((label, F(r, "ActualFlight"), est, flown, flownEst, B(r, "InGroup"),
+                          launch, launch + F(r, "ActualFlight")));
+            }
+
+            // A missile group arrives TOGETHER, so every member shares one impact time while their
+            // launch times are spread across the salvo. Each round's own flight therefore includes
+            // however long it loitered waiting for the rest, and its gap is that wait, not model
+            // error: across one 20-round salvo the gap fell linearly from +72.9s on the first round
+            // to +0.15s on the last, and the mean was half the launch span. Averaging that reports
+            // the firing cadence dressed up as accuracy.
+            //
+            // So a salvo is scored on its LAST-fired round, the one that waited least, and the rest
+            // are set aside as having flown a formation rather than a trajectory.
+            int waited = 0;
+            foreach (var salvo in rows.Where(r => r.Grouped)
+                                      .GroupBy(r => (r.Label, Key: (int)Math.Round(r.Impact / 2.0)))
+                                      .Where(g => g.Count() > 1))
+            {
+                float lastLaunch = salvo.Max(r => r.Launch);
+                foreach (var r in salvo.Where(r => r.Launch < lastLaunch))
+                {
+                    rows.Remove(r);
+                    waited++;
+                }
+                skipped.Add($"{salvo.Key.Label}: {salvo.Count() - 1} of {salvo.Count()} rounds waited " +
+                            $"for the formation (impact ~{salvo.First().Impact:F0}s); " +
+                            "scored on the last one fired");
             }
 
             if (rows.Count == 0)
@@ -313,7 +345,8 @@ namespace AutoTOT.Lab
         }
 
         private static void MeanRow(string label,
-            List<(string Label, float Actual, float[] Est, float Flown, float FlownEst, bool Grouped)> rows,
+            List<(string Label, float Actual, float[] Est, float Flown, float FlownEst, bool Grouped,
+                  float Launch, float Impact)> rows,
             float[] steps)
         {
             if (rows.Count == 0) return;
@@ -330,6 +363,21 @@ namespace AutoTOT.Lab
                 ? $"{"",12}{flownRows.Average(r => Math.Abs(r.FlownEst - r.Actual)),12:F2}"
                 : $"{"",12}{"-",12}");
             Console.WriteLine();
+        }
+
+        /// <summary>
+        /// The mission time out of a corpus key, which ends "__t&lt;time&gt;__&lt;seq&gt;". Zero when
+        /// the key predates that format.
+        /// </summary>
+        private static float LaunchTimeFromKey(string key)
+        {
+            if (string.IsNullOrEmpty(key)) return 0f;
+            foreach (string part in key.Split(new[] { "__" }, StringSplitOptions.None))
+                if (part.Length > 1 && part[0] == 't' &&
+                    float.TryParse(part.Substring(1), System.Globalization.NumberStyles.Float, Inv,
+                                   out float t))
+                    return t;
+            return 0f;
         }
 
         private static string Trim(string s, int n) => s.Length <= n ? s : s.Substring(0, n - 1) + "~";

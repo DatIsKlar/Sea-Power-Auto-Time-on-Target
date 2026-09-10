@@ -140,7 +140,7 @@ namespace AutoTOT
                                          bool retargeted, float motorPerformance,
                                          float minCompression, float maxCompression,
                                          float minFlownStep, float maxFlownStep,
-                                         float estAtLaunch,
+                                         float estAtLaunch, float launchTime,
                                          bool inGroup, bool groupLeader, int maxGroupSize)
         {
             // A round that finished with no input to pair against is a hole in the corpus, and the
@@ -178,6 +178,11 @@ namespace AutoTOT
                 b.AppendLine(F("MinFlownStep", minFlownStep));
                 b.AppendLine(F("MaxFlownStep", maxFlownStep));
                 b.AppendLine(F("EstAtLaunch", estAtLaunch));
+                // Launch and impact, so a salvo can be reconstructed afterwards. Rounds of one
+                // group arrive TOGETHER, so a shared impact time is what identifies them, and the
+                // launch time is what says which of them waited and for how long.
+                b.AppendLine(F("LaunchTime", launchTime));
+                b.AppendLine(F("ImpactTime", launchTime + actualFlight));
                 b.AppendLine(F("InGroup", inGroup));
                 b.AppendLine(F("GroupLeader", groupLeader));
                 b.AppendLine(F("MaxGroupSize", maxGroupSize));
