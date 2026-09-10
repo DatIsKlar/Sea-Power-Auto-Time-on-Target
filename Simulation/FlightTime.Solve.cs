@@ -620,7 +620,7 @@ namespace AutoTOT
                     // coupled turn writes to, so a turn that never slows down looks identical
                     // to one that does. hdgErr is signed, roll folded to +/-180.
                     float hdgErr = Mathf.DeltaAngle(YawOf(horizDir), YawOf(horizDirTarget));
-                    float rollDeg = Mathf.DeltaAngle(0f, att.eulerAngles.z);
+                    float rollDeg = Mathf.DeltaAngle(0f, GameMath.QEulerAngles(att).z);
                     Bootstrap.Log.LogInfo(
                         $"[AutoTOT] sim-track {ammoLabel}: t+{t:0.0}s spd {velKnots:0}kn alt {pos.y:0.0} " +
                         $"pitch {pitchDeg:0} hdgErr {hdgErr:0} roll {rollDeg:0} " +

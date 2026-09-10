@@ -141,7 +141,8 @@ namespace AutoTOT
                                          float minCompression, float maxCompression,
                                          float minFlownStep, float maxFlownStep,
                                          float estAtLaunch, float launchTime,
-                                         bool inGroup, bool groupLeader, int maxGroupSize)
+                                         bool inGroup, bool groupLeader, int maxGroupSize,
+                                         float peakSpeedKn, float peakAltU, float lastSpeedKn)
         {
             // A round that finished with no input to pair against is a hole in the corpus, and the
             // only way to notice is to say so. Silence here cost six of seven rounds once.
@@ -183,6 +184,13 @@ namespace AutoTOT
                 // launch time is what says which of them waited and for how long.
                 b.AppendLine(F("LaunchTime", launchTime));
                 b.AppendLine(F("ImpactTime", launchTime + actualFlight));
+                // What the round actually did, against what the model says it should have. Without
+                // these an entry says only that the estimate was wrong, never where: a flight that
+                // is slow because it never reached its top speed and one that is slow because it
+                // flew a longer arc look identical from the flight time alone.
+                b.AppendLine(F("PeakSpeedKn", peakSpeedKn));
+                b.AppendLine(F("PeakAltU", peakAltU));
+                b.AppendLine(F("TerminalSpeedKn", lastSpeedKn));
                 b.AppendLine(F("InGroup", inGroup));
                 b.AppendLine(F("GroupLeader", groupLeader));
                 b.AppendLine(F("MaxGroupSize", maxGroupSize));

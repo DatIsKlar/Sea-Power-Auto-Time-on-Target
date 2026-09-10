@@ -155,7 +155,43 @@ namespace AutoTOT
 #endif
         }
 
+        /// <inheritdoc cref="QEuler"/>
+        internal static Vector3 QEulerAngles(Quaternion q)
+        {
 #if AUTOTOT_OFFLINE
+            // Inverse of the Z, X, Y composition QEuler builds, in the same 0..360 range Unity
+            // reports. Diagnostic only: the step loop reads this for the roll column of its trace
+            // and never for a decision.
+            float sinX = 2f * (q.w * q.x - q.y * q.z);
+            float x, y, z;
+            if (Mathf.Abs(sinX) > 0.9999f)
+            {
+                // Looking straight up or down, yaw and roll describe the same rotation, so the
+                // convention is to put all of it in yaw.
+                x = Mathf.Sign(sinX) * 90f * Mathf.Deg2Rad;
+                y = Mathf.Atan2(2f * (q.w * q.y + q.x * q.z), 1f - 2f * (q.y * q.y + q.z * q.z));
+                z = 0f;
+            }
+            else
+            {
+                x = Mathf.Asin(sinX);
+                y = Mathf.Atan2(2f * (q.w * q.y + q.x * q.z), 1f - 2f * (q.x * q.x + q.y * q.y));
+                z = Mathf.Atan2(2f * (q.w * q.z + q.x * q.y), 1f - 2f * (q.x * q.x + q.z * q.z));
+            }
+            return new Vector3(Wrap360(x * Mathf.Rad2Deg), Wrap360(y * Mathf.Rad2Deg),
+                               Wrap360(z * Mathf.Rad2Deg));
+#else
+            return q.eulerAngles;
+#endif
+        }
+
+#if AUTOTOT_OFFLINE
+        private static float Wrap360(float deg)
+        {
+            deg %= 360f;
+            return deg < 0f ? deg + 360f : deg;
+        }
+
         private static Quaternion AxisQuat(Vector3 axis, float deg)
         {
             float h = deg * Mathf.Deg2Rad * 0.5f;

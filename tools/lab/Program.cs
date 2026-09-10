@@ -36,12 +36,14 @@ namespace AutoTOT.Lab
                 Console.Error.WriteLine(
                     "usage: autotot-lab [score] <dump-dir-or-file> [step ...]\n" +
                     "       autotot-lab import <capture-dir> [corpus-dir]\n" +
-                    "       autotot-lab index [corpus-dir]");
+                    "       autotot-lab index [corpus-dir]\n" +
+                    "       autotot-lab trace <solveinput-file> [step]");
                 return 2;
             }
 
             if (args[0] == "import") return Import(args.Skip(1).ToArray());
             if (args[0] == "index") return Index(args.Skip(1).ToArray());
+            if (args[0] == "trace") return Trace(args.Skip(1).ToArray());
 
             bool score = args[0] == "score";
             if (score) args = args.Skip(1).ToArray();
@@ -73,6 +75,43 @@ namespace AutoTOT.Lab
         }
 
         /// <summary>
+        /// Replays one round with the step trace on, printing the same sim-track lines the mod
+        /// emits in game. This is how a disagreement gets localised to a phase.
+        /// </summary>
+        private static int Trace(string[] args)
+        {
+            if (args.Length == 0)
+            {
+                Console.Error.WriteLine("usage: autotot-lab trace <solveinput-file> [step]");
+                return 2;
+            }
+
+            string file = args[0];
+            float dt = args.Length > 1 ? float.Parse(args[1], Inv) : 0.1f;
+
+            Dictionary<string, string> kv = ReadDump(file);
+            AmmunitionParameters ap = BuildAmmo(kv);
+            FlightTime.SolveInput input = BuildInput(kv, trackDiag: true);
+
+            string resultFile = Path.ChangeExtension(file, ".result");
+            if (File.Exists(resultFile))
+            {
+                Dictionary<string, string> r = ReadDump(resultFile);
+                FlightTime.OfflineMotorScale = F(r, "MotorPerformance") > 0f
+                    ? F(r, "MotorPerformance") : 1f;
+                Console.WriteLine($"actual {F(r, "ActualFlight"):F1}s, motor {FlightTime.OfflineMotorScale:F3}");
+            }
+
+            Bootstrap.Log.Echo = true;
+            float est = FlightTime.SolveOffline(in input, ap, dt, out _);
+            Bootstrap.Log.Echo = false;
+            FlightTime.OfflineMotorScale = 1f;
+
+            Console.WriteLine($"est {est:F2}s at step {dt}");
+            return 0;
+        }
+
+        /// <summary>
         /// Writes one row per stored round to index.csv, so the corpus can be sorted, filtered and
         /// plotted in a spreadsheet without opening any of it.
         ///
@@ -93,7 +132,8 @@ namespace AutoTOT.Lab
 
             var b = new System.Text.StringBuilder();
             b.AppendLine("key,ammo,target,rangeU,actualFlight,estAtLaunch,gap,arrived,finalRangeM," +
-                         "retargeted,motor,minCompression,maxCompression,flownStep,inGroup," +
+                         "retargeted,motor,minCompression,maxCompression,flownStep," +
+                         "peakSpeedKn,peakAltU,terminalSpeedKn,inGroup," +
                          "groupLeader,maxGroupSize,gameVersion,gameBranch,modVersion,capturedAt");
 
             int n = 0;
@@ -119,6 +159,9 @@ namespace AutoTOT.Lab
                  .Append(N(F(r, "MinCompression"))).Append(',')
                  .Append(N(F(r, "MaxCompression"))).Append(',')
                  .Append(N(F(r, "MaxFlownStep"))).Append(',')
+                 .Append(N(F(r, "PeakSpeedKn"))).Append(',')
+                 .Append(N(F(r, "PeakAltU"))).Append(',')
+                 .Append(N(F(r, "TerminalSpeedKn"))).Append(',')
                  .Append(r.GetValueOrDefault("InGroup", "")).Append(',')
                  .Append(r.GetValueOrDefault("GroupLeader", "")).Append(',')
                  .Append(r.GetValueOrDefault("MaxGroupSize", "")).Append(',')
@@ -483,7 +526,8 @@ namespace AutoTOT.Lab
             return Convert.ChangeType(value, target);
         }
 
-        private static FlightTime.SolveInput BuildInput(Dictionary<string, string> kv) =>
+        private static FlightTime.SolveInput BuildInput(Dictionary<string, string> kv,
+                                                        bool trackDiag = false) =>
             new FlightTime.SolveInput(
                 Nodes(kv, "AltNodes"),
                 kv.GetValueOrDefault("AmmoLabel", ""),
@@ -516,7 +560,7 @@ namespace AutoTOT.Lab
                 F(kv, "TermAlt"),
                 F(kv, "TermDist"),
                 F(kv, "TermVelKn"),
-                false,                       // TrackDiag: the lab reports its own comparison
+                trackDiag,                   // TrackDiag: off unless the trace command asked
                 F(kv, "TurnRate"),
                 F(kv, "ToBearingTurnRate"),
                 F(kv, "TurnRateBase"),

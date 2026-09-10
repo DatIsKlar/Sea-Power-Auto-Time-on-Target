@@ -639,7 +639,8 @@ namespace AutoTOT
                                 s.MaxCompression,
                                 s.MinFlownStep == float.MaxValue ? 0f : s.MinFlownStep,
                                 s.MaxFlownStep, s.KinEstAtLaunch, s.LaunchTime,
-                                s.InGroup, s.GroupLeader, s.MaxGroupSize);
+                                s.InGroup, s.GroupLeader, s.MaxGroupSize,
+                                s.PeakSpeedKn, s.PeakAltU, s.LastSpeedKn);
 
                         // gap = actual flown time − the sim estimate captured at launch (positive =>
                         // the sim UNDER-predicts). Peak altitude and terminal speed say WHERE the gap
