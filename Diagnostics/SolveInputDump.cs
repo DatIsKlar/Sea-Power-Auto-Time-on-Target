@@ -91,6 +91,10 @@ namespace AutoTOT
                 b.AppendLine(F("LoftEntryDist", i.LoftEntryDist));
                 b.AppendLine(F("LoftSpeedHoldDist", i.LoftSpeedHoldDist));
                 b.AppendLine(F("LoftVelKn", i.LoftVelKn));
+                b.AppendLine(F("BallisticLoft", i.BallisticLoft));
+                b.AppendLine(F("LoftClimbTan", i.LoftClimbTan));
+                b.AppendLine(F("LoftDescentTan", i.LoftDescentTan));
+                b.AppendLine(F("LaunchAltU", i.LaunchAltU));
                 b.AppendLine(F("Lofting", i.Lofting));
                 b.AppendLine(F("MaxFlight", i.MaxFlight));
                 b.AppendLine(F("MaxVelKn", i.MaxVelKn));
@@ -143,6 +147,7 @@ namespace AutoTOT
                                          float estAtLaunch, float launchTime,
                                          bool inGroup, bool groupLeader, int maxGroupSize,
                                          float peakSpeedKn, float peakAltU, float lastSpeedKn,
+                                         List<string> track,
                                          float wpEst, float legacyEst,
                                          List<string> stageChanges,
                                          float targetCourse0, float targetSpeed0,
@@ -196,6 +201,11 @@ namespace AutoTOT
                 b.AppendLine(F("PeakSpeedKn", peakSpeedKn));
                 b.AppendLine(F("PeakAltU", peakAltU));
                 b.AppendLine(F("TerminalSpeedKn", lastSpeedKn));
+                // "t:altU:speedKn" every few seconds. This is what says whether a round that fell
+                // short of its commanded altitude was still climbing when it nosed over, or had
+                // levelled off long before.
+                b.AppendLine(F("Track", track == null || track.Count == 0
+                                        ? "" : string.Join(";", track)));
                 // The other estimator tiers, as they stood at launch. Recording them lets a tier
                 // be compared against the others offline, on the whole corpus, without re-flying.
                 b.AppendLine(F("WpEstAtLaunch", wpEst));

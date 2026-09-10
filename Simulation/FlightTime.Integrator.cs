@@ -621,6 +621,80 @@ namespace AutoTOT
             }
         }
 
+        /// <summary>
+        /// The altitude a NON-cruise round is commanded to hold during the loft stages, at a given
+        /// distance flown. Mirrors Missile.cs:3306 onwards.
+        ///
+        /// A cruise missile (Kinematics None, which is the game's own CruiseMissile test) is simply
+        /// commanded <c>_maxLoftAltUnity</c> and is handled by the caller. Everything else gets a
+        /// profile: <c>_maxLoftAlt</c> is a CEILING it may never reach, not an altitude it flies to.
+        /// The apex is where the climb angle out of the launch point meets the descent angle into
+        /// the target, clamped by that ceiling, so a short shot peaks well below it. Modelling the
+        /// ceiling as the cruise altitude put these rounds in air far thinner than they ever reach,
+        /// which cost them drag and landed them early by 4 to 9 seconds.
+        ///
+        /// See docs/plans/open/non-cruise-loft-profile.md.
+        /// </summary>
+        internal static float LoftProfileAltU(bool ballisticLoft, float ceilingU,
+                                              float climbTan, float descentTan,
+                                              float launchAltU, float targetAltU,
+                                              float totalFlatU, float travelledFlatU)
+        {
+            if (totalFlatU <= 0f) return ceilingU;
+
+            float apexCeiling = Mathf.Max(Mathf.Max(ceilingU, launchAltU), targetAltU);
+
+            if (ballisticLoft)
+            {
+                // Split weighted by the square root of each side's height, then a quadratic ease
+                // out of the launch point and into the target.
+                float upLeg = Mathf.Sqrt(Mathf.Max(apexCeiling - launchAltU, 0f));
+                float downLeg = Mathf.Sqrt(Mathf.Max(apexCeiling - targetAltU, 0f));
+                float split = (upLeg + downLeg > 0.0001f)
+                    ? Mathf.Clamp(upLeg / (upLeg + downLeg), 0f, 0.95f) : 0.5f;
+                float apexAt = totalFlatU * Mathf.Max(split, 0.0001f);
+
+                if (travelledFlatU < apexAt)
+                {
+                    float toGo = 1f - travelledFlatU / apexAt;
+                    return apexCeiling - (apexCeiling - launchAltU) * toGo * toGo;
+                }
+
+                float past = Mathf.Clamp01((travelledFlatU - apexAt)
+                                           / Mathf.Max(totalFlatU - apexAt, 0.0001f));
+                return apexCeiling - (apexCeiling - targetAltU) * past * past;
+            }
+
+            // Each angle is widened if the ceiling could not be reached at that slope over the whole
+            // shot, so the tent always spans the flight.
+            float climb = Mathf.Clamp(Mathf.Max(climbTan, (apexCeiling - launchAltU) / totalFlatU),
+                                      0.01f, 99f);
+            float descent = Mathf.Clamp(Mathf.Max(descentTan, (apexCeiling - targetAltU) / totalFlatU),
+                                        0.01f, 99f);
+            float climbRun = 1f / climb;
+            float descentRun = 1f / descent;
+
+            // Where the two slopes cross, capped by the ceiling: this is the apex the round
+            // actually flies to, and on a short shot it is far below _maxLoftAlt.
+            float crossing = (totalFlatU + launchAltU * climbRun + targetAltU * descentRun)
+                             / (climbRun + descentRun);
+            float apex = Mathf.Min(ceilingU, crossing);
+            apex = Mathf.Max(Mathf.Max(apex, launchAltU), targetAltU);
+
+            float upRun = (apex - launchAltU) * climbRun;
+            float downRun = (apex - targetAltU) * descentRun;
+            float apexFraction = upRun / (upRun + downRun + 0.00001f);
+            float apexDist = totalFlatU * apexFraction;
+
+            if (travelledFlatU < apexDist)
+                return Mathf.Lerp(launchAltU, apex,
+                                  Mathf.Pow(travelledFlatU / apexDist, 0.5f));
+
+            return Mathf.Lerp(apex, targetAltU,
+                              Mathf.Pow((travelledFlatU - apexDist)
+                                        / Mathf.Max(totalFlatU - apexDist, 0.0001f), 1.3f));
+        }
+
         private static float IntegratedEndTimeCore(ObjectBase unit, AmmunitionParameters ap,
             ObjectBase target, out IntegratedPhases phases, bool emitDiag)
             => IntegratedEndTimeCore(unit, ap, target, out phases, emitDiag, default);
@@ -695,6 +769,12 @@ namespace AutoTOT
 
                 bool isTerminalLoft = ap._terminalLoft;
                 bool isHighBallisticLofter = !nonKin && lofting && loftAlt > ZeroDensityAltU;
+
+                // The two slopes of the non-cruise loft tent, as tangents, clamped the way the
+                // game clamps them before use.
+                float loftClimbTan = Mathf.Tan(Mathf.Clamp(ap._maxLoftAngle, 0.01f, 89f) * Mathf.Deg2Rad);
+                float loftDescentTan = Mathf.Tan(
+                    Mathf.Clamp(ap._finalFlightPhaseMaxAngle, 0.01f, 89f) * Mathf.Deg2Rad);
 
                 float climbDeg = ap._maxLoftAngle > AltToleranceU ? ap._maxLoftAngle : DefaultClimbDeg;
                 float boostClimbDeg = isHighBallisticLofter ? BoostClimbDeg : climbDeg;
@@ -880,6 +960,10 @@ namespace AutoTOT
                     loftEntryDist,
                     loftSpeedHoldDist,
                     loftVelKn,
+                    ap._ballisticLoft,
+                    loftClimbTan,
+                    loftDescentTan,
+                    launchPos.y,
                     lofting,
                     maxFlight,
                     maxVelKn,

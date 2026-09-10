@@ -31,10 +31,39 @@ Score the whole corpus against what the rounds actually flew:
 
     dotnet run -- score <corpus-dir> [step ...]
 
+Merge freshly captured rounds into the stored corpus, and write its index:
+
+    dotnet run -- import <capture-dir> [corpus-dir]
+    dotnet run -- index [corpus-dir]
+
+Replay one round with the full step trace, which is how a disagreement gets localised to a phase:
+
+    dotnet run -- trace <solveinput-file> [step]
+
+Put the round's recorded altitude beside the model's, sample for sample:
+
+    dotnet run -- climb <solveinput-file>
+
+`-` in place of a directory means the stored corpus, so `score -` is the usual command.
+
+### climb
+
+Peak altitude alone cannot separate the two ways a round ends up below the altitude it was commanded
+to hold. If the recorded climb is still rising when the round turns over, it ran out of distance and
+the climb is rate-limited by something the model does not apply. If it flattens early and holds, it
+was commanded lower than the model thinks. Those are different defects with different fixes, and
+`climb` is what tells them apart. It needs the `Track` series, so a round captured before that was
+recorded has to be re-flown.
+
 With no steps given both sweep 0.1 (production), 0.05, 0.0333333 and 0.0166667 (the game's own 30 Hz
 and 60 Hz physics steps) and 0.005.
 
 ## The corpus
+
+`corpus/` beside this README is the stored set, one text pair per round, checked in. The game writes
+fresh captures to `BepInEx/AutoTOT-solve/`; `import` copies complete pairs across and never
+overwrites, so re-importing is safe and the corpus only grows. `index.csv` is derived by `index` and
+is never edited by hand.
 
 Each round contributes two files: the `.solveinput` written when it was solved, and a `.result`
 written when it landed, carrying the actual flight time, the final range, whether the seeker

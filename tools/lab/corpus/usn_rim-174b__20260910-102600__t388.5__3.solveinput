@@ -57,3 +57,11 @@ T = 0
 TlGliding = false
 VelKnots = 13.9645357
 AltNodes = 
+BallisticLoft = false
+LoftClimbTan = 0.5773503
+LoftDescentTan = 0.5773503
+LaunchAltU = 0.0091099
+# Backfilled from the ammunition ini, not captured: these rounds were flown before the
+# mod recorded the loft profile. MaxLoftAngle from the ini, the other two are the
+# game's defaults for ammunition that does not declare them.
+LoftProfileSource = backfilled-from-ini

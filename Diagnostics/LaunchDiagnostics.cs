@@ -134,6 +134,11 @@ namespace AutoTOT
             // something is wrong, while a boost that ended two seconds late says where. Capped, so
             // a round that oscillates between stages cannot grow this without bound.
             public readonly List<string> StageChanges = new List<string>();
+            // The round's own altitude and speed against time, sampled coarsely. Peak altitude
+            // alone cannot tell a round that was still climbing when it had to nose over from one
+            // that levelled off early, and those are different defects with different fixes.
+            public readonly List<string> Track = new List<string>();
+            public float NextTrackSample;
             // Where the target was going at launch, and where it actually was at impact. The
             // solver freezes target velocity at launch, so a target that manoeuvred afterwards is
             // unpredictable in principle rather than mispredicted, and has to be excluded. Until
@@ -273,6 +278,15 @@ namespace AutoTOT
                     float comp = GameTime.TimeCompression;
                     if (comp < existing.MinCompression) existing.MinCompression = comp;
                     if (comp > existing.MaxCompression) existing.MaxCompression = comp;
+                    // Every 5s of flight, capped: enough to see the shape of a climb without
+                    // turning a 700s flight into a wall of text.
+                    if (verbose && simNow >= existing.NextTrackSample && existing.Track.Count < 150)
+                    {
+                        existing.NextTrackSample = simNow + TrackSampleIntervalSim;
+                        float tAlt = w.transform != null ? w.transform.position.y : 0f;
+                        existing.Track.Add(
+                            $"{simNow - existing.LaunchTime:0.#}:{tAlt:0.#}:{w._velocityInKnots:0}");
+                    }
                     float step = GameTime.fixedDeltaTime;
                     if (step > 0f)
                     {
@@ -395,6 +409,9 @@ namespace AutoTOT
         /// round is not a missile or the field is unreadable. Recorded so a replay can reproduce
         /// the flight it is being scored against instead of averaging over the roll.
         /// </summary>
+        /// <summary>Flight-time seconds between samples of the recorded altitude/speed track.</summary>
+        private const float TrackSampleIntervalSim = 5f;
+
         private static float MotorPerformanceOf(WeaponBase w)
         {
             var missile = w as Missile;
@@ -662,7 +679,7 @@ namespace AutoTOT
                                 s.MinFlownStep == float.MaxValue ? 0f : s.MinFlownStep,
                                 s.MaxFlownStep, s.KinEstAtLaunch, s.LaunchTime,
                                 s.InGroup, s.GroupLeader, s.MaxGroupSize,
-                                s.PeakSpeedKn, s.PeakAltU, s.LastSpeedKn,
+                                s.PeakSpeedKn, s.PeakAltU, s.LastSpeedKn, s.Track,
                                 s.WpEstAtLaunch, s.LegacyEstAtLaunch,
                                 s.StageChanges,
                                 s.TargetCourseAtLaunch, s.TargetSpeedAtLaunch,

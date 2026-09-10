@@ -48,6 +48,14 @@ namespace AutoTOT
             /// does not apply. 0 = no hold. See FlightTime.Integrator.ResolveLoftSpeedHoldDist.</summary>
             internal readonly float       LoftSpeedHoldDist;
             internal readonly float       LoftVelKn;
+            /// <summary>Loft-profile inputs for a NON-cruise round: the two slopes that form the
+            /// tent, whether the ammunition uses the ballistic variant, and the launch altitude the
+            /// climb is measured from. Unused when <see cref="NonKin"/> is true, which is the game's
+            /// own CruiseMissile test. See FlightTime.LoftProfileAltU.</summary>
+            internal readonly bool        BallisticLoft;
+            internal readonly float       LoftClimbTan;
+            internal readonly float       LoftDescentTan;
+            internal readonly float       LaunchAltU;
             internal readonly bool        Lofting;
             internal readonly float       MaxFlight;
             internal readonly float       MaxVelKn;
@@ -110,6 +118,10 @@ namespace AutoTOT
                 float loftEntryDist,
                 float loftSpeedHoldDist,
                 float loftVelKn,
+                bool ballisticLoft,
+                float loftClimbTan,
+                float loftDescentTan,
+                float launchAltU,
                 bool lofting,
                 float maxFlight,
                 float maxVelKn,
@@ -159,6 +171,10 @@ namespace AutoTOT
                 LoftEntryDist = loftEntryDist;
                 LoftSpeedHoldDist = loftSpeedHoldDist;
                 LoftVelKn = loftVelKn;
+                BallisticLoft = ballisticLoft;
+                LoftClimbTan = loftClimbTan;
+                LoftDescentTan = loftDescentTan;
+                LaunchAltU = launchAltU;
                 Lofting = lofting;
                 MaxFlight = maxFlight;
                 MaxVelKn = maxVelKn;
@@ -263,6 +279,11 @@ namespace AutoTOT
             float       loftEntryDist          = i.LoftEntryDist;
             float       loftSpeedHoldDist      = i.LoftSpeedHoldDist;
             float       loftVelKn              = i.LoftVelKn;
+            bool        ballisticLoft          = i.BallisticLoft;
+            float       loftClimbTan           = i.LoftClimbTan;
+            float       loftDescentTan         = i.LoftDescentTan;
+            float       launchAltU             = i.LaunchAltU;
+            Vector3     launchPos              = i.Pos;
             bool        lofting                = i.Lofting;
             float       maxFlight              = i.MaxFlight;
             float       maxVelKn               = i.MaxVelKn;
@@ -452,7 +473,19 @@ namespace AutoTOT
                     // while both rounds sea-skimmed. The signs differ because a long spurious loft
                     // repays its climb at loft speed and a short one does not.
                     else if (lofting && (loftEntryDist <= 0f || flatDistTotal > loftEntryDist))
-                    { stageTgt = loftVelKn; stageAlt = loftAlt; phase = 0; }
+                    {
+                        stageTgt = loftVelKn;
+                        // A cruise missile holds the ceiling; anything else is commanded a profile
+                        // that depends on how far it has flown, and usually never reaches the
+                        // ceiling at all. loftClimbTan of 0 means the capture predates this and the
+                        // old flat behaviour is kept rather than guessed at.
+                        stageAlt = (!nonKin && loftClimbTan > 0f)
+                            ? LoftProfileAltU(ballisticLoft, loftAlt, loftClimbTan, loftDescentTan,
+                                              launchAltU, targetAlt0, flatDistTotal,
+                                              GameMath.FlatDistance(launchPos, pos))
+                            : loftAlt;
+                        phase = 0;
+                    }
                     else
                     {
                         phase = 1;
@@ -505,7 +538,19 @@ namespace AutoTOT
                         {
                             float xNow = flatDistTotal - flatDist;
                             float look = Mathf.Max(velKnots * KU * LookaheadSim, MinLookaheadU);
-                            float altAhead = InterpNodeAlt(altNodes, Mathf.Min(xNow + look, flatDistTotal));
+                            // The node table comes from MissileSimulator.BuildAltitudeNodes, which
+                            // is the game's own ESTIMATOR, and it carries the round to the loft
+                            // ceiling and holds it there. The missile itself is flown by
+                            // Missile.cs:3306, which for a non-cruise round commands a profile that
+                            // usually peaks well below that ceiling. The two disagree, and the
+                            // missile is the one that is right: a rim-66p whose nodes say 454u
+                            // actually peaked at 255u. Following the nodes put the round in air far
+                            // thinner than it ever reaches, and it arrived 6 to 9 seconds early.
+                            float xAhead = Mathf.Min(xNow + look, flatDistTotal);
+                            float altAhead = (!nonKin && loftClimbTan > 0f)
+                                ? LoftProfileAltU(ballisticLoft, loftAlt, loftClimbTan, loftDescentTan,
+                                                  launchAltU, targetAlt0, flatDistTotal, xAhead)
+                                : InterpNodeAlt(altNodes, xAhead);
                             float slopeDeg = Mathf.Atan2(pos.y - altAhead, look) * Mathf.Rad2Deg;
                             targetPitch = -Mathf.Clamp(slopeDeg, -boostClimbDeg, descentDeg);
                         }
