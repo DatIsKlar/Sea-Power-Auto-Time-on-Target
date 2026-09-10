@@ -1,0 +1,13 @@
+# AutoTOT flight outcome, paired with the .solveinput of the same name.
+Key = wp_ss-n-3b__20260910-094457__t2233.4__9
+Label = wp_ss-n-3b
+Target = [7005] Yuniy Partizan-class
+ActualFlight = 389.7539
+Arrived = true
+FinalRangeM = 160.454132
+Retargeted = false
+MotorPerformance = 1.0067023
+MinCompression = 20
+MaxCompression = 20
+EstAtLaunch = 388.91452
+Claims = 1

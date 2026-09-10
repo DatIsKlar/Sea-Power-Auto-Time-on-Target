@@ -1,0 +1,13 @@
+# AutoTOT flight outcome, paired with the .solveinput of the same name.
+Key = plan_yj-18a__20260910-095455__t6901.4__20
+Label = plan_yj-18a
+Target = [7001] Super Tanker
+ActualFlight = 506.3662
+Arrived = true
+FinalRangeM = 167.269852
+Retargeted = false
+MotorPerformance = 0.99091
+MinCompression = 1
+MaxCompression = 20
+EstAtLaunch = 506.821716
+Claims = 1

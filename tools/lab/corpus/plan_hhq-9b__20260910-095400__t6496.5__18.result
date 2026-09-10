@@ -1,0 +1,13 @@
+# AutoTOT flight outcome, paired with the .solveinput of the same name.
+Key = plan_hhq-9b__20260910-095400__t6496.5__18
+Label = plan_hhq-9b
+Target = [7001] Super Tanker
+ActualFlight = 125.214844
+Arrived = true
+FinalRangeM = 165.784943
+Retargeted = false
+MotorPerformance = 0.9860807
+MinCompression = 1
+MaxCompression = 20
+EstAtLaunch = 122.998695
+Claims = 1

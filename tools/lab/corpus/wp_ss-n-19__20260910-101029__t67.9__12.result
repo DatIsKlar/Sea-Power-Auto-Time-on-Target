@@ -1,0 +1,18 @@
+# AutoTOT flight outcome, paired with the .solveinput of the same name.
+Key = wp_ss-n-19__20260910-101029__t67.9__12
+Label = wp_ss-n-19
+Target = [7005] Yuniy Partizan-class
+ActualFlight = 248.243958
+Arrived = true
+FinalRangeM = 67.41649
+Retargeted = false
+MotorPerformance = 0.984038353
+MinCompression = 20
+MaxCompression = 20
+EstAtLaunch = 217.704086
+Claims = 1
+InGroup = true
+# Backfilled from capture time, not observed: this batch was fired before the mod
+# recorded group membership. 40 wp_ss-n-19 and 32 wp_ss-n-12 launched inside three
+# minutes, which is salvo fire, and the user identified it as the grouped run.
+InGroupSource = backfilled-by-capture-time

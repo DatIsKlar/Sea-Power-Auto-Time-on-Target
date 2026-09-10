@@ -1,0 +1,13 @@
+# AutoTOT flight outcome, paired with the .solveinput of the same name.
+Key = usn_rgm-84d__20260910-100445__t12456.7__31
+Label = usn_rgm-84d
+Target = [7001] MV Acadia
+ActualFlight = 510.568359
+Arrived = true
+FinalRangeM = 169.382584
+Retargeted = false
+MotorPerformance = 0.9828944
+MinCompression = 1
+MaxCompression = 20
+EstAtLaunch = 510.32193
+Claims = 1
