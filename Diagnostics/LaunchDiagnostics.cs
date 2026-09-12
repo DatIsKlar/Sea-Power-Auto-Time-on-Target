@@ -20,7 +20,7 @@ namespace AutoTOT
         // mutated and stored back once per tracked missile per frame. As a struct that was a copy of
         // roughly twenty fields each way, and it forced the two MaybeLog helpers to take the sample
         // and hand it back so the caller could reassign it.
-        private sealed class FlightSample
+        internal sealed class FlightSample
         {
             public float LaunchTime; public string AmmoName; public string TargetName;
             public float LastDistM; public float LastSeenTime;
@@ -748,6 +748,8 @@ namespace AutoTOT
                                 $"peakAlt {s.PeakAltU:0}u, realPeakSpd {s.PeakSpeedKn:0}kn, termSpd {s.LastSpeedKn:0}kn{wp}{legacy}");
                         }
                     }
+                    // The unattended test runner records every retired round, outcome or not.
+                    LiveTestRunner.OnRoundRetired(s, flightTime);
                 }
                 _flightTracker.Remove(w);
             }

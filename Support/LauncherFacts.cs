@@ -378,10 +378,40 @@ namespace AutoTOT
             // keyframe _time), not in any numeric cadence field. Only ever RAISES the interval, so a
             // launcher that declares real timing is untouched.
             f.HatchCycleSeconds = MaxHatchOpenSeconds(launchers[0]);
+            // Derived here rather than below, because the cadence floor after the hatch floor
+            // needs it. The value is unchanged; only the point of definition moved.
+            f.LauncherCycle = NonNegativeFinite(DeclaredWarmup(ship, ammoId) + f.HatchCycleSeconds);
             if (vwp._salvoFireAmount <= 1 && launchers[0]._containers != null && launchers[0]._containers.Count > 1)
             {
                 float hatch = f.HatchCycleSeconds;
                 if (hatch > interval && hatch < MaxPlausibleHatchSeconds) interval = hatch;
+            }
+
+            // Cadence FLOOR from the launcher's own state cycle, shared out across the launchers
+            // that serve this ammunition. Item 3 of docs/plans/open/launcher-startup-delay.md.
+            //
+            // The hatch floor above accounts for opening a tube and nothing else, but a launcher
+            // pays its WHOLE cycle for every round, warm-up included: OnRailWarmup was established
+            // as a per-round cost by items 1 and 2 of that plan. Where one launcher serves the
+            // ammunition, that cycle IS the cadence. Where several do, they cycle in parallel, so
+            // the fleet of them delivers a round every cycle/count.
+            //
+            // Measured 2026-09-12 on `test aa`, four rounds from each of three launchers:
+            //   usn_rgm-109b, Spruance MK41, 1 launcher, cycle 6.20s (warm-up 5.00 + hatch 1.20):
+            //     modelled 2.0s against 6.8s observed. Rounds arrived 3.0 to 16.2s EARLY and the
+            //     anchor slid +13.7s chasing them. This term gives 6.20s.
+            //   wp_ss-n-19, Granit, 1 launcher, cycle 3.00s (all hatch): the hatch floor already
+            //     stood there, and this term reproduces it exactly. Residuals were +0.5s.
+            //   plan_hhq-9b, Type 055, 5 launchers, cycle 0.50s against a declared 1.00s interval:
+            //     0.50/5 is below the declared value, so the declared value still governs and the
+            //     control is unmoved.
+            //
+            // Only ever RAISES the interval, and the same plausibility ceiling as the hatch floor
+            // guards against nonsense animation data.
+            if (vwp._salvoFireAmount <= 1)
+            {
+                float perRound = f.LauncherCycle / Mathf.Max(1, launchers.Count);
+                if (perRound > interval && perRound < MaxPlausibleHatchSeconds) interval = perRound;
             }
 
             f.ShotInterval = interval;
@@ -401,7 +431,6 @@ namespace AutoTOT
             // 0.25s trace cadence. The sub-0.3s dispatch tick stays unmodelled: it is below the
             // resolution that measured it.
             float acquisition = AcquisitionSeconds(ship, vwp);
-            f.LauncherCycle = NonNegativeFinite(DeclaredWarmup(ship, ammoId) + f.HatchCycleSeconds);
 
             // D: what a launcher that has not fired yet owes before its first round. Item 6 of
             // docs/plans/open/launcher-startup-delay.md.

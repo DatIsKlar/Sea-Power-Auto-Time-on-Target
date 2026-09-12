@@ -343,6 +343,17 @@ read once when the game starts and need a restart: `Enabled`, `AutoModeOnStart` 
   `τ_form` term and lands within ~±2s at mid/long range. Remaining: at **close
   range** the terminal seeker trips before the group forms, so grouped salvos land
   ~10–20s early (they still converge).
+- **An aircraft flying at its target cannot be brought onto a shared time on
+  target, and is no longer held trying.** A strike aircraft closing at roughly
+  its own weapon's cruise speed gains nothing by waiting: every second of delay
+  shortens the missile's flight by about a second, so the round arrives at the
+  time the geometry dictates however long the aircraft holds. Such an order is
+  released as soon as it is ready and the log says it is not on the coordinated
+  time. Holding it instead used to put its rounds a minute late, and at short
+  range the aircraft overflew its target before the release came, after which
+  the game refuses a shot at a contact astern and the weapons were never fired
+  at all. Ships are unaffected: a hull closing at 20 kn against a missile is
+  perfectly holdable.
 - **Shots at aircraft arrive a few seconds early.** Coordinating anti-air missiles
   works and the mod does not stop you, but the flight model was built and measured
   against surface targets. Over three shots at an airliner at 6,000 ft, 20,000 ft and
@@ -415,6 +426,7 @@ Everything interesting lands in `<Sea Power>/BepInEx/LogOutput.log`, prefixed
 
 | Log line | Meaning |
 |---|---|
+| `... cannot make the shared impact on ...: closing at almost its own weapon's speed` | **WARN**: this shooter is flying at its target fast enough that delaying its release cannot delay its arrival, so the order is fired when ready instead of held. Its rounds still fly and still hit; they are simply not on the coordinated time. Normal for a strike aircraft, and never expected from a ship. |
 | `Auto Time-on-Target v... loaded` | mod initialized (note the version: with two copies installed it reveals which one AnchorChain loaded) |
 | `estimator: integrator ACTIVE (beta branch, ...)` | the accurate flight model is running. Logged at startup whether or not `VerboseLogging` is on |
 | `estimator: integrator UNAVAILABLE on the public branch ...` | **WARN**: you are on the public branch, where the flight model cannot run. Coordination still works, timing is less accurate |

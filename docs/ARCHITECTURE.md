@@ -235,6 +235,23 @@ groupDelay = GroupDelay(it, it.ReleaseLead)
 
 release when:
 timeLeft <= flightNow + it.ReleaseLead + it.StartupLead + groupDelay + lookahead
+
+An order marked `FireImmediately` skips that condition entirely and goes as soon as it is
+ready. The condition assumes the left side falls faster than the right: time runs down at one
+second per second while the shooter's flight estimate holds roughly still. That is true for a
+ship closing at 20 kn against a missile and false for an aircraft flying at its own weapon's
+cruise speed, where both sides fall together and the gate never opens. Each order therefore
+carries `Holdability`, which is `1 - closingSpeed / effectiveWeaponSpeed`, the weapon speed
+taken from the flight estimate over the current range so loft and terminal are already in it.
+Below 0.5 the order is not held. Ships measure about 0.97; an F/A-18A at 550 kn firing a 547 kn
+Harpoon measures about zero, and held anyway its rounds arrived 66 s late from 30 nm and were
+never launched at all from 12 nm, by which point it had overflown and the game refuses a shot
+at a contact astern.
+
+The anchor is deliberately NOT changed for such an order. The anchor must be the longest
+enroute, because that is what every follower is delayed to match, and no follower can be
+delayed to an impact sooner than its own flight. Forcing the closing aircraft to anchor put the
+ship beside it 161 s late at 30 nm and 277 s at 12 nm.
 ```
 
 Terms:
@@ -276,7 +293,17 @@ The derivation chain (LauncherFacts.cs) has four stages:
    if `hatch > interval && hatch < 60`, use `hatch`. This only ever raises the cadence,
    never lowers a declared one. Motivation: Kirov's SS-N-19 declares no cadence field;
    the duration lives in the animation asset, not a numeric field.
-4. **Guard**: NaN/Infinity/negative → 0.
+4. **Launcher-cycle floor**: the hatch floor above accounts for opening a tube and nothing
+   else, but a launcher pays its WHOLE state cycle for every round, `OnRailWarmup` included.
+   Where one launcher serves the ammunition that cycle IS the cadence; where several do, they
+   cycle in parallel and deliver a round every `LauncherCycle / launcherCount`. Applies when
+   `_salvoFireAmount <= 1`, only ever raises the interval, and carries the same 60 s
+   plausibility ceiling. Measured 2026-09-12: the Spruance's `usn_rgm-109b` has one launcher
+   and a 6.20 s cycle (5.00 warm-up + 1.20 hatch) and was modelled at 2.0 s against 6.8 s
+   observed, arriving up to 16 s early with the strike sliding 14 s after it. The Granit's
+   `wp_ss-n-19` reproduces the 3.00 s the hatch floor already gave it, and the Type 055's
+   `plan_hhq-9b` is unmoved because 0.50 s over five launchers is below its declared 1.00 s.
+5. **Guard**: NaN/Infinity/negative → 0.
 
 `MaxHatchOpenSeconds` (LauncherFacts.cs) walks the field chain:
 `WeaponSystem._containers` → `WeaponContainer._openAnimation` → `ObjectCodeAnimation._sequences`
@@ -974,6 +1001,7 @@ Sources live in five folders by concern: `Core/` (pipeline + lifecycle),
 | `Diagnostics/EngagementBoard.cs` | Per-target engagement state for the HUD (consolidated: one row per target) |
 | `Diagnostics/TelemetryCadence.cs` | Sampling offsets shared by the `sim-track` and `track` traces, so the two stay comparable |
 | `Diagnostics/CoordinatorProfiler.cs` | Per-frame timing (`CoordinatorProfiler`): stage timers, counters, frame share, the 60-frame report |
+| `Diagnostics/LiveTestRunner.cs`, `Diagnostics/LiveTestRunner.Plan.cs` | Unattended in-game test driver. Inert unless `BepInEx/AutoTOT-livetest/plan.ini` exists, which it consumes on startup; then it walks the game from the main menu into a mission, fires the listed shots through the coordinator, waits for every round to retire, writes a result and quits. Nothing is clicked: every step calls the method the game's own button calls. Driver and plan format are under `tools/livetest/` |
 | `UI/Hud.cs` (+ `.Rows` `.Render` `.Actions` `.Labels` `.Mouse` `.Styles` partials) | IMGUI planner panel: lifecycle and layout, row data, drawing, strike actions, labels, pointer capture, styling |
 
 ## Multiplayer crash shield: `DotsScanHardening`

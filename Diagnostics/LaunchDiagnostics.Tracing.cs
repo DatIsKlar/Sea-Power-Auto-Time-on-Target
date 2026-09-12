@@ -168,6 +168,25 @@ namespace AutoTOT
             return false;
         }
 
+        /// <summary>
+        /// True while any tracked round WE fired is still flying, whatever it is currently aimed
+        /// at. Deliberately not keyed on a target: a seeker that switches to a sibling in the
+        /// target's formation leaves <see cref="HasInFlightAt"/> false for the ordered ship while
+        /// the round is still very much in the air, so a caller asking "is the strike over" per
+        /// target concludes yes with rounds 25 km out. Defensive SAMs and the AI's own shots are
+        /// excluded by the Coordinated flag.
+        /// </summary>
+        internal static bool AnyCoordinatedInFlight()
+        {
+            foreach (KeyValuePair<WeaponBase, FlightSample> kv in _flightTracker)
+            {
+                WeaponBase w = kv.Key;
+                if (w == null || w.IsDestroyed) continue;
+                if (kv.Value != null && kv.Value.Coordinated) return true;
+            }
+            return false;
+        }
+
         // One-time per-missile line at first sighting: nominal speeds + our kinematic estimate, so a
         // late group can be read against what the game's own solo sim predicted. Flight-model trace.
         private static void LogTrackInit(WeaponBase w, float est)
@@ -493,7 +512,7 @@ namespace AutoTOT
         /// is captured into a reused frame and formatted only when kept. <see cref="Format"/> is the
         /// same expression the recorder always used, so the corpus lines are unchanged.
         /// </summary>
-        private sealed class GuardFrame
+        internal sealed class GuardFrame
         {
             internal float Age, Dt, Vy, Pitch;
             internal WeaponBase.FlightStage Stage;

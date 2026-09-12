@@ -203,6 +203,7 @@ namespace AutoTOT
             UnityEngine.Object.DontDestroyOnLoad(pump);
             pump.AddComponent<Pump>();
             pump.AddComponent<Hud>();
+            pump.AddComponent<LiveTestRunner>();   // inert unless BepInEx/AutoTOT-livetest/plan.ini exists
 
             Log.LogInfo($"Auto Time-on-Target v{Version} loaded (Enabled={Coordinator.Enabled}, Armed={Coordinator.Active}, Unity={Application.unityVersion}).");
         }

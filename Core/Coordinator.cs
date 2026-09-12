@@ -123,6 +123,15 @@ namespace AutoTOT
             public int Shots;
             public int Priority;
             public bool IsFormation;
+            // How much this order's ARRIVAL actually moves when its release moves, which is
+            // d(arrival)/d(release) = 1 - closingSpeed / effectiveWeaponSpeed. One for a ship,
+            // whose 20 kn closure is nothing against a missile. Near zero for an aircraft flying
+            // at its own weapon's speed, where every second of delay buys back a second of flight
+            // and holding the order cannot make it arrive any later. See CanBeHeld.
+            public float Holdability = 1f;
+            // Set when Holdability says this order cannot be timed and it did not win the anchor
+            // role. It is released as soon as it is ready rather than held into an overflight.
+            public bool FireImmediately;
             public float ReleaseLead; // seconds to release before the coordinated impact. Independent
                                       // salvos use HALF their ripple span (centers the arrivals on the
                                       // TOT); grouped salvos use the FULL span, because the group's
@@ -782,6 +791,52 @@ namespace AutoTOT
         }
 
         /// <summary>
+        /// How much an order's arrival time moves when its release time moves.
+        ///
+        /// The release gate holds an order until the time left to the shared impact falls to its
+        /// estimated flight, which assumes holding makes the round arrive later. For a shooter
+        /// closing on its target at its own weapon's speed that is false: each second of delay
+        /// shortens the flight by a second, arrival barely moves, and the gate never opens. An
+        /// F/A-18A at 550 kn firing a 547 kn Harpoon measured -0.02 here, and its rounds arrived
+        /// 66 s late from 30 nm and were never launched at all from 12 nm, by which point it had
+        /// overflown and the game refused a shot at a target astern.
+        ///
+        /// The effective weapon speed is taken from the flight estimate over the current range
+        /// rather than from the ammunition file, so it already accounts for loft, cruise and
+        /// terminal rather than assuming a single cruise figure.
+        ///
+        /// Returns 1 when it cannot be computed, which keeps every unmeasurable order holdable and
+        /// leaves behaviour unchanged.
+        /// </summary>
+        private static float Holdability(Intent it, float flightEst)
+        {
+            if (it?.Unit == null || it.Target == null || flightEst <= 0f) return 1f;
+            Vector3 toTarget = it.Target.transform.position - it.Unit.transform.position;
+            float rangeU = toTarget.magnitude;
+            if (rangeU <= 0.001f) return 1f;
+
+            // Closing speed: the shooter's velocity resolved along the line of sight, less the
+            // target's. Knots on both sides, so the ratio below is dimensionless.
+            Vector3 los = toTarget / rangeU;
+            float closingKn = it.Unit._velocityInKnots * Vector3.Dot(it.Unit.transform.forward, los)
+                            - it.Target._velocityInKnots * Vector3.Dot(it.Target.transform.forward, los);
+            if (closingKn <= 0f) return 1f;   // opening or abeam: holding works normally
+
+            float weaponKn = (rangeU * GameUnits.UnityToNm) / (flightEst / SecondsPerHour);
+            if (weaponKn <= 0f) return 1f;
+            return 1f - closingKn / weaponKn;
+        }
+
+        private const float SecondsPerHour = 3600f;
+
+        /// <summary>
+        /// Below this, an order's arrival no longer follows its release and it cannot be treated as
+        /// a follower. Ships measure about 0.97 and a closing aircraft about zero, so the boundary
+        /// is nowhere near either.
+        /// </summary>
+        private const float MinHoldability = 0.5f;
+
+        /// <summary>
         /// Commit-time anchor pick: the anchor is the item that needs the most time (lone flight
         /// + its launch-span lead + startup + group drag). It releases first; observation
         /// anchoring then keys the batch's shared impact off the anchor's ACTUAL launches. Also
@@ -834,6 +889,8 @@ namespace AutoTOT
                 }
                 WarnOnImplausibleEstimate(it, flightEst, source);
                 it.CommitFlightEst = flightEst;
+                it.Holdability = Holdability(it, flightEst);
+                it.FireImmediately = false;   // recomputed below; a re-commit must not inherit it
                 float groupDelay = GroupDelay(it, it.ReleaseLead);
                 float needed = EnrouteSeconds(it, flightEst, groupDelay);
                 if (needed > maxEnroute)
@@ -875,6 +932,8 @@ namespace AutoTOT
                     $"[{PlatformTag(runnerUp.Unit)}] " +
                     $"at {runnerUpEnroute:0.0}s by {maxEnroute - runnerUpEnroute:0.0}s");
 
+            MarkUnholdableOrders(items, anchor);
+
             // Nothing had a positive enroute time, so every estimate failed and no shot carries a
             // lead. Schedule then gives every order an impact of now and the batch releases on the
             // next tick with no stagger: the least bad thing left, but not a coordinated strike, and
@@ -884,6 +943,36 @@ namespace AutoTOT
                     $"[AutoTOT] no anchor: none of the {items.Count} order(s) had a usable flight " +
                     $"estimate, so they fire now, uncoordinated.");
             return anchor;
+        }
+
+        /// <summary>
+        /// Mark the orders whose arrival does not follow their release, so the gate stops holding
+        /// them. They are released as soon as they are ready instead.
+        ///
+        /// The anchor is deliberately NOT changed. It was tried on 2026-09-12 and it is wrong: the
+        /// anchor must be the LONGEST enroute, because that is what every follower is delayed to
+        /// match, and a follower cannot be delayed to an impact that is sooner than its own flight.
+        /// Forcing a closing aircraft to anchor fixed its own rounds and put the ship beside it
+        /// 161 s late at 30 nm and 277 s late at 12 nm, which is a far worse trade. An unholdable
+        /// shooter that already IS the longest enroute anchors on its own and needs nothing here.
+        ///
+        /// Deliberately drops nothing. The rounds still fly and still hit; what they lose is a
+        /// place in a shared time on target that their geometry never allowed them to reach.
+        /// </summary>
+        private static void MarkUnholdableOrders(List<Intent> items, Intent anchor)
+        {
+            for (int i = 0; i < items.Count; i++)
+            {
+                Intent it = items[i];
+                if (it.Holdability >= MinHoldability || ReferenceEquals(it, anchor)) continue;
+                it.FireImmediately = true;
+                Bootstrap.Log.LogWarning(
+                    $"[AutoTOT] {it.AmmoId} from {UnitNaming.SafeName(it.Unit)} cannot make the shared " +
+                    $"impact on {UnitNaming.SafeName(it.Target)}: closing at almost its own weapon's " +
+                    $"speed (holdability {it.Holdability:0.00}), so its arrival is fixed by geometry " +
+                    $"whenever it fires. Released as soon as it is ready rather than held, which would " +
+                    $"only let it overfly and lose the shot. This round is not on the coordinated time.");
+            }
         }
 
         /// <summary>

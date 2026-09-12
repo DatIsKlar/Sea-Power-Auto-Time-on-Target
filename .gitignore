@@ -15,3 +15,6 @@ AutoTOT.local.props
 # Offline replay lab build output
 tools/lab/bin/
 tools/lab/obj/
+
+# Live test runner: per-run logs and results
+tools/livetest/runs/

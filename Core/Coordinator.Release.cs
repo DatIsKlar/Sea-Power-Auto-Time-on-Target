@@ -182,7 +182,9 @@ namespace AutoTOT
                 // the fixed startup offset (PreLaunchDelay + expected reaction) the engage cycle burns
                 // before round 1 leaves the rail, PLUS the group-drag delay (a grouped salvo flies
                 // slower than the solo estimate, so it must leave earlier to still arrive on time).
-                if (timeLeft <= EnrouteSeconds(it, flightNow, groupDelay) + lookahead)
+                // FireImmediately: this order's arrival does not follow its release, so waiting
+                // gains nothing and costs the shot. See PreferUnholdableAnchor.
+                if (it.FireImmediately || timeLeft <= EnrouteSeconds(it, flightNow, groupDelay) + lookahead)
                 {
                     if (s.IsAnchor)
                     {
