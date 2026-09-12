@@ -27,6 +27,78 @@ namespace AutoTOT
     internal static class LaunchEnvelope
     {
         /// <summary>
+        /// How far apart the game considers a shooter and its target when it tests launch range.
+        /// Unity units, so it can be compared straight against <c>_launchRangesInUnity</c> without
+        /// a conversion that could disagree at the boundary.
+        ///
+        /// The two weapon systems measure this differently and the answers must match theirs.
+        /// <c>WeaponSystemHardpoint</c>, which serves aircraft, projects onto the horizontal plane
+        /// (<c>Vector3.ProjectOnPlane(..., Vector3.up).magnitude</c>);
+        /// <c>WeaponSystemLauncher</c>, which serves ships and submarines, uses the slant distance
+        /// (<c>Vector3.Distance</c>). At a 30 nm minimum and 30,000 ft the two differ by about
+        /// 0.4%, which only matters within that margin of the limit, which is exactly where a
+        /// range test is read.
+        /// </summary>
+        internal static float LaunchDistanceUnity(ObjectBase unit, ObjectBase target)
+        {
+            if (unit == null || target == null) return 0f;
+            Vector3 d = target.transform.position - unit.transform.position;
+            if (unit.IsAirUnit) d.y = 0f;
+            return d.magnitude;
+        }
+
+        /// <summary>
+        /// The weapon's minimum launch range in Unity units, or 0 when it has none. 147 of the
+        /// game's 437 ammunition files leave this at 0; the other 290 carry one, and the largest
+        /// belong to the weapons this mod is most used with (SS-N-19 and SS-N-12 at 30 nm,
+        /// RGM-109B at 20 nm, AS-4 at 100 nm).
+        /// </summary>
+        internal static float MinRangeUnity(AmmunitionParameters ap)
+            => ap == null ? 0f : Mathf.Max(0f, ap._launchRangesInUnity.x);
+
+        /// <summary>
+        /// True when the target is inside the weapon's minimum launch range, so the game will not
+        /// fire this order and will not give it up either.
+        ///
+        /// <para>Every platform type refuses: the aircraft hardpoint sets
+        /// <c>EngageState.TargetTooClose</c> and returns false
+        /// (WeaponSystemHardpoint.cs:1217), a submarine below launch depth does the same
+        /// (WeaponSystemLauncher.cs:405), and so does a surface launcher against ANY target type
+        /// (WeaponSystemLauncher.cs:495-501). The abort path that would end such a task
+        /// (WeaponSystemLauncher.cs:535-542) is gated on <c>!IsPlayerObject</c>, so a player's
+        /// order holds forever. Worse, the launcher reaches <c>AligningLauncher</c> BEFORE the
+        /// range test, so the shooter first turns to unmask and only then discovers it cannot
+        /// shoot.</para>
+        ///
+        /// <para>That is why this is refused rather than warned about: the order cannot produce a
+        /// round, it makes the ship manoeuvre for nothing, and if it were to win the anchor role
+        /// the whole strike would be timed against a launch that never comes.</para>
+        /// </summary>
+        internal static bool IsInsideMinimumRange(ObjectBase unit, AmmunitionParameters ap,
+                                                  ObjectBase target, out float rangeNm, out float minNm)
+        {
+            rangeNm = 0f; minNm = 0f;
+            if (unit == null || ap == null || target == null) return false;
+            float minU = MinRangeUnity(ap);
+            if (minU <= 0f) return false;
+            float distU = LaunchDistanceUnity(unit, target);
+            rangeNm = distU * GameUnits.UnityToNm;
+            minNm = minU * GameUnits.UnityToNm;
+            return distU <= minU;
+        }
+
+        /// <summary>Minimum-range test from an ammunition id, for callers that hold one.</summary>
+        internal static bool IsInsideMinimumRange(ObjectBase unit, string ammoId, ObjectBase target,
+                                                  out float rangeNm, out float minNm)
+        {
+            rangeNm = 0f; minNm = 0f;
+            if (unit == null || ammoId == null) return false;
+            AmmunitionParameters ap;
+            try { ap = unit.getAmmunitionByName(ammoId)?._ap; } catch { return false; }
+            return IsInsideMinimumRange(unit, ap, target, out rangeNm, out minNm);
+        }
+
+        /// <summary>
         /// Seconds an aircraft needs to descend into its weapon's launch-altitude band. 0 when it is
         /// already inside the band, which is the usual case.
         ///

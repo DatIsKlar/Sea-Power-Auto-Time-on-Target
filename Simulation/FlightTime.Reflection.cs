@@ -15,6 +15,10 @@ namespace AutoTOT
         internal const string ThrustMethodName = "CalculateThrustOverTime";
         internal const string DragMethodName = "CalculateDrag";
         internal const string LoftCapMethodName = "LoftCap";
+        internal const string OptimalLoftMethodName = "SearchOptimalLoftAltitude";
+        internal const string AltitudeNodesMethodName = "BuildAltitudeNodes";
+        internal const int OptimalLoftParameterCount = 9;
+        internal const int AltitudeNodesParameterCount = 6;
 
         private static MethodInfo _simulateShotMethod;
         private static bool _simulateLookedUp;
@@ -44,6 +48,7 @@ namespace AutoTOT
         private static DragFn _dragFn;
         private static MethodInfo _loftCapMethod;
         private static MethodInfo _altNodesMethod;
+        private static MethodInfo _optimalLoftMethod;
 
         private static void EnsureSimLookup()
         {
@@ -79,6 +84,12 @@ namespace AutoTOT
                         });
                         _loftCapMethod = ms.GetMethod(LoftCapMethodName, new Type[]
                         { typeof(AmmunitionParameters), typeof(float), typeof(float) });
+                        _optimalLoftMethod = ms.GetMethod(OptimalLoftMethodName, new Type[]
+                        {
+                            typeof(AmmunitionParameters), typeof(Vector3), typeof(Vector3),
+                            typeof(Vector3), typeof(float), typeof(bool), typeof(float),
+                            typeof(float), typeof(float)
+                        });
 
                         if (_thrustMethod == null)
                             _thrustMethod = ResolveByName(ms, ThrustMethodName, 4);
@@ -86,15 +97,29 @@ namespace AutoTOT
                             _dragMethod = ResolveByName(ms, DragMethodName, 10);
                         if (_loftCapMethod == null)
                             _loftCapMethod = ResolveByName(ms, LoftCapMethodName, 3);
+                        if (_optimalLoftMethod == null)
+                            _optimalLoftMethod = ResolveByName(ms, OptimalLoftMethodName,
+                                                               OptimalLoftParameterCount);
 
                         const BindingFlags NPS = BindingFlags.NonPublic | BindingFlags.Static;
-                        _altNodesMethod = ms.GetMethod("BuildAltitudeNodes", NPS, null, new Type[]
+                        _altNodesMethod = ms.GetMethod(AltitudeNodesMethodName, NPS, null, new Type[]
                         {
                             typeof(AmmunitionParameters), typeof(float), typeof(float), typeof(float),
                             typeof(float), typeof(float).MakeByRefType()
                         }, null);
 
                         BindFastPath();
+
+                        // Either miss changes the altitude law lofting rounds are flown on, and the
+                        // sim-init line that would name it is verbose-only. Said once, ungated.
+                        if (_optimalLoftMethod == null || _altNodesMethod == null)
+                            Bootstrap.Log.LogWarning(
+                                "[AutoTOT] estimator: beta branch detected, but " +
+                                (_optimalLoftMethod == null ? OptimalLoftMethodName + " " : "") +
+                                (_altNodesMethod == null ? AltitudeNodesMethodName + " " : "") +
+                                "did not bind. Lofting rounds fall back to the model's own altitude " +
+                                "law and may be several seconds off; a game update has probably " +
+                                "changed the method.");
 
                         LogSimInit(ms);
                         WaypointSim.EnsureLookup(typeof(Missile).Assembly);
@@ -164,7 +189,6 @@ namespace AutoTOT
         private static MethodInfo ResolveByName(Type t, string name, int paramCount)
         {
             const BindingFlags F = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static;
-            MethodInfo best = null;
             foreach (MethodInfo m in t.GetMethods(F))
             {
                 if (m.Name != name) continue;
@@ -172,10 +196,9 @@ namespace AutoTOT
                 if (ps.Length != paramCount) continue;
                 bool byRef = false;
                 foreach (ParameterInfo p in ps) if (p.ParameterType.IsByRef) { byRef = true; break; }
-                if (byRef) continue;
-                if (best == null) best = m;
+                if (!byRef) return m;   // the first match, as before
             }
-            return best;
+            return null;
         }
 
         private static void LogSimInit(Type ms)
@@ -186,12 +209,13 @@ namespace AutoTOT
                 Bootstrap.Log.LogInfo(
                     $"[AutoTOT] sim-init: beta {_simIsBeta}, thrust {(_thrustMethod != null)}, " +
                     $"drag {(_dragMethod != null)}, loftCap {(_loftCapMethod != null)}, " +
+                    $"optimalLoft {(_optimalLoftMethod != null)}, " +
                     $"altNodes {(_altNodesMethod != null)}, " +
                     $"fastPath {(_thrustFn != null && _dragFn != null)}");
                 foreach (var pair in new (string name, MethodInfo mi)[]
                 {
                     (ThrustMethodName, _thrustMethod), (DragMethodName, _dragMethod),
-                    (LoftCapMethodName, _loftCapMethod),
+                    (LoftCapMethodName, _loftCapMethod), (OptimalLoftMethodName, _optimalLoftMethod),
                 })
                 {
                     if (pair.mi != null) continue;

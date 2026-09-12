@@ -11,6 +11,11 @@ namespace AutoTOT
     /// Ported waypoint-sim fallback (middle tier). Reconstructs the game's waypoint flight-plan
     /// via reflection and flies it with PN guidance + drag. See docs/plans/done/2026-09-02-waypoint-sim-port.md.
     ///
+    /// Not the only port of that code. The integrator's own route (<c>FlightTime.Waypoints.cs</c>)
+    /// re-implements the same waypoint laws as pure functions, so it can run on the estimator
+    /// threads and in the lab. This tier drives the game's own objects instead, which ties it to the
+    /// main thread. The two are kept apart on purpose: merging them would move the flight model.
+    ///
     /// BETA ONLY, by design. <see cref="EnsureLookup"/> is called from the beta branch of
     /// <c>FlightTime.EnsureSimLookup</c> and nowhere else, so on the public branch this type is
     /// never initialized, <see cref="Ready"/> stays false and <see cref="EndTime"/> no-ops. The
@@ -359,10 +364,11 @@ namespace AutoTOT
         /// Variable names track the decompile (simTime = t, velKnots = knots, missilePos = pos, direction = dir).
         /// </summary>
         /// <param name="emitDiag">
-        /// Emit the per-15s <c>wp-track</c> overlay. Defaults to <c>false</c>: the hot call site is
-        /// the <see cref="FlightTime.KinematicRaw"/> fallback tier, which every planning candidate
-        /// reaches (defensive SAM loadouts are rejected by the integrator and always land here).
-        /// Only the per-shot instrument in <c>LaunchDiagnostics</c> passes true.
+        /// Emit the per-15s <c>wp-track</c> overlay. Defaults to <c>false</c>: the frequent caller is
+        /// the <see cref="FlightTime.KinematicRaw"/> fallback tier, reached whenever the integrator
+        /// declines a shot (a SAM planned beyond its reach, for one), and it must not trace there.
+        /// The Profiling report's <c>tiers</c> line counts how often that happens. Only the per-shot
+        /// instrument in <c>LaunchDiagnostics</c> passes true.
         /// </param>
         internal static float EndTime(ObjectBase unit, AmmunitionParameters ap, ObjectBase target,
             bool emitDiag = false)

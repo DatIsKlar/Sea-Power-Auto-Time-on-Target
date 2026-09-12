@@ -33,7 +33,6 @@ namespace AutoTOT
         /// <summary>One launcher object's state at one instant.</summary>
         internal struct LauncherView
         {
-            public WeaponSystem System;
             public int Id;              // reference identity, stable for the object's lifetime
             public string SystemName;
             public string State;        // _engageState
@@ -110,7 +109,6 @@ namespace AutoTOT
 
                 var v = new LauncherView
                 {
-                    System = ws,
                     Id = RuntimeHelpers.GetHashCode(ws),
                     SystemName = SafeSystemName(ws),
                     State = SafeState(ws),

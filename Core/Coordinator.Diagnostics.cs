@@ -65,7 +65,7 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// D1, D2 and D4 of docs/plans/open/aircraft-anchor-impact-slide.md: the shared impact
+        /// D1, D2 and D4 of docs/plans/done/2026-09-07-aircraft-anchor-impact-slide.md: the shared impact
         /// prediction every time it MOVES, decomposed into the two terms that produce it.
         ///
         /// The defect this exists to measure is that `LastRoundLaunch` is an absolute timestamp from
@@ -103,7 +103,7 @@ namespace AutoTOT
                 $"[{PlatformTag(it.Unit)}]: pred {pred:0.0}" +
                 (first ? " (first)" : $" ({delta:+0.0;-0.0}s, {pred - a.FirstPred:+0.0;-0.0}s total)") +
                 $" | lastRoundLaunch {terms.LastRoundLaunch:0.0}s + est {terms.Est:0.0}s" +
-                $" ({(terms.FromLaunchState ? "launch state" : terms.Tier.ToString())}, " +
+                $" ({terms.Source}, " +
                 $"ready {ReadyRoundsText(it)})" +
                 $" - centering {terms.Centering:0.0}s + groupDelay {terms.GroupDelay:0.0}s" +
                 $" | {ShooterDisplacement(a, it, simNow)}{LiveRoundFlight(a, it)}");
@@ -128,6 +128,24 @@ namespace AutoTOT
         /// </summary>
         private const float ImplausibleEstimateFraction = 0.5f;
 
+        /// <summary>Where a commit's flight estimate came from, for the implausible-estimate line.</summary>
+        internal enum EstSource
+        {
+            Fresh,           // solved on this call, so ModelStats.LastTier still describes it
+            AsyncCache,      // published by a solve worker
+            DeferredCommit,  // resolved while the commit was pending, by either route
+        }
+
+        private static string Describe(EstSource src)
+        {
+            switch (src)
+            {
+                case EstSource.AsyncCache: return "async cache";
+                case EstSource.DeferredCommit: return "deferred commit";
+                default: return $"fresh solve, tier {ModelStats.LastTier}";
+            }
+        }
+
         /// <summary>
         /// D8: catch a collapsed flight estimate at COMMIT, where the anchor role is decided.
         ///
@@ -146,7 +164,7 @@ namespace AutoTOT
         /// Diagnostic only. It does NOT substitute a corrected value, for the same reason
         /// WarnOnImpactAnomaly does not clamp.
         /// </summary>
-        private static void WarnOnImplausibleEstimate(Intent it, float flightEst, bool fromCache)
+        private static void WarnOnImplausibleEstimate(Intent it, float flightEst, EstSource source)
         {
             if (it.Unit == null || it.Target == null) return;
             AmmunitionParameters ap;
@@ -162,7 +180,7 @@ namespace AutoTOT
                 $"[{PlatformTag(it.Unit)}] -> {UnitNaming.SafeName(it.Target)}: " +
                 $"est {flightEst:0.00}s against a straight-line floor of {floorS:0.0}s " +
                 $"({rangeM / 1000f:0.0}km at {ap._maxVelocityInKnots:0}kn). " +
-                $"Source {(fromCache ? "async cache" : "fresh solve")}, tier {ModelStats.LastTier}, " +
+                $"Source {Describe(source)}, " +
                 $"kinematics {ap.Kinematics}, shooter {it.Unit._velocityInKnots:0}kn. " +
                 $"This order will get a tiny enroute and lose the anchor role; if it WINS one, " +
                 $"the shared impact goes with it.");
@@ -196,7 +214,7 @@ namespace AutoTOT
                 $"[{PlatformTag(it.Unit)}]: impact {pred:0.0} at sim {simNow:0.0}" +
                 (inThePast ? " IS IN THE PAST" : "") +
                 (backwards ? $", jumped back {a.LastLoggedPred - pred:0.0}s" : "") +
-                $". est {terms.Est:0.0}s ({terms.Tier}), lastRoundLaunch {terms.LastRoundLaunch:0.0}s, " +
+                $". est {terms.Est:0.0}s ({terms.Source}), lastRoundLaunch {terms.LastRoundLaunch:0.0}s, " +
                 $"ready {ReadyRoundsText(it)}. Every held order will release past-due.");
         }
 
@@ -374,87 +392,29 @@ namespace AutoTOT
         }
 
         // ------------------------------------------------------------------------------------
-        // Phase 1 diagnostics, docs/plans/open/BETA-RELEASE-AUDIT-PLAN.md. Each of these exists to
-        // prove or kill one finding of that audit before its fix is written. All six were found by
-        // reading the source, so none has ever been seen in a log; that is what they are here to
-        // settle. Nothing below changes a timing decision.
+        // Phase 1 diagnostics, docs/plans/open/BETA-RELEASE-AUDIT-PLAN.md. Each was written to prove
+        // or kill one finding of that audit before its fix; the ones whose findings closed have been
+        // removed (docs/plans/reference/removed-diagnostics.md). Nothing below changes a timing
+        // decision.
         // ------------------------------------------------------------------------------------
 
-        /// <summary>Cadence for the two per-tick census lines. Sim time, so a paused game is quiet
-        /// and time compression does not multiply the output.</summary>
+        /// <summary>Cadence for the estimator census. Sim time, so a paused game is quiet and time
+        /// compression does not multiply the output.</summary>
         private const float CensusIntervalSim = 30f;
 
-        private static float _lastDisabledLogSim = float.NegativeInfinity;
-        private static int _lastDisabledScheduled = -1;
         private static float _lastCensusSim = float.NegativeInfinity;
-        private static int _lastCensusRows = -1;
 
         /// <summary>
-        /// D2: what is still live while the master switch is off. `Enabled=false` stops intake
-        /// (Coordinator.TryIntercept) and drawing (Hud.OnGUI) but not this tick, so an order that was
-        /// already scheduled can still reach the launcher after the player has switched the mod off.
-        ///
-        /// Ungated and at WARNING when work is actually held, because that is the case the finding is
-        /// about and a normal run must not be able to hide it. Silent when the state is empty, which
-        /// is the expected result and the one that kills the finding.
+        /// The estimator pool's census (in flight, completed, superseded, publish age, faults),
+        /// verbose only. It is the kill criterion chain-audit A2 names for a stranded in-flight key,
+        /// and it runs whether or not anything is being engaged, because the pool does.
         /// </summary>
-        private static void DiagnoseDisabledWork(float simNow)
-        {
-            if (Enabled)
-            {
-                _lastDisabledScheduled = -1;
-                return;
-            }
-
-            int held = _scheduled.Count;
-            int open = _openBatches.Count;
-            bool armed = _strikeBatch != null;
-            if (held == 0 && open == 0 && !armed)
-            {
-                _lastDisabledScheduled = 0;
-                return;
-            }
-
-            // On the first tick after the switch goes off, and then only when the count moves or the
-            // cadence expires. A held order can sit for minutes and one line a minute is enough to
-            // show it is still there.
-            bool changed = held != _lastDisabledScheduled;
-            if (!changed && simNow - _lastDisabledLogSim < CensusIntervalSim) return;
-            _lastDisabledScheduled = held;
-            _lastDisabledLogSim = simNow;
-
-            Bootstrap.Log.LogWarning(
-                $"[AutoTOT] disabled-work: Enabled=false but the coordinator is still ticking with " +
-                $"{held} scheduled order(s), {open} open batch(es), strikeArmed={armed}. " +
-                $"These can still dispatch. D2 of the beta-release audit.");
-        }
-
-        /// <summary>
-        /// D10: whether the engagement board is being pruned. Its only prune path is CollectSalvos,
-        /// which the HUD calls from inside OnGUI, so hiding the panel or disabling the indicator
-        /// stops the cleanup. `panelDrawn` says whether the panel painted since the last census, so
-        /// a rising row count beside `panelDrawn=False` is the finding, and a falling one kills it.
-        /// </summary>
-        private static void DiagnoseBoardCensus(float simNow)
+        private static void DiagnoseEstimatorCensus(float simNow)
         {
             if (!VerboseLog) return;
             if (simNow - _lastCensusSim < CensusIntervalSim) return;
             _lastCensusSim = simNow;
-
-            // Same cadence, and the same kind of question, so it rides along rather than keeping
-            // its own timer. Before the quiet-board return: the estimator census is about the solve
-            // pool, which runs whether or not anything is being engaged.
             FlightTime.LogAsyncCensus();
-
-            EngagementBoard.Census(simNow, out int rows, out int fired, out float oldest);
-            bool panelDrawn = Hud.DrewSinceLastCensus();
-            // Quiet when there is nothing to say: an empty board that stays empty is not a finding.
-            if (rows == 0 && _lastCensusRows <= 0) { _lastCensusRows = rows; return; }
-            _lastCensusRows = rows;
-
-            Bootstrap.Log.LogInfo(
-                $"[AutoTOT] board-census {rows} row(s), {fired} fired, oldest fired {oldest:0.0}s ago, " +
-                $"panelDrawn={panelDrawn}, scheduled {_scheduled.Count}. D10 of the beta-release audit.");
         }
 
         /// <summary>
@@ -489,6 +449,11 @@ namespace AutoTOT
         /// D1, removal side: how many followers were still pointing at an entry as it left
         /// _scheduled. Zero is the ordinary case and says nothing; a nonzero count on an anchor that
         /// has fired without launching is the exact shape the finding predicts.
+        ///
+        /// Call it AFTER <see cref="RetireAnchor"/>. Every exit retires a fired anchor first, which
+        /// sets RippleDone, so the stranding warning below can only fire for an exit that skipped
+        /// the retire: it is a regression guard, and called before the retire it cried wolf on every
+        /// case the retire was about to fix.
         /// </summary>
         private static void NoteScheduleExit(Scheduled s, float simNow, string reason)
         {
@@ -501,13 +466,13 @@ namespace AutoTOT
                 if (!s.Followers[i].Fired) waiting++;
             if (waiting == 0) return;
 
-            // Three of the four exits are recoverable and must not warn, or every ordinary strike
-            // would print one. A ripple that COMPLETES sets RippleDone, which frees the hold; an
-            // anchor that dies BEFORE releasing is re-elected by PromoteNewAnchor, which re-points
-            // every survivor; an abandoned anchor sets RippleDone and goes through
-            // PromoteAbandonedAnchor. What is left is the shape the finding is about: the anchor has
-            // dispatched, no round was ever seen, and it leaves without RippleDone, so nothing can
-            // set it afterwards and nothing can release the followers.
+            // The recoverable exits must not warn, or every ordinary strike would print one. A
+            // ripple that COMPLETES sets RippleDone, which frees the hold; an anchor that dies BEFORE
+            // releasing is re-elected by PromoteAnchor, which re-points every survivor; one that
+            // released and launched nothing is retired, which sets RippleDone and re-anchors. What is
+            // left is the shape the finding is about: the anchor has dispatched, no round was ever
+            // seen, and it leaves without RippleDone, so nothing can set it afterwards and nothing
+            // can release the followers.
             bool stranding = s.Fired && !s.RippleDone && s.LaunchTimes.Count == 0;
             if (!stranding)
             {
@@ -559,8 +524,8 @@ namespace AutoTOT
         /// Called once per commit, after the guidance clamp and before PrepareIntent, so the counts
         /// are the ones that will actually be dispatched.
         /// </summary>
-        private static readonly Dictionary<string, int> _stockScratch = new Dictionary<string, int>();
-        private static readonly Dictionary<string, int> _stockTargets = new Dictionary<string, int>();
+        private static readonly Dictionary<ShipAmmoKey, int> _stockScratch = new Dictionary<ShipAmmoKey, int>();
+        private static readonly Dictionary<ShipAmmoKey, int> _stockTargets = new Dictionary<ShipAmmoKey, int>();
 
         private static void DiagnoseAggregateStock(List<Intent> items)
         {
@@ -572,7 +537,7 @@ namespace AutoTOT
             {
                 Intent it = items[i];
                 if (it.Unit == null || it.AmmoId == null) continue;
-                string key = it.Unit.GetInstanceID() + "|" + it.AmmoId;
+                var key = new ShipAmmoKey(it.Unit, it.AmmoId);
                 _stockScratch.TryGetValue(key, out int n);
                 _stockScratch[key] = n + Mathf.Max(1, it.Shots);
                 _stockTargets.TryGetValue(key, out int t);
@@ -583,7 +548,7 @@ namespace AutoTOT
             {
                 Intent it = items[i];
                 if (it.Unit == null || it.AmmoId == null) continue;
-                string key = it.Unit.GetInstanceID() + "|" + it.AmmoId;
+                var key = new ShipAmmoKey(it.Unit, it.AmmoId);
                 if (!_stockScratch.TryGetValue(key, out int requested)) continue;
                 _stockScratch.Remove(key);   // one line per shooter and ammunition, not per order
                 int targets = _stockTargets.TryGetValue(key, out int t) ? t : 1;
@@ -598,13 +563,13 @@ namespace AutoTOT
                 string owed = outstanding > 0 ? $" (including {outstanding} still owed from earlier orders)" : "";
                 if (requested > available)
                     Bootstrap.Log.LogWarning(
-                        $"[AutoTOT] stock-check {it.Unit.getUIDAndName()} {it.AmmoId}: requested " +
+                        $"[AutoTOT] stock-check {UnitNaming.SafeName(it.Unit)} {it.AmmoId}: requested " +
                         $"{requested} across {targets} target(s){owed}, launchers can supply " +
                         $"{available}. The strike is over-committed by {requested - available}. " +
                         $"D9 of the beta-release audit.");
                 else if (VerboseLog && (targets > 1 || outstanding > 0))
                     Bootstrap.Log.LogInfo(
-                        $"[AutoTOT] stock-check {it.Unit.getUIDAndName()} {it.AmmoId}: requested " +
+                        $"[AutoTOT] stock-check {UnitNaming.SafeName(it.Unit)} {it.AmmoId}: requested " +
                         $"{requested} across {targets} target(s){owed}, available {available}. OK.");
             }
         }
@@ -629,6 +594,9 @@ namespace AutoTOT
                     n += Mathf.Max(1, s.Item.Shots);
             }
             n += ReservedRounds(unit, ammoId);
+            // Committed and waiting on their flight estimates: not scheduled, not in a batch, and
+            // every bit as much a claim on the magazine as a held order.
+            n += PendingAmmoRounds(unit, ammoId);
             return n;
         }
 
@@ -646,7 +614,7 @@ namespace AutoTOT
             else
                 Bootstrap.Log.LogInfo(
                     $"[AutoTOT] dropped held {it.AmmoId} from " +
-                    $"{(it.Unit != null ? it.Unit.getUIDAndName() : "?")}: {reason} before release.");
+                    $"{UnitNaming.SafeName(it.Unit)}: {reason} before release.");
         }
     }
 }

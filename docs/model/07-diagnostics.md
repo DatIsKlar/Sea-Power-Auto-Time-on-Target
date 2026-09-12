@@ -266,3 +266,22 @@ and both print `none` for almost every round:
 
 A shot printing `none` for both is one where neither correction can have moved it, so a residual
 there has some other cause.
+
+## 7.8 Solver captures and offline replay
+
+With `TraceFlightModel` on, every coordinated round writes two files to `BepInEx/AutoTOT-solve/`:
+a `.solveinput` holding the exact input its estimate was solved from, and a `.result` written when
+the round ends, holding what it actually flew. `tools/lab` replays the input with the mod's own
+simulation source, outside the game, and scores it against the result. See
+[`tools/lab/README.md`](../../tools/lab/README.md).
+
+Three records in a `rich-flight-v3` capture exist to keep that replay honest:
+
+| field | what it pins down |
+|---|---|
+| `InGameEstimate`, `InGameStep` | the value the mod's step loop returned for this exact input, and the step it used. `autotot-lab parity` replays the input and must reproduce it to 0.0005 s. `EstAtLaunch` cannot serve: it comes through the estimate cache and may belong to an earlier solve |
+| `WaypointLegs` | the non-kinematic route the mod built (§3.4). The lab rebuilds it from the raw ammunition fields in the same file and warns on any difference |
+| `GuardTrack` (in the `.result`) | every term of the game's pre-apex guard from launch on: the waypoint, its desired and future points, its progress, the three tests and the result, sampled every 0.5 s through t+120, every 5 s after, and on both sides of any change. The field order is in `GuardTrackFields` |
+
+A round is only comparable with the build that produced it: the lab compiles the current source, so
+replaying a capture from an older build runs different code.

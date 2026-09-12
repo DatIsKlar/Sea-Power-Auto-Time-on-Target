@@ -78,10 +78,15 @@ namespace AutoTOT
             return true;
         }
 
-        private static readonly TtlCache<TofKey, float> _cache = new TtlCache<TofKey, float>(CacheTtlSeconds);
+        // Every order of a strike holds an entry at once, keyed by shooter, ammunition and target. A
+        // 522-order strike overflowed the old 512, so the room is sized well past any strike.
+        private const int EstimateCacheCapacity = 4096;
+        private static readonly TtlCache<TofKey, float> _cache =
+            new TtlCache<TofKey, float>(CacheTtlSeconds, EstimateCacheCapacity);
         // Straight-line fallback results (kinematic sim unavailable) get their own cache so a
         // per-frame caller doesn't recompute and re-register a profiling "miss" every frame.
-        private static readonly TtlCache<TofKey, float> _fallbackCache = new TtlCache<TofKey, float>(CacheTtlSeconds);
+        private static readonly TtlCache<TofKey, float> _fallbackCache =
+            new TtlCache<TofKey, float>(CacheTtlSeconds, EstimateCacheCapacity);
 
         // Display-only memo in front of Estimate. The panel asks for an ETA per visible row per
         // frame, ~90 calls, and at the 0.5s firing TTL a couple of those fell through to a full
@@ -139,7 +144,7 @@ namespace AutoTOT
         /// <see cref="TryBuildSolveInput"/> would otherwise read live from the platform.
         ///
         /// One rule produces every timing correction in
-        /// docs/plans/open/aircraft-anchor-impact-slide.md: <b>pair a launch time with a flight
+        /// docs/plans/done/2026-09-07-aircraft-anchor-impact-slide.md: <b>pair a launch time with a flight
         /// estimate valid AT that launch time</b>. <see cref="Estimate"/> cannot express it, because
         /// it takes the shooter as an <see cref="ObjectBase"/> and reads <c>transform.position</c>,
         /// so it can only ever answer "from where the shooter is now". For a ship the two readings
@@ -147,7 +152,7 @@ namespace AutoTOT
         /// distance flown, and the shared impact of a strike walks with it.
         ///
         /// The rail heading is carried because the launch bearing is the actual geometry the round
-        /// flew (see docs/plans/open/offboresight-estimate-collapse.md), and by the time the
+        /// flew (see docs/plans/done/2026-09-07-offboresight-estimate-collapse.md), and by the time the
         /// prediction re-runs the aircraft has turned. Pitch is still read from the live rail: it is
         /// an elevation in the platform's own frame and does not drift as the platform manoeuvres.
         /// </summary>
@@ -230,6 +235,7 @@ namespace AutoTOT
             _lastCallWasHit = false;
             float value = KinematicRaw(unit, ap, target);
             _cache.Set(key, value);
+            NoteSyncWrite(key);
             return value;
         }
 
@@ -372,6 +378,7 @@ namespace AutoTOT
         private static MethodInfo _maxRangePreciseMethod;
         private static bool _maxRangeLookedUp;
         private static FieldInfo _interceptTimeField;
+        private static bool _interceptTimeLookedUp;   // the result type is fixed per session, so is a miss
 
         /// <summary>
         /// Fraction of the straight-line, top-speed flight time below which a result is not
@@ -411,7 +418,7 @@ namespace AutoTOT
         /// model answered absurdly". A 0.2s answer for a 195 km shot passed it, was cached, and
         /// reached the coordinator as a real flight time, where it either stole the anchor role or
         /// set the shared impact in the past. See
-        /// docs/plans/open/offboresight-estimate-collapse.md.
+        /// docs/plans/done/2026-09-07-offboresight-estimate-collapse.md.
         /// </summary>
         internal static bool IsImplausible(float seconds, ObjectBase unit, AmmunitionParameters ap,
                                            ObjectBase target)
@@ -472,8 +479,11 @@ namespace AutoTOT
                 if (_maxRangePreciseMethod == null) return -1f;
                 object krObj = _maxRangePreciseMethod.Invoke(ap, new object[] { unit, targetPos, targetVel, 0, evasive });
                 if (krObj == null) return -1f;
-                if (_interceptTimeField == null)
+                if (!_interceptTimeLookedUp)
+                {
+                    _interceptTimeLookedUp = true;
                     _interceptTimeField = krObj.GetType().GetField("InterceptTime");
+                }
                 if (_interceptTimeField == null) return -1f;
                 return (float)_interceptTimeField.GetValue(krObj);
             }

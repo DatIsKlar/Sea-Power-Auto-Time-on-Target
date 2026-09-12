@@ -296,7 +296,51 @@ Inert by construction for ammunition that leaves the field unset.
 
 ## 3.4 The pitch command
 
-Within a phase, pitch is commanded from the altitude error `altErr = stageAlt − alt`.
+Within a phase, pitch is commanded from the altitude error `altErr = stageAlt − alt`, except for a
+non-kinematic round against a surface target, which follows its waypoint route instead.
+
+### A cruise missile steers at its waypoint
+
+A non-kinematic round does not fly a climb angle to an altitude. `Missile.CreateWaypointConfigs`
+(`Missile.cs:2145`) gives it a route of waypoints, each ending at a flat distance to target, and the
+missile steers at a look-ahead point on the active one. `FlightTime.BuildNonKinLegs` rebuilds that
+route at setup, in flight order:
+
+| leg | ends at | height | climb / descent limit |
+|---|---|---|---|
+| loft | `_seaSkimmingStartDistToTarget` | `_maxLoftAlt` | `_maxLoftAngle` / `_finalFlightPhaseMaxAngle` |
+| sea-skimming | `_finalFlightPhaseDistToTarget` | `_seaSkimmingAlt` | `_seaSkimmingMaxDescentAngle` |
+| final flight | `_terminalApproachDist` | `_finalFlightPhaseAlt` | `_finalFlightPhaseMaxAngle` |
+| terminal approach | `_terminalDiveDistance` | `_terminalAlt` | none |
+| terminal dive | the target | target height, Linear | none |
+
+Legs the round is already inside at launch are dropped (`FastForwardWaypoints`). A loft leg with
+`LoftToSkim = False` hands its own settings to the sea-skimming leg when it completes
+(`Waypoint.cs:687`), so such a round lofts on to the final-flight boundary. A group leader flies
+`_groupLeaderAlt` on the final-flight and terminal legs, and every round of an ammunition with
+`GroupSize > 1` leads its own group when fired alone. A leader cashes its group in on entering
+TerminalApproach and rebuilds its route, after which it flies only the terminal dive.
+
+The look-ahead point (`Waypoint.CalculatePointAtTime`, `Waypoint.cs:423`) is lerped from the missile
+toward the **target** by a fraction measured against the distance to the **waypoint**:
+
+```
+remaining = flatDist − leg.EndDist
+fraction  = min(flatV · T / remaining, 1)          T = 1.5 s (steer) or 8 s (guard)
+lead      = flatDist · fraction                    # grows without limit near a boundary
+height    = leg.Height, clamped to alt ± lead · tan(limit) while progress < 0.95
+targetPitch = atan2(height − alt, lead)
+```
+
+Because `lead` is stretched by `flatDist / remaining`, the commanded pitch flattens before every
+boundary, and a lofting round levels off below its loft height before the first boundary and
+climbs again after it. When the look-ahead runs past a boundary it continues into the next leg, from
+the boundary, using that leg's own settings. The pre-apex guard (`Missile.cs:2559-2581`) compares
+the pitch change needed between the 1.5 s and 8 s points with the raw `_maxTurnRate` times pitch's
+share of the steering error, and commands level flight when the round cannot make it.
+
+Captures without the raw route fields, air-launched rounds and terminal-loft ammunition keep the law
+below.
 
 ### Bang-bang while transiting, proportional while holding
 

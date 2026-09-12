@@ -9,9 +9,9 @@ namespace AutoTOT
     /// facts ; where recomputing every frame causes visible stutter. Positions and loadouts barely
     /// move within the TTL window, so a short cache is lossless in practice.
     ///
-    /// Eviction mirrors the original hand-rolled caches: when the entry count exceeds the
-    /// capacity, expired entries are dropped first; if that still leaves the cache over capacity
-    /// it is cleared wholesale. Simple, allocation-free apart from the scratch list.
+    /// Eviction: inserting a new key into a full cache drops expired entries first; if the cache
+    /// is still full of live ones, the oldest quarter goes. Allocation-free apart from the two
+    /// scratch lists.
     /// </summary>
     internal sealed class TtlCache<TKey, TValue>
     {
@@ -50,26 +50,41 @@ namespace AutoTOT
             return false;
         }
 
-        /// <summary>Insert/overwrite, evicting expired entries first when over capacity.</summary>
+        /// <summary>Insert/overwrite. Inserting a new key into a full cache evicts first.</summary>
         public void Set(TKey key, TValue value)
         {
             float now = Time.unscaledTime;
-            if (_map.Count > _capacity)
-            {
-                _evictScratch.Clear();
-                foreach (KeyValuePair<TKey, Entry> kv in _map)
-                    if ((now - kv.Value.StampUnscaled) >= _ttlSeconds) _evictScratch.Add(kv.Key);
-                int ttlEvicted = _evictScratch.Count;
-                for (int i = 0; i < _evictScratch.Count; i++) _map.Remove(_evictScratch[i]);
-                _evictionsTtl += ttlEvicted;
-                if (_map.Count > _capacity)
-                {
-                    _evictionsCapacity += _map.Count;
-                    _map.Clear();
-                }
-            }
+            if (_map.Count >= _capacity && !_map.ContainsKey(key)) Evict(now);
             _map[key] = new Entry { StampUnscaled = now, Value = value };
         }
+
+        /// <summary>
+        /// Make room: drop expired entries, and if the cache is still full of live ones, drop the
+        /// oldest quarter. It used to clear everything at that point, which made the next reader of
+        /// every key miss at once; a strike with more orders than the cache holds then had every
+        /// order re-solved on the main thread in a single frame.
+        /// </summary>
+        private void Evict(float now)
+        {
+            _evictScratch.Clear();
+            foreach (KeyValuePair<TKey, Entry> kv in _map)
+                if ((now - kv.Value.StampUnscaled) >= _ttlSeconds) _evictScratch.Add(kv.Key);
+            for (int i = 0; i < _evictScratch.Count; i++) _map.Remove(_evictScratch[i]);
+            _evictionsTtl += _evictScratch.Count;
+            if (_map.Count < _capacity) return;
+
+            _ageScratch.Clear();
+            foreach (KeyValuePair<TKey, Entry> kv in _map)
+                _ageScratch.Add(new KeyValuePair<TKey, float>(kv.Key, kv.Value.StampUnscaled));
+            _ageScratch.Sort(OldestFirst);
+            int drop = _map.Count - (_capacity * 3) / 4;
+            for (int i = 0; i < drop; i++) _map.Remove(_ageScratch[i].Key);
+            _evictionsCapacity += drop;
+        }
+
+        private static readonly System.Comparison<KeyValuePair<TKey, float>> OldestFirst =
+            (a, b) => a.Value.CompareTo(b.Value);
+        private readonly List<KeyValuePair<TKey, float>> _ageScratch = new List<KeyValuePair<TKey, float>>();
 
         public long HitCount => _hits;
         public long MissCount => _misses;

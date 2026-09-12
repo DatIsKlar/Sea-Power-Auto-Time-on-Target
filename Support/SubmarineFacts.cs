@@ -27,7 +27,6 @@ namespace AutoTOT
             public float PeriscopeDepthFt;
             public bool Diving;
             public float MaxLaunchDepthFt;  // deepest this weapon can launch from; 0 => surface only
-            public float MinLaunchDepthFt;
             public bool RequiresFullSurface;
             public bool LaunchBlocked;      // the WeaponSystemLauncher gate above, evaluated here
             public string EngageState;      // distinct states across the launchers serving this ammo
@@ -139,7 +138,6 @@ namespace AutoTOT
             if (ap != null)
             {
                 s.MaxLaunchDepthFt = ap._maxDepthUnity * GameUnits.UnityToFeet;
-                s.MinLaunchDepthFt = ap._minDepthUnity * GameUnits.UnityToFeet;
                 s.RequiresFullSurface = ap._maxDepthUnity <= 0f;
                 s.LaunchBlocked = sub.transform.position.y < -ap._maxDepthUnity
                                   && (ap._maxDepthUnity > 0f || s.Submerged);
@@ -147,7 +145,6 @@ namespace AutoTOT
             else
             {
                 s.MaxLaunchDepthFt = float.NaN;
-                s.MinLaunchDepthFt = float.NaN;
             }
 
             s.PitchDeg = sub.getPitch();

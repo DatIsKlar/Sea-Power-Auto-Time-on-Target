@@ -160,7 +160,7 @@ namespace AutoTOT
         {
             if (isSub) return SubMaxPlausibleFtPerSec;
             if (u is Aircraft air && air.Ap != null && air.Ap._maxClimbRate > 0f)
-                return air.Ap._maxClimbRate * 0.0148809375f * GameUnits.UnityToFeet * SnapMarginFactor;
+                return air.Ap._maxClimbRate * GameUnits.UnityPerMetre * GameUnits.UnityToFeet * SnapMarginFactor;
             return float.MaxValue;
         }
 
@@ -180,17 +180,19 @@ namespace AutoTOT
                 // The game's atmosphere and drag helpers take metres and m/s. InducedDrag is
                 // 2W^2/(rho*v^2*pi*b^2*0.75), which is only dimensionally consistent in SI, so the
                 // knots conversion below is required rather than cosmetic.
-                const float KnotsToMetresPerSec = GameUnits.KnotsToMs;
                 float altM = u.transform.position.y * GameUnits.MetersPerUnity;
                 float rho = Atmosphere.Density(altM) / Atmosphere.Density(0f);
+                // Resolved before the two reads: the MethodInfo is passed by value, so resolving
+                // inside the helpers left the first sample of the session without either column.
+                if (!_energyResolved) ResolveEnergy();
                 string lapse = TryUnary(_thrustLapse, air.Ap, altM, out float tl) ? $", lapse {tl:0.000}" : "";
-                string ind = TryBinary(_inducedDrag, air.Ap, u._velocityInKnots * KnotsToMetresPerSec, altM, out float dr)
+                string ind = TryBinary(_inducedDrag, air.Ap, u._velocityInKnots * GameUnits.KnotsToMs, altM, out float dr)
                              ? $", inducedDrag {dr:0.0}" : "";
                 // An aircraft holds a commanded MACH, so true airspeed in knots falls with
                 // altitude purely because the speed of sound does, with no change of throttle.
                 // Logging Mach alongside knots is what separates that from a real deceleration:
                 // measured climbs held Mach to within 3% while TAS fell 4-7%.
-                float sos = Atmosphere.SpeedOfSound(altM) / KnotsToMetresPerSec;   // knots
+                float sos = Atmosphere.SpeedOfSound(altM) / GameUnits.KnotsToMs;   // knots
                 float mach = (sos > 0f) ? u._velocityInKnots / sos : 0f;
                 string cmd = "";
                 ISpeedCommand sc = u.SpeedCommand?.Value;
@@ -298,7 +300,6 @@ namespace AutoTOT
         private static bool TryUnary(MethodInfo m, object target, float a, out float result)
         {
             result = 0f;
-            if (!_energyResolved) ResolveEnergy();
             if (m == null) return false;
             try { result = (float)m.Invoke(target, new object[] { a }); return true; }
             catch { return false; }
@@ -307,7 +308,6 @@ namespace AutoTOT
         private static bool TryBinary(MethodInfo m, object target, float a, float b, out float result)
         {
             result = 0f;
-            if (!_energyResolved) ResolveEnergy();
             if (m == null) return false;
             try { result = (float)m.Invoke(target, new object[] { a, b }); return true; }
             catch { return false; }
@@ -335,7 +335,7 @@ namespace AutoTOT
                 AircraftParameters ap = air.Ap;
                 Bootstrap.Log.LogInfo(
                     $"[AutoTOT] vprof-card {UnitNaming.SafeName(u)} AIR: " +
-                    $"maxClimbRate {ap._maxClimbRate:0.00} ({ap._maxClimbRate * 0.0148809375f * GameUnits.UnityToFeet:0.0}ft/s), " +
+                    $"maxClimbRate {ap._maxClimbRate:0.00} ({ap._maxClimbRate * GameUnits.UnityPerMetre * GameUnits.UnityToFeet:0.0}ft/s), " +
                     $"engines {ap._engineCount}, maxWetThrust {ap._maxWetThrust:0}, mass {ap.Mass:0}, " +
                     $"presetAlts [{PresetFeet(ap)}], wingSpan {ap._wingSpan:0.0}, " +
                     // Descent is governed by these, NOT by the climb energy equation

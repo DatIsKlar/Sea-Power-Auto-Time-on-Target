@@ -98,13 +98,43 @@ window advances during game pause and is unaffected by time compression. The
 config keys are `GroupWindowSeconds` and `MaxCollectSeconds` (Bootstrap.cs,
 217), wired into the fields at Bootstrap.cs.
 
+### The commit is deferred
+
+A commit is split across two moments (`Core/Coordinator.Pending.cs`). The frame
+the player fires runs everything that needs the main thread and nothing that
+needs the flight model: `TryPrepareCommit` (revalidation, the guidance clamp,
+the stock check), `PrepareIntent` per order, and one `FlightTime.RequestRefresh`
+per order to put its solve on the worker pool. The orders then sit in `_pending`
+until their estimates arrive, and `PumpPendingCommits` (once per tick, straight
+after `FlightTime.DrainCompleted`) completes the commit as soon as they have.
+
+Anchor selection needs one flight solve per order, at roughly 2.5 ms each, and a
+strike can hold hundreds of orders; running them on the firing frame froze a
+522-order strike for 1.3 s. Nothing launches at commit, so the wait is free: the
+shared impact time is taken from the clock at COMPLETION and the release gate
+re-estimates continuously afterwards.
+
+Three routes resolve an order, in order of preference: the estimate cache, where
+a finished worker result lands; waiting, while a worker still holds the key
+(`FlightTime.IsQueued`); and a solve on the main thread, for an order nothing
+else will answer (the pool is off, declined the request, or its result was
+superseded), capped at `PendingSolveBudgetMs` per frame. Past
+`PendingDeadlineReal` the rest are solved on the spot, with a warning, so a
+commit always completes.
+
+Pending orders are counted by `CommittedUnfired` (guidance channels) and
+`OutstandingRounds` (magazine), because they are committed in every sense that
+matters to a budget; leaving them out would let a second commit spend the same
+channels. `RevalidateCommit` deliberately does NOT re-run at completion for that
+reason: its magazine pass reads `OutstandingRounds`, which now counts the orders
+of the commit being completed. Only a liveness filter runs there.
+
 ### Anchor selection
 
-`CommitBatch` (Coordinator.cs) calls `PrepareIntent` for every item in
-the batch, then `PickAnchor` selects the anchor (the planner path,
-`FireCoordinated`, calls the same helper). The anchor is the item with the
-strictly greatest enroute-with-lead total, computed inline in `PickAnchor`
-(Coordinator.cs):
+`CompletePending` (Coordinator.Pending.cs) calls `PickAnchor`, which reads each
+order's already-resolved `Intent.CommitFlightEst` and so does no simulation
+work. The anchor is the item with the strictly greatest enroute-with-lead total,
+computed inline in `PickAnchor` (Coordinator.cs):
 
 ```
 enroute = FlightTime.Estimate(unit, ammoId, target)
@@ -114,8 +144,8 @@ enroute = FlightTime.Estimate(unit, ammoId, target)
 ```
 
 On a tie, the first item in `b.Items` order wins (the first maximum encountered
-is kept). The base impact time is fixed at commit: `GameClock.SimNow() + maxEnroute`
-(Coordinator.cs).
+is kept). The base impact time is fixed when the commit completes:
+`GameClock.SimNow() + maxEnroute` (Coordinator.Pending.cs).
 
 ## Time model
 
@@ -338,8 +368,10 @@ The Kirov's SS-N-19 realizes ~3.9 s/round while its INI fire-rate implies
 1. The batch's anchor (longest enroute incl. lead) releases first. The anchor is chosen
    across the whole batch, not per target, so a strike spanning several targets has exactly
    one anchor and one shared impact. If that anchor is lost before it releases anything,
-   `PromoteNewAnchor` re-elects the longest-enroute survivor and keeps the impact time; if it
-   is lost after launching, the impact is locked where the ripple last put it.
+   `PromoteAnchor` re-elects the longest-enroute survivor and keeps the impact time. If it
+   released and launched nothing, the survivor takes over with an impact retimed from now. If
+   it is lost after launching, the impact is locked where the ripple last put it. All of these
+   go through `RetireAnchor`.
 2. `LaunchDiagnostics` sees each missile leave the rail (`WeaponBase._launchTime`)
    and appends the time to the anchor's `LaunchTimes`.
 3. Every tick, `UpdateAnchorTracking` rewrites the shared impact time every held
@@ -852,39 +884,50 @@ run from BepInEx/plugins), returns `true`: it cannot tell where it lives, so it 
 
 ### Config
 
-Persistence: `path = Path.Combine(Paths.ConfigPath, Guid + ".cfg")` →
-`BepInEx/plugins/.../com.seapowermods.autotot.cfg` (Bootstrap.cs).
+Persistence: `path = Path.Combine(Paths.ConfigPath, Guid + ".cfg")`, which is
+`BepInEx/config/com.seapowermods.autotot.cfg` (Bootstrap.cs, `LoadConfig`).
 
-| Section | Key | Type | Default | Range |
-|---|---|---|---|---|
-| General | Enabled | bool | true | - |
-| General | AutoModeOnStart | bool | false | - |
-| Interface | ShowIndicator | bool | true | - |
-| Interface | ToggleModifier | KeyCode | LeftAlt | - |
-| Interface | ToggleKey | KeyCode | T | - |
-| Interface | OpenPanelKey | KeyCode | G | - |
-| Interface | UIScale | float | 0 | 0–4.0; 0 = auto with screen height |
-| Interface | UIScaleMultiplier | float | 1.0 | 0.5–2.0 fine-trim on top of UIScale |
-| Timing | GroupWindowSeconds | float | 0.75 | 0.05–5.0 |
-| Timing | MaxCollectSeconds | float | 6.0 | 0.25–20.0 |
-| Debug | VerboseLogging | bool | false | - |
-| Debug | Profiling | bool | false | - |
+| Section | Key | Type | Default | Range | Read |
+|---|---|---|---|---|---|
+| General | Enabled | bool | true | - | game start |
+| General | AutoModeOnStart | bool | false | - | game start |
+| Interface | ShowIndicator | bool | true | - | live |
+| Interface | ToggleModifier | KeyCode | LeftAlt | - | live |
+| Interface | ToggleKey | KeyCode | T | - | live |
+| Interface | OpenPanelKey | KeyCode | G | - | live |
+| Interface | StrikeArmKey | KeyCode | H | - | live |
+| Interface | FireStrikeKey | KeyCode | F | - | live |
+| Interface | UIScale | float | 0 | 0–4.0; 0 = auto with screen height | live |
+| Interface | UIScaleMultiplier | float | 1.0 | 0.5–2.0 fine-trim on top of UIScale | live |
+| Timing | GroupWindowSeconds | float | 0.75 | 0.05–5.0 | live |
+| Timing | MaxCollectSeconds | float | 6.0 | 0.25–20.0 | live |
+| Debug | VerboseLogging | bool | false | - | live |
+| Debug | TraceFlightModel | bool | false | - | live |
+| Debug | VerticalProfile | bool | false | - | live |
+| Debug | Profiling | bool | false | - | live |
+| Debug | VerifySolve | bool | false | - | live |
+| Performance | EstimatorThreads | int | -1 | -1 = auto, 0 = main thread only, else clamped to the core count | game start |
 
-`ApplyConfig` (Bootstrap.cs) pushes config values into `Coordinator` fields and
-HUD statics. `SettingChanged` handlers are wired on all twelve entries (Bootstrap.cs).
+`ApplyConfig` (Bootstrap.cs) pushes the live values into `Coordinator` fields and HUD
+statics. One file-level `SettingChanged` subscription re-runs it on any change. The three
+game-start keys are read once in `LoadConfig` and deliberately never re-applied:
+`Enabled` is the master switch and cannot change under scheduled work, `AutoModeOnStart`
+only seeds the runtime toggle, and restarting the estimator pool would strand queued work.
 
 ### Pump mechanism
 
 `Pump` (Bootstrap.cs) is a `MonoBehaviour` that drives the coordinator once per
 frame. `Update`:
 
-- `inMission = Globals._mainGameViewModel != null` (Bootstrap.cs).
-- Mission-exit detection: `_wasInMission && !inMission` → `Coordinator.Reset()`
-  (Bootstrap.cs).
-- If not in mission, return.
-- `Coordinator.Tick()` in try/catch (Bootstrap.cs). On exception, deduped against
-  `_lastErrorMsg`, logged as `Log.LogError($"[AutoTOT] coordinator tick error:\n{e}")`
-  only when the message changes.
+- `inMission = Globals._mainGameViewModel != null`.
+- Mission-exit detection with a 0.5 s debounce (`ExitDebounceSeconds`): a menu or pause
+  briefly nulls the view model while the same mission keeps running, and resetting on that
+  transient would discard rounds still in flight. `Coordinator.Reset()` and
+  `VerticalProfiler.Reset()` run only once the mission has been absent for the debounce.
+- In mission, a mission clock that runs backwards by more than 1 s with no reset in between
+  logs a warning: it would mean a new mission started without the exit being seen.
+- `Coordinator.Tick()` and `VerticalProfiler.Tick()` in try/catch. A new exception message
+  is logged in full; a repeat of the same one is restated every 30 s real with a count.
 
 ## File map
 
@@ -897,31 +940,41 @@ Sources live in five folders by concern: `Core/` (pipeline + lifecycle),
 | `Core/AnchorChainEntry.cs` | AnchorChain entry point (`[ACPlugin]`) |
 | `Core/Bootstrap.cs` | Mod-menu gate, config, Harmony patching + DOTS shield install, pump/HUD lifecycle, Unity-exception forwarding |
 | `Core/Patches.cs` | Harmony prefix on `ObjectBase.InsertEngageTask` (ThreadStatic `Bypass` flag) |
-| `Core/Coordinator.cs` | The pipeline: entry (`TryIntercept`, `Tick`, `Reset`), batching, `PrepareIntent`, `Schedule`, `PickAnchor`, and the nested types |
-| `Core/Coordinator.Anchor.cs` | Observation anchoring: impact prediction, launch-state snapshot, shooter-progress sampling, anchor promotion |
-| `Core/Coordinator.Release.cs` | Release: due-time evaluation, flight-estimate resolution, envelope refresh, the fire paths, contention warning |
+| `Core/Coordinator.cs` | The pipeline: entry (`TryIntercept`, `Tick`, `Reset`), batching, commit checks, `PrepareIntent`, `Schedule`, `PickAnchor`, and the nested types |
+| `Core/Coordinator.Pending.cs` | The deferred commit: queue the estimates, resolve them off the firing frame, then elect the anchor and schedule |
+| `Core/Coordinator.Anchor.cs` | Observation anchoring: impact prediction, launch-state snapshot, shooter-progress sampling, ripple finalize, the one anchor exit (`RetireAnchor`) and re-election |
+| `Core/Coordinator.Release.cs` | Release: due-time evaluation, flight-estimate resolution, envelope refresh, the fire paths |
+| `Core/Coordinator.Channels.cs` | The rounds a commit may order: guidance-channel reservations, channel and magazine budgets, commit revalidation, contention warning |
 | `Core/Coordinator.Diagnostics.cs` | The coordinator's log lines and the text helpers that build them |
 | `Simulation/FlightTime.cs` | Flight-time API: tier wiring, TTL caches, straight-line fallback, speed profile + group-forming delay |
 | `Simulation/FlightTime.Integrator.cs` | Grounded step integrator (tier 1, beta): the setup half, which reads game state, plus phase diagnostics |
 | `Simulation/FlightTime.Solve.cs` | The integration loop, written as a pure function of a snapshot |
+| `Simulation/FlightTime.Waypoints.cs` | The waypoint route a non-kinematic round flies, and its look-ahead point, as pure functions |
 | `Simulation/FlightTime.Async.cs` | Worker pool, result drain, and the solve self-check |
 | `Simulation/FlightTime.Reflection.cs` | Branch detection + reflection resolution, and the typed-delegate fast path for the per-step thrust/drag calls |
 | `Simulation/FlightTime.Stats.cs` | Estimator cost counters: sims, integration steps, setup vs loop time, which tier answered |
 | `Simulation/WaypointSim.cs` | Reflection port of the public `SimulateShotLinear` (tier 2, beta) |
+| `Simulation/SubmarineAscent.cs`, `Simulation/AircraftDescent.cs` | Time for a submarine to rise, or an aircraft to descend, into its launch envelope |
 | `Support/GameClock.cs` | Version-agnostic sim clock + launch-timestamp access (float/double beta drift) |
-| `Support/GameUnits.cs` | Shared unit conversions (Unity units ↔ metres/nm/knots) |
+| `Support/GameUnits.cs` | Shared unit conversions (Unity units ↔ metres/nm/knots/feet) |
 | `Support/GameMath.cs` | Horizontal flatten and elevation-angle helpers used across the setup paths. Worker-safe |
 | `Support/ModLog.cs` | The two exception-report shapes (`Warn`, `VerboseWarn`) the reflection and estimator paths share |
-| `Support/LauncherFacts.cs` | Launcher cadence / ready rounds / reserve + TTL cache + reload-wave helpers |
+| `Support/UnitNaming.cs` | The one name-for-display helper, safe against destroyed objects |
+| `Support/ShipAmmoKey.cs` | The (unit, ammunition) dictionary key used by the per-frame paths |
+| `Support/LauncherFacts.cs` | Launcher cadence / ready rounds / reserve / guidance channels + TTL cache + reload-wave helpers |
+| `Support/LauncherProbe.cs` | Live launcher state (engage state, on-rail, usability) for the diagnostics |
+| `Support/LaunchEnvelope.cs`, `Support/SubmarineFacts.cs` | Launch-envelope delay for submarines and aircraft, and the submarine state it reads |
 | `Support/TtlCache.cs` | Tiny real-time TTL cache used by FlightTime and LauncherFacts |
 | `Support/DotsScanHardening.cs` | Multiplayer mission-load crash shield for the DOTS assembly scan |
 | `Diagnostics/LaunchDiagnostics.cs` | Flight tracker: per-missile records, the weapon-list scan, retirement and impact reports |
 | `Diagnostics/LaunchDiagnostics.Expectations.cs` | Launch expectations: crediting, late crediting, shortfall detection; feeds anchor launch times |
 | `Diagnostics/LaunchDiagnostics.Tracing.cs` | Per-missile and per-launcher tracing behind the diagnostic switches |
+| `Diagnostics/SolveInputDump.cs` | The research corpus writer: solver input and flight result per traced round |
+| `Diagnostics/VerticalProfiler.cs` | The `VerticalProfile` research trace of depth and altitude changes |
 | `Diagnostics/EngagementBoard.cs` | Per-target engagement state for the HUD (consolidated: one row per target) |
 | `Diagnostics/TelemetryCadence.cs` | Sampling offsets shared by the `sim-track` and `track` traces, so the two stay comparable |
 | `Diagnostics/CoordinatorProfiler.cs` | Per-frame timing (`CoordinatorProfiler`): stage timers, counters, frame share, the 60-frame report |
-| `UI/Hud.cs` (+ `.Render` `.Mouse` `.Styles` partials) | IMGUI planner panel: layout/data, drawing, pointer capture, styling |
+| `UI/Hud.cs` (+ `.Rows` `.Render` `.Actions` `.Labels` `.Mouse` `.Styles` partials) | IMGUI planner panel: lifecycle and layout, row data, drawing, strike actions, labels, pointer capture, styling |
 
 ## Multiplayer crash shield: `DotsScanHardening`
 
@@ -953,15 +1006,17 @@ itself never depends on it.
 | State | Lives in | Cleared when |
 |---|---|---|
 | Open batches | `Coordinator._openBatches` | committed (debounce/cap) |
+| Commits awaiting estimates | `Coordinator._pending` | every order estimated, the deadline, or mission end |
 | Armed strike | `Coordinator._strikeBatch` | committed by `ExecuteStrike`, or discarded by `CancelStrike` |
 | Held/fired-anchor entries | `Coordinator._scheduled` | released (non-anchor), ripple finalized (anchor), unit/target destroyed |
-| Per-target engagement rows | `EngagementBoard` | fired + idle past 8s grace (prune in `CollectSalvos`), dropped held target, mission end |
+| Per-target engagement rows | `EngagementBoard` | target destroyed, or fired and idle past the 8 s grace (`Prune` on the coordinator tick), dropped held target, mission end |
 | Flight tracker / expectations | `LaunchDiagnostics` | missile gone / expectation finalized; mission end |
 | Flight-time & launcher caches | `FlightTime`, `LauncherFactsSource` | TTL (0.5s), capacity eviction, mission end |
 
 `Coordinator.Reset()` runs on mission exit (detected by `Bootstrap.Pump`) and
-clears all of the above. The HUD's per-frame row cache resets every frame; its
-checked/salvo selections prune dead ships every ~300 frames.
+clears all of the above. The HUD's per-frame row caches reset every frame; its
+checked/salvo selections and staged strike prune dead ships every 300 frames, from
+`Update`, so the prune runs with the panel collapsed or hidden.
 
 ### Threading model
 

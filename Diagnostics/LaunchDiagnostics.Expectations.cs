@@ -1,5 +1,4 @@
 ﻿using System.Collections.Generic;
-using System.Diagnostics;
 using SeaPower;
 using UnityEngine;
 
@@ -65,28 +64,6 @@ namespace AutoTOT
         // shooter cannot keep the entry alive.
         private static readonly Dictionary<ShipAmmoKey, float> _shipLastLaunchSim =
             new Dictionary<ShipAmmoKey, float>();
-
-        /// <summary>
-        /// (firing ship, ammo file) identity for <see cref="_shipLastLaunchSim"/>. A struct rather
-        /// than a concatenated string because FinalizeExpectations looks this up once per open order
-        /// per tick, and a string key allocates on every one of those. Same pattern as
-        /// <c>FlightTime.TofKey</c> and <c>LauncherFactsSource.FactsKey</c>. Keyed on the instance
-        /// id, not the ObjectBase, so a destroyed shooter cannot keep the entry alive.
-        /// </summary>
-        private struct ShipAmmoKey : System.IEquatable<ShipAmmoKey>
-        {
-            public int UnitId;
-            public string AmmoFile;
-            public ShipAmmoKey(ObjectBase unit, string ammoFile)
-            {
-                UnitId = unit != null ? unit.GetInstanceID() : 0;
-                AmmoFile = ammoFile;
-            }
-            public bool Equals(ShipAmmoKey o) => UnitId == o.UnitId && AmmoFile == o.AmmoFile;
-            public override bool Equals(object obj) => obj is ShipAmmoKey k && Equals(k);
-            public override int GetHashCode()
-            { unchecked { return (UnitId * 397) ^ (AmmoFile?.GetHashCode() ?? 0); } }
-        }
 
         // Missiles seen leaving that matched no open order. Non-zero means orders are being credited
         // to the wrong place, or expectations are being retired too early.
@@ -178,7 +155,7 @@ namespace AutoTOT
             string ammoFile = it.Unit.getAmmunitionByName(it.AmmoId)?._ap?._ammunitionFileName;
             if (string.IsNullOrEmpty(ammoFile)) return; // can't attribute missiles without it
 
-            float interval = (f.Valid && f.ShotInterval > 0f) ? f.ShotInterval : LauncherFactsSource.FallbackShotInterval;
+            float interval = f.ShotIntervalOrFallback;
             float reload = f.Valid ? f.ReloadGap : 0f;
             float ripple = (shots - 1) * interval + Mathf.Max(0, it.Waves - 1) * reload;
             // Reload waves after wave 1 launch AnchorShots*interval + reload later each; allow for
@@ -282,7 +259,7 @@ namespace AutoTOT
                 return;
             }
 
-            float launchStamp = GameClock.LaunchStamp(w);   // one reflection read, reused
+            float launchStamp = GameClock.LaunchStampOr(w, GameClock.SimNow());   // one read, reused
 
             // Stamp SHIP activity first, and unconditionally. This round proves the launcher is still
             // working even if it belongs to no order we are tracking, which is what keeps a queued
@@ -435,7 +412,7 @@ namespace AutoTOT
             // Deliberately NOT stamping _shipLastLaunchSim here. That value feeds the deadline
             // calculation for orders still open, and this path never wrote it before; adding a write
             // would extend other orders' windows as a side effect of a bookkeeping fix.
-            float launchStamp = GameClock.LaunchStamp(w);
+            float launchStamp = GameClock.LaunchStampOr(w, GameClock.SimNow());
             a.LaunchTimes.Add(launchStamp);
             Vector3 railHeading;
             if (w.transform == null || !GameMath.TryFlatDirection(w.transform.forward, out railHeading))

@@ -13,15 +13,25 @@ namespace AutoTOT
         private const float ResizeCursorInset = 8f; // cursor sits this far inside the edge while resizing
         private const float DragLatchMargin = 4f;   // px of slack when seeding the press-on-panel latch
 
-        // Frame-based resize: driven by raw Input every frame (not IMGUI drag events, which stop
+        /// <summary>
+        /// The cursor in the panel's GUI space: screen y flipped to GUI's top-down axis, then divided
+        /// by the UI scale, because GUI.matrix scales everything the panel draws while Input reports
+        /// unscaled screen pixels. Every Update-path pointer test goes through this one conversion.
+        /// </summary>
+        private static Vector2 MouseInGui()
+        {
+            float s = EffectiveScale();
+            return new Vector2(Input.mousePosition.x / s, (Screen.height - Input.mousePosition.y) / s);
+        }
+
+                // Frame-based resize: driven by raw Input every frame (not IMGUI drag events, which stop
         // being delivered to the window the moment a fast cursor outruns its rect). Grab the grip
         // on mouse-down, then track the global cursor until release ; smooth at any speed.
         private void HandleResizeInput()
         {
             if (!_open) { _resizing = false; return; }
 
-            float s = EffectiveScale();
-            Vector2 m = new Vector2(Input.mousePosition.x / s, (Screen.height - Input.mousePosition.y) / s);
+            Vector2 m = MouseInGui();
             Rect grip = new Rect(_win.x + _win.width - ResizeGripSize, _win.y + _win.height - ResizeGripSize,
                                  ResizeGripSize, ResizeGripSize);
 
@@ -45,8 +55,7 @@ namespace AutoTOT
         {
             if (_resizing) { _dragging = false; return; }
 
-            float s = EffectiveScale();
-            Vector2 m = new Vector2(Input.mousePosition.x / s, (Screen.height - Input.mousePosition.y) / s);
+            Vector2 m = MouseInGui();
 
             if (Input.GetMouseButtonDown(0))
             {
@@ -73,8 +82,7 @@ namespace AutoTOT
         // Latch through a held drag so fast window moves never briefly unblock the camera.
         private void UpdateMouseCapture()
         {
-            float s = EffectiveScale();
-            Vector2 m = new Vector2(Input.mousePosition.x / s, (Screen.height - Input.mousePosition.y) / s);
+            Vector2 m = MouseInGui();
             bool overNow = _win.Contains(m);
 
             // Latch is button-agnostic: BOTH left and right drags rotate/pan the camera

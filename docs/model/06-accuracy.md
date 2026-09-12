@@ -6,7 +6,7 @@
 
 Measured against real flights on the beta branch, integrator owning every shot with no fallback.
 *Gap* = actual flight time − the estimate made at launch, matching what the `gap` line in the log
-reports (`LaunchDiagnostics.cs:366`). **Positive means the estimate ran SHORT** and the round arrived
+reports (`LaunchDiagnostics.RetireDeadTrackers`). **Positive means the estimate ran SHORT** and the round arrived
 later than predicted; negative means it ran long and the round arrived early.
 
 | shot | class | launch | geometry | gap | flight |
@@ -89,6 +89,30 @@ reason in the next section, and are not comparable between ranges. The 2026-09-0
 plainly: `yj-20` gave +3.3 then -1.3 s and `hhq-9b` -2.2 then +2.4 s, a 4.6 s spread each on about
 123 s of flight, which is inside their own 1.4 to 4.3 % floor. Read a single kinematic shot as one
 draw from that band, never as a point measurement.
+
+### The waypoint route, 2026-09-11
+
+Non-kinematic rounds now fly the game's waypoint route rather than a climb command to each stage
+altitude ([§3.4](03-trajectory.md#a-cruise-missile-steers-at-its-waypoint)). Replayed offline on the
+same captured inputs, it moved the worst solo gap of the lofting families from -1.72 to -0.51 s on
+`ss-n-19`, -1.00 to -0.38 s on `ss-n-12`, and -0.86 to -0.18 s on `ss-n-3b`, and the on-bearing
+`rgm-109b` from +0.90 to 0.00 s. Its recorded altitude and pitch now agree with the model through
+the pitch-over, level-offs, step-downs and terminal glide, not only in total time.
+
+Four new shots were then flown with the route in place, at 109 to 111 nmi, the range band where the
+lofting rounds had been worst:
+
+| shot | class | launch | geometry | gap | flight |
+|---|---|---|---|---|---|
+| ss-n-12 | non-kinematic lofter | 17.5° | on-bearing, two shots | -0.1 / -0.3 s | 282 / 285 s |
+| ss-n-19 | non-kinematic lofter | 45° | on-bearing, two shots | -0.4 / -0.6 s | 347 / 349 s |
+
+The same flight confirmed that the offline replay reproduces the in-game estimate to the
+millisecond ([§7.8](07-diagnostics.md#78-solver-captures-and-offline-replay)).
+
+The off-bearing comparison below predates the route. It was measured against an on-bearing baseline
+the route has since moved, `rgm-109b` in particular, so its size should be re-measured before it is
+relied on.
 
 ### These figures are measured against isolated targets
 

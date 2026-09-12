@@ -266,5 +266,49 @@ namespace AutoTOT
             SetStates(_btnDanger, _transparentTex, _menuHoverTex, _menuHoverTex, _transparentTex,
                       TextDim, Warn);
         }
-    }
+    
+
+        // Our scrollbar styling is applied only around our own scroll views and then restored, so
+        // we never restyle other mods' IMGUI (the BepInEx console and so on) via the shared skin.
+        // Both the shooter list and the strike list need it, hence the pair.
+        private GUIStyle _prevVBar, _prevVThumb, _prevHBar, _prevHThumb;
+
+        /// <summary>
+        /// Put the shared skin back if a draw threw between the push and the pop, then decline to
+        /// handle the exception. Written as an exception FILTER so the restore runs before the stack
+        /// unwinds any further, and the throw still reaches the game exactly as before. Without it a
+        /// single failed frame left every other IMGUI window in the process wearing this panel's
+        /// scrollbars for the rest of the session.
+        /// </summary>
+        private bool RestoreSharedSkin()
+        {
+            PopScrollSkin();
+            return false;
+        }
+
+        private void PushScrollSkin()
+        {
+            _prevVBar = GUI.skin.verticalScrollbar; _prevVThumb = GUI.skin.verticalScrollbarThumb;
+            _prevHBar = GUI.skin.horizontalScrollbar; _prevHThumb = GUI.skin.horizontalScrollbarThumb;
+            GUI.skin.verticalScrollbar = _scrollTrack;
+            GUI.skin.verticalScrollbarThumb = _scrollThumb;
+            GUI.skin.horizontalScrollbar = _hScrollTrack;
+            GUI.skin.horizontalScrollbarThumb = _hScrollThumb;
+        }
+
+        /// <summary>
+        /// Undo <see cref="PushScrollSkin"/>. The saved styles are cleared once restored, so
+        /// <see cref="RestoreSharedSkin"/> acts only while a push is outstanding; before, the saved
+        /// fields stayed set after the first frame and its guard was always true.
+        /// </summary>
+        private void PopScrollSkin()
+        {
+            if (_prevVBar == null) return;   // nothing pushed, or already restored
+            GUI.skin.verticalScrollbar = _prevVBar;
+            GUI.skin.verticalScrollbarThumb = _prevVThumb;
+            GUI.skin.horizontalScrollbar = _prevHBar;
+            GUI.skin.horizontalScrollbarThumb = _prevHThumb;
+            _prevVBar = _prevVThumb = _prevHBar = _prevHThumb = null;
+        }
+}
 }

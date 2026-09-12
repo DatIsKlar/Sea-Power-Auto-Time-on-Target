@@ -36,7 +36,6 @@ namespace AutoTOT
     internal static class CoordinatorProfiler
     {
         internal static double MsPerTick => 1000.0 / System.Diagnostics.Stopwatch.Frequency;
-        internal static void CountCachedHit() { }
     }
 
     internal static class GameClock
@@ -49,6 +48,7 @@ namespace AutoTOT
     {
         // Dumping is a game-side concern; the lab consumes dumps, it does not write them.
         internal static string Write(string label, in FlightTime.SolveInput i,
-                                     SeaPower.AmmunitionParameters ap) => null;
+                                     SeaPower.AmmunitionParameters ap,
+                                     float inGameEstimate = float.NaN, float inGameStep = 0f) => null;
     }
 }

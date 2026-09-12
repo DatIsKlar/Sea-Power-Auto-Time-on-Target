@@ -36,6 +36,10 @@ namespace AutoTOT
         {
             public bool Valid;
             public float ShotInterval;   // I: seconds between rounds within a burst / at fire-rate
+
+            /// <summary>The shot interval, or <see cref="FallbackShotInterval"/> when there is none.</summary>
+            public float ShotIntervalOrFallback => (Valid && ShotInterval > 0f) ? ShotInterval : FallbackShotInterval;
+
             public float StartupDelay;   // S: fixed fire-to-first-launch offset the engage cycle pays
                                          // before round 1 leaves: PreLaunchDelay + the EXPECTED
                                          // reaction draw (MaxReactiontime/2, a uniform [0,max] roll)
@@ -129,15 +133,7 @@ namespace AutoTOT
         private static bool IsUnmasking(ObjectBase ship, string state)
             => state == OutOfArcState && ship != null && ship.Aligning;
 
-        private struct FactsKey : IEquatable<FactsKey>
-        {
-            public int UnitId; public string AmmoId;
-            public bool Equals(FactsKey o) => UnitId == o.UnitId && AmmoId == o.AmmoId;
-            public override bool Equals(object obj) => obj is FactsKey k && Equals(k);
-            public override int GetHashCode() { unchecked { return (UnitId * 397) ^ (AmmoId?.GetHashCode() ?? 0); } }
-        }
-
-        private static readonly TtlCache<FactsKey, Facts> _cache = new TtlCache<FactsKey, Facts>(CacheTtlSeconds);
+        private static readonly TtlCache<ShipAmmoKey, Facts> _cache = new TtlCache<ShipAmmoKey, Facts>(CacheTtlSeconds);
 
         /// <summary>
         /// Reads the firing ship's launcher cadence and ready-round count for <paramref name="ammoId"/>.
@@ -150,7 +146,7 @@ namespace AutoTOT
         {
             if (ship == null || ammoId == null) return default;
 
-            FactsKey key = new FactsKey { UnitId = ship.GetInstanceID(), AmmoId = ammoId };
+            var key = new ShipAmmoKey(ship, ammoId);
             if (_cache.TryGet(key, out Facts cached)) return cached;
 
             Facts f = Compute(ship, ammoId);
@@ -162,7 +158,6 @@ namespace AutoTOT
         {
             _cache.Clear();
             _startupLogged.Clear();   // one launcher-startup line per mission, not per session
-            LauncherTimingProbe.Reset();   // and one timing-probe line per system and state
         }
         internal static long CacheHits => _cache.HitCount;
         internal static long CacheMisses => _cache.MissCount;
@@ -237,7 +232,7 @@ namespace AutoTOT
         /// mounts is seconds while the modelled total is 0.0 s, and a total of zero says nothing
         /// about WHICH term is missing. Verbose only, once per launcher per mission.
         /// </summary>
-        private static readonly HashSet<string> _startupLogged = new HashSet<string>();
+        private static readonly HashSet<ShipAmmoKey> _startupLogged = new HashSet<ShipAmmoKey>();
 
         /// <summary>
         /// The declared OnRailWarmup for the log line, keeping "absent" distinct from "zero": 0 is
@@ -263,11 +258,10 @@ namespace AutoTOT
                                             float launcherCycle, float coldStart)
         {
             if (!Coordinator.VerboseLog || ship == null || vwp == null) return;
-            string key = ship.GetInstanceID() + "/" + ammoId;
-            if (!_startupLogged.Add(key)) return;
+            if (!_startupLogged.Add(new ShipAmmoKey(ship, ammoId))) return;
 
             Bootstrap.Log.LogInfo(
-                $"[AutoTOT] launcher-startup {ammoId} from {ship.getUIDAndName()}: total {total:0.00}s = " +
+                $"[AutoTOT] launcher-startup {ammoId} from {UnitNaming.SafeName(ship)}: total {total:0.00}s = " +
                 $"preLaunch {vwp._preLaunchDelay:0.00}s + halfReaction {0.5f * vwp._maxReactiontime:0.00}s " +
                 $"+ acquisition {acquisition:0.00}s " +
                 $"+ launcherCycle {launcherCycle:0.00}s " +
@@ -576,11 +570,43 @@ namespace AutoTOT
         }
 
         /// <summary>
+        /// True when two ammunition types on one ship are guided by at least one shared sensor, so
+        /// rounds of either draw on the same channel pool.
+        ///
+        /// The reason this exists: the coordinator used to reserve channels per AMMUNITION ID, while
+        /// the budget it reserved against is a property of the guiding sensor. A ship carrying two
+        /// radio-command types served by one radar could therefore reserve the pool twice. Same
+        /// ammunition is trivially true, which keeps the old behaviour as the floor.
+        /// </summary>
+        internal static bool SharesGuidanceSensor(ObjectBase ship, string ammoA, string ammoB)
+        {
+            if (ship == null || ammoA == null || ammoB == null) return false;
+            if (string.Equals(ammoA, ammoB, StringComparison.Ordinal)) return true;
+
+            SensorSystem[] a = Get(ship, ammoA).GuidanceSensors;
+            SensorSystem[] b = Get(ship, ammoB).GuidanceSensors;
+            if (a == null || b == null || a.Length == 0 || b.Length == 0) return false;
+
+            // One or two entries each in practice, so a nested walk on reference identity. Not
+            // Equals: these are plain objects, and reference identity is exactly the question.
+            for (int i = 0; i < a.Length; i++)
+                for (int j = 0; j < b.Length; j++)
+                    if (ReferenceEquals(a[i], b[j])) return true;
+            return false;
+        }
+
+        /// <summary>
         /// Most rounds of <paramref name="ammoId"/> this ship can have guided at once, or
         /// <see cref="int.MaxValue"/> when guidance imposes no limit (unguided ammo, groupable ammo,
         /// or launchers naming no usable guiding sensor). Used to clamp the salvo picker so an
         /// order that physically cannot fire is never issued.
         /// </summary>
+        internal static int GuidanceChannelCap(ObjectBase ship, string ammoId)
+        {
+            Facts f = Get(ship, ammoId);
+            return f.Valid ? f.FreeGuidanceChannels : int.MaxValue;
+        }
+
         /// <summary>
         /// D3 of docs/plans/open/BETA-RELEASE-AUDIT-PLAN.md: a LIVE read of the guiding sensors for
         /// this ammunition, naming each sensor, its channel count and how many weapons it is
@@ -628,50 +654,6 @@ namespace AutoTOT
                 return $"{sb} => free {free}" + (ap._maxGroupSize > 1 ? " (groupable, not capped)" : "");
             }
             catch { return "occupancy err"; }
-        }
-
-        /// <summary>
-        /// True when two ammunition types on one ship are guided by at least one shared sensor, so
-        /// rounds of either draw on the same channel pool.
-        ///
-        /// The reason this exists: the coordinator used to reserve channels per AMMUNITION ID, while
-        /// the budget it reserved against is a property of the guiding sensor. A ship carrying two
-        /// radio-command types served by one radar could therefore reserve the pool twice. Same
-        /// ammunition is trivially true, which keeps the old behaviour as the floor.
-        /// </summary>
-        internal static bool SharesGuidanceSensor(ObjectBase ship, string ammoA, string ammoB)
-        {
-            if (ship == null || ammoA == null || ammoB == null) return false;
-            if (string.Equals(ammoA, ammoB, StringComparison.Ordinal)) return true;
-
-            SensorSystem[] a = Get(ship, ammoA).GuidanceSensors;
-            SensorSystem[] b = Get(ship, ammoB).GuidanceSensors;
-            if (a == null || b == null || a.Length == 0 || b.Length == 0) return false;
-
-            // One or two entries each in practice, so a nested walk on reference identity. Not
-            // Equals: these are plain objects, and reference identity is exactly the question.
-            for (int i = 0; i < a.Length; i++)
-                for (int j = 0; j < b.Length; j++)
-                    if (ReferenceEquals(a[i], b[j])) return true;
-            return false;
-        }
-
-        internal static int GuidanceChannelCap(ObjectBase ship, string ammoId)
-        {
-            Facts f = Get(ship, ammoId);
-            return f.Valid ? f.FreeGuidanceChannels : int.MaxValue;
-        }
-
-        /// <summary>
-        /// Longest open-hatch animation (s) across the containers of a launcher serving this ammo,
-        /// or 0 when none is declared. Bounded by the same sanity limit the cadence floor uses.
-        /// </summary>
-        internal static float HatchCycleSeconds(ObjectBase ship, string ammoId)
-        {
-            Facts f = Get(ship, ammoId);
-            if (!f.Valid) return 0f;
-            float h = f.HatchCycleSeconds;
-            return (h > 0f && h < MaxPlausibleHatchSeconds) ? h : 0f;
         }
 
         /// <summary>

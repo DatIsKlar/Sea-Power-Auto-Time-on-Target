@@ -123,6 +123,16 @@ namespace AutoTOT
             // panel's right edge where the flexible space below puts it.
             GUILayout.Label(msg, _rowOneLine, GUILayout.ExpandWidth(false));
             GUILayout.FlexibleSpace();
+            // A strike whose flight estimates are still being solved has been accepted but is not
+            // scheduled yet, so it appears in no other part of the panel: no ENGAGEMENTS row, no
+            // countdown. On a large strike that is a visible pause between the button and the
+            // rows, and without a word here it reads as the button having done nothing.
+            if (Coordinator.CommitPending)
+            {
+                GUI.color = Accent;
+                GUILayout.Label($"● preparing {Coordinator.PendingOrders} order(s)",
+                                _rowOneLine, GUILayout.ExpandWidth(false));
+            }
             // Collecting in-game orders is a mode, not a hint, so it belongs on the status line
             // whenever it is on and nowhere at all when it is off.
             if (Coordinator.StrikeArmed)
@@ -150,6 +160,18 @@ namespace AutoTOT
             // exactly when its meaning is least guessable.
             "a shooter is out of missile guidance channels; further orders for it are refused",
         };
+
+        // One GUIContent reused for the header's width measurements. CalcSize takes a GUIContent,
+        // and building a fresh one per label per OnGUI pass was four allocations a pass.
+        private static readonly GUIContent _measure = new GUIContent();
+
+        private static float TextWidth(GUIStyle style, string text)
+        {
+            _measure.text = text;
+            return style.CalcSize(_measure).x;
+        }
+
+        private static readonly GUIContent ScaleLabel = new GUIContent("Scale");
 
         private static string[] HelpKeys() => new[]
         {
@@ -184,7 +206,6 @@ namespace AutoTOT
         /// </summary>
         private float HelpOverlayHeight()
         {
-            EnsureStyles();
             return HelpDescriptions.Length * HelpLineH + 2f * DividerH + 8f;
         }
 
@@ -214,7 +235,7 @@ namespace AutoTOT
             // AUTO, and the live engagement count when there is one, are measured and laid out from
             // the right edge inwards so neither depends on how wide the title happens to be.
             string autoText = Coordinator.Active ? "\u25cf AUTO" : "\u25cb AUTO";
-            float autoW = _hdrCenterV.CalcSize(new GUIContent(autoText)).x + 2f;
+            float autoW = TextWidth(_hdrCenterV, autoText) + 2f;
             var autoRect = new Rect(right - autoW, y, autoW, HeaderH);
             GUI.color = Coordinator.Active ? Accent : TextDim;
             GUI.Label(autoRect, autoText, _hdrCenterV);
@@ -230,7 +251,7 @@ namespace AutoTOT
                 string strikeText = Coordinator.StrikeArmed
                     ? $"\u25cf STRIKE {staged}"
                     : $"\u25cb STRIKE {staged}";
-                float strikeW = _hdrCenterV.CalcSize(new GUIContent(strikeText)).x + 2f;
+                float strikeW = TextWidth(_hdrCenterV, strikeText) + 2f;
                 GUI.color = Coordinator.StrikeArmed ? Warn : TextDim;
                 GUI.Label(new Rect(right - strikeW, y, strikeW, HeaderH), strikeText, _hdrCenterV);
                 GUI.color = Color.white;
@@ -244,7 +265,7 @@ namespace AutoTOT
             if (Coordinator.AnyChannelCapped || AnyStagedChannelCap())
             {
                 const string capText = "● CH CAP";
-                float capW = _hdrCenterV.CalcSize(new GUIContent(capText)).x + 2f;
+                float capW = TextWidth(_hdrCenterV, capText) + 2f;
                 GUI.color = Warn;
                 GUI.Label(new Rect(right - capW, y, capW, HeaderH), capText, _hdrCenterV);
                 GUI.color = Color.white;
@@ -256,7 +277,7 @@ namespace AutoTOT
             if (tgts > 0)
             {
                 string live = $"\u25cf {tgts} tgt / {rounds} msl";
-                float liveW = _hdrCenterV.CalcSize(new GUIContent(live)).x + 2f;
+                float liveW = TextWidth(_hdrCenterV, live) + 2f;
                 GUI.color = TargetCol;
                 GUI.Label(new Rect(right - liveW, y, liveW, HeaderH), live, _hdrCenterV);
                 GUI.color = Color.white;
@@ -344,7 +365,13 @@ namespace AutoTOT
             GUI.color = selectable ? Accent : OutOfRange;
             GUILayout.Label($"ETA {eta}", _row, GUILayout.Width(95));
             GUI.color = selectable ? TextMain : OutOfRange;
-            string why = !r.InRange ? " (out of range)"
+            // Both range failures read as the live range compared against the bound it broke, so
+            // the near and far cases have one shape. Width matters: the label column is a fixed
+            // 170px, and the first attempt at this, "(inside minimum range)", wrapped and pushed
+            // every row below it down. Both of these are shorter than the "(out of range)" they
+            // replace.
+            string why = r.TooClose ? " < min range"
+                       : !r.InRange ? " > max range"
                        : r.Count <= 0 ? " (no channels left)"
                        : "";
             GUILayout.Label(range + why, _row, GUILayout.Width(170));
@@ -399,9 +426,9 @@ namespace AutoTOT
             // cap and this warning never once appeared. The slider simply stopped at the cap and
             // said nothing. `>=` is the condition that makes a binding limit visible, which is the
             // whole point of the line.
-            // Outside the `_checked` block below, deliberately. Committing a row clears its tick,
-            // so gating on it hid this warning from the staged strike it actually applies to, which
-            // is the moment the player most needs it.
+            // Outside the `_checked` block below, deliberately: the limit applies to the row whether
+            // or not it is ticked, including rows already staged in the strike, which is the moment
+            // the player most needs it.
             //
             // Kept to one short clause. This fires whenever the player is at the limit, which on a
             // 4-channel ship is most of the time, so a long explanation becomes wallpaper and stops
@@ -409,8 +436,15 @@ namespace AutoTOT
             if (r.ChannelCap < int.MaxValue)
             {
                 int cap = r.ChannelCap;
-                bool trimmed = Coordinator.IsChannelTrimmed(ship, r.AmmoId);
-                bool full = Coordinator.IsChannelCapped(ship, r.AmmoId);
+                RowFacts rf = FactsFor(key);
+                if (!rf.HaveChannel)
+                {
+                    rf.HaveChannel = true;
+                    rf.ChannelTrimmed = Coordinator.IsChannelTrimmed(ship, r.AmmoId);
+                    rf.ChannelCapped = Coordinator.IsChannelCapped(ship, r.AmmoId);
+                }
+                bool trimmed = rf.ChannelTrimmed;
+                bool full = rf.ChannelCapped;
                 int want = _salvo.TryGetValue(key, out int sv) ? sv : 0;
                 bool atCap = _checked[key] && r.InRange && want >= r.Count && r.Count > 0;
 
@@ -433,23 +467,25 @@ namespace AutoTOT
 
             if (r.InRange && _checked[key])
             {
+                RowFacts rf = CheckedRowFacts(ship, r.AmmoId, key);
+
                 // Beam-only launcher. The ship steers to put the target within 3 degrees of exactly
                 // abeam, not merely inside the launcher's arc, so it keeps manoeuvring after it
                 // could already shoot and its salvo comes out in bursts around the turns. Nothing
                 // this mod schedules changes that, and how far the salvo splits depends on the
                 // player's time compression, so the warning states the effect and no number.
-                if (LauncherFactsSource.WillManoeuvreToFire(ship, r.AmmoId, out float windowDeg))
+                if (rf.Manoeuvres)
                 {
                     GUI.color = Warn;
                     GUILayout.Label($"     ⚠ manoeuvres to fire : launcher bears only abeam, ship steers into a " +
-                                    $"{windowDeg:0}° window at 90° : salvo may split across turns", _row);
+                                    $"{rf.WindowDeg:0}° window at 90° : salvo may split across turns", _row);
                     GUI.color = Color.white;
                 }
 
                 // Launcher contention. The strike path makes this easy to do by accident: two
                 // targets picked off the same box launcher cannot leave together, whatever this mod
                 // schedules, because the game services those engage tasks one at a time.
-                if (Coordinator.IsContended(ship, r.AmmoId))
+                if (rf.Contended)
                 {
                     GUI.color = Warn;
                     GUILayout.Label("     ⚠ launcher busy at another target : these rounds leave serially, " +
@@ -461,7 +497,7 @@ namespace AutoTOT
                 // depth ceiling, which can still be below the depth its guidance radar mast needs.
                 // The boat then sits there and never fires. We warn rather than command a depth,
                 // because surfacing a submarine is the player's call, not the mod's.
-                if (LauncherFactsSource.GuidanceSensorUnavailable(ship, r.AmmoId))
+                if (rf.SensorUnavailable)
                 {
                     GUI.color = Warn;
                     GUILayout.Label("     ⚠ guidance radar unavailable : come to periscope depth or this order will not fire", _row);
@@ -474,7 +510,7 @@ namespace AutoTOT
                 // follower it is not, and lands on the arrival time. The role is not known until
                 // commit, so warn on the condition the picker can see: the delay is nonzero. At
                 // launch depth it is zero and the timing is exact.
-                float envelopeDelay = LaunchEnvelope.TimeToReady(ship, r.AmmoId);
+                float envelopeDelay = rf.EnvelopeDelay;
                 if (envelopeDelay > 0f)
                 {
                     // The same delay covers a boat that must rise and an aircraft that must descend,
@@ -507,7 +543,9 @@ namespace AutoTOT
             if (_salvos.Count == 0)
             {
                 GUI.color = TextDim;
-                GUILayout.Label("   none in progress", _row);
+                GUILayout.Label(Coordinator.CommitPending
+                    ? $"   preparing {Coordinator.PendingOrders} order(s)"
+                    : "   none in progress", _row);
                 GUI.color = Color.white;
                 return;
             }
@@ -620,10 +658,10 @@ namespace AutoTOT
         /// How many order lines the breakdown will draw: one per shooter per target, counted the
         /// same way DrawShooterGroup groups them, so the height reserved matches what is drawn.
         /// </summary>
-        private int StrikeOrderLineCount(List<Coordinator.Shot> collected)
+        private int StrikeOrderLineCount(List<ObjectBase> targets, List<Coordinator.Shot> collected)
         {
             int lines = 0;
-            foreach (ObjectBase t in _strikeTargetScratch)
+            foreach (ObjectBase t in targets)
             {
                 lines += DistinctShooters(_strike, t);
                 lines += DistinctShooters(collected, t);
@@ -671,7 +709,7 @@ namespace AutoTOT
 
             // The breakdown draws a line per shooter, not per order, so it is counted that way too.
             float wanted = _strikeTargetScratch.Count * RowHeight +
-                           (_strikeDetail ? StrikeOrderLineCount(collected) * StrikeOrderLineH : 0f) + 4f;
+                           (_strikeDetail ? StrikeOrderLineCount(_strikeTargetScratch, collected) * StrikeOrderLineH : 0f) + 4f;
             return RowHeight + Mathf.Min(wanted, Mathf.Max(StrikeListMinH, _listsAvailH * StrikeListShare));
         }
 
@@ -768,7 +806,10 @@ namespace AutoTOT
         /// pop-up threat is a legitimate reason to shoot without disturbing the plan; it just stops
         /// being the headline action.
         /// </summary>
-        private void DrawCommitRow(List<ObjectBase> shooters, bool canFire)
+        /// <param name="canStage">A target and a checked row: + TARGET can stage something.</param>
+        /// <param name="canFire">A target and a checked row not already staged at it: the direct
+        /// fire buttons would fire something.</param>
+        private void DrawCommitRow(List<ObjectBase> shooters, bool canStage, bool canFire)
         {
             CollectStrikeTargets(_strikeTargetScratch);
             bool strikeIsPrimary = _strike.Count + Coordinator.StrikeCount > 0;
@@ -803,10 +844,11 @@ namespace AutoTOT
             // The alternatives, outlined, on the row below.
             GUILayout.Space(2);
             GUILayout.BeginHorizontal();
-            GUI.enabled = canFire;
+            GUI.enabled = canStage;
             if (GUILayout.Button("+ TARGET", _btnSecondary,
                                  GUILayout.Width(SecondaryButtonW), GUILayout.Height(SecondaryButtonH)))
                 AddSelectionToStrike(shooters);
+            GUI.enabled = canFire;
 
             // Demoted, not removed: firing the target in front of you must stay one click away even
             // while a strike is staged.
@@ -842,6 +884,10 @@ namespace AutoTOT
                     // Count 0 means the guidance channels are already spoken for at another
                     // target, so there is nothing to fire here even if the row is still ticked.
                     if (!r.InRange || r.Count <= 0) continue;
+                    // Already staged against this target: the strike fires it. Ticks outlive
+                    // + TARGET, so without this a direct fire would send these rounds now and the
+                    // strike would send them again.
+                    if (IsStagedHere(ship, r.AmmoId)) continue;
                     string key = Key(ship, r.AmmoId);
                     if (_checked.TryGetValue(key, out bool on) && on)
                     {
@@ -888,7 +934,7 @@ namespace AutoTOT
             var valueRect = new Rect(plusRect.x - ScaleValueW, y, ScaleValueW, FooterRowHeight);
             var minusRect = new Rect(valueRect.x - StepButtonW, y, StepButtonW, FooterRowHeight);
 
-            var label = new GUIContent("Scale");
+            GUIContent label = ScaleLabel;
             float labelW = _hdrCenterV.CalcSize(label).x + 2f;
             var labelRect = new Rect(minusRect.x - labelW - 6f, y, labelW, FooterRowHeight);
 

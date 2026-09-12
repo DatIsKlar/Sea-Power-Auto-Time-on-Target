@@ -15,20 +15,13 @@ namespace AutoTOT
     internal static partial class Coordinator
     {
         /// <summary>
-        /// Live impact prediction for a firing anchor from its observed launch ripple: the last
-        /// round's projected launch time (last observed launch + measured cadence x rounds still
-        /// to come) plus a live lone-flight estimate at the CURRENT geometry (the last round
-        /// launches from wherever the ship is now), minus the ripple-centering lead for
-        /// non-grouped salvos. Returns the entry's current impact time until at least one launch
-        /// has been observed and a valid estimate exists.
-        /// </summary>
-        private static float PredictAnchorImpact(Scheduled a, Intent it, int k, int n, float interval)
-            => PredictAnchorImpact(a, it, k, n, interval, GameClock.SimNow(), out _);
-
-        /// <summary>
-        /// The shared impact time, extrapolated from the anchor's observed launches.
+        /// The shared impact time, extrapolated from the anchor's observed launches: the last
+        /// round's launch time (observed, or projected from the measured cadence while rounds are
+        /// still to come) plus its flight estimate, minus the ripple-centering lead for non-grouped
+        /// salvos. Returns the entry's current impact time until at least one launch has been
+        /// observed and a valid estimate exists.
         ///
-        /// One rule, from docs/plans/open/aircraft-anchor-impact-slide.md: <b>pair a launch time with
+        /// One rule, from docs/plans/done/2026-09-07-aircraft-anchor-impact-slide.md: <b>pair a launch time with
         /// a flight estimate valid AT that launch time.</b> Every symptom that plan chased is a
         /// violation of it, because <c>lastRoundLaunch</c> is an absolute timestamp while
         /// <c>FlightTime.Estimate</c> answers for a shot leaving from wherever the shooter is NOW.
@@ -56,12 +49,21 @@ namespace AutoTOT
                                                  float centeringOverride = -1f)
         {
             terms = default;
+            // Nothing launched yet: the answer is the entry's current impact whatever the estimate
+            // says, so none is taken. It used to integrate first and discard the result, every
+            // 0.5 s for as long as a submarine anchor was still climbing to launch depth.
+            if (k <= 0) return a.ImpactAtSim;
+
             CoordinatorProfiler.Begin(CoordinatorProfiler.Stage.PredictFlight);
             float est = FlightTime.Estimate(it.Unit, it.AmmoId, it.Target);
             CoordinatorProfiler.End(CoordinatorProfiler.Stage.PredictFlight);
             CoordinatorProfiler.Count(CoordinatorProfiler.Counter.PredictFlightCalls);
+            // Read now: ModelStats.LastTier is only this estimate's while nothing else has solved,
+            // and a cache hit runs no tier at all, so the value it holds belongs to some other shot.
+            bool estCached = FlightTime.WasLastCallCacheHit;
+            ModelStats.Tier estTier = ModelStats.LastTier;
             
-            if (k <= 0 || est <= FlightTime.MinValidSeconds) return a.ImpactAtSim;
+            if (est <= FlightTime.MinValidSeconds) return a.ImpactAtSim;
 
             float lastLaunch = a.LaunchTimes[k - 1];
             bool allAway = k >= n;
@@ -97,7 +99,8 @@ namespace AutoTOT
             {
                 Valid = true,
                 Est = flight,
-                Tier = ModelStats.LastTier,
+                Tier = estTier,
+                Cached = estCached,
                 LastRoundLaunch = lastRoundLaunch,
                 Centering = centering,
                 GroupDelay = groupDelay,
@@ -145,32 +148,6 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// Observation anchoring. The batch anchor (longest enroute incl. span) is released first;
-        /// its ACTUAL launches are watched here to extrapolate the launcher's live cadence and
-        /// rewrite the shared impact time every held order releases against.
-        ///
-        /// WHY the anchor's last launch predicts the group's impact: a grouped salvo's convergent
-        /// impact lands when its LAST round's solo flight ends (MissileGroup.cs:106-141 ;
-        /// AdjustMembersVelocities applies symmetric ±40% speed clamps, so the farthest trailer
-        /// flies at exactly solo speed until it closes up; then the group cashes in together,
-        /// Missile.cs:839-842). Cadence is MEASURED, not read: no INI declares it, and the realized
-        /// value comes from per-cell hatch animations and engage-task reassignment.
-        ///
-        /// The prediction updated every tick (k = launches observed, n = anchor shots):
-        ///
-        ///   interval  = (lastLaunch - firstLaunch) / (k-1)          once k >= 2,
-        ///               else the INI interval (a-priori seed)
-        ///   lastRound = lastLaunch + interval * (n - k)               while k < n,
-        ///               else lastLaunch (ripple complete)
-        ///   impact    = lastRound + liveEstimate - centering,
-        ///               where centering = ReleaseLead for independent salvos (their arrivals are
-        ///               centered on the trailing edge minus the lead) and 0 for grouped salvos
-        ///               (they land tight at the trailing edge).
-        ///
-        /// Finalizes when the first wave has fully launched (k >= n), or when launches stall
-        /// (shortfall / gating) ; held orders keep whatever prediction was last written.
-        /// </summary>
-        /// <summary>
         /// Launcher-intent-only form for callers with no <see cref="Scheduled"/> to carry the depth
         /// samples (the shortfall accounting in <see cref="LaunchDiagnostics"/>). Covers a launcher
         /// mid cycle and a submarine still held below its launch ceiling; it cannot tell a boat that
@@ -201,8 +178,7 @@ namespace AutoTOT
         /// what lets a genuinely stuck order terminate: a radio-command weapon whose guidance radar
         /// needs periscope depth sits in LauncherTooLow at the weapon's own ceiling indefinitely,
         /// never clearing the block, so signal 3 never arms for it either.
-        /// </summary>
-        /// <summary>
+        ///
         /// The full verdict used by the anchor-tracking loop: the launcher-intent and depth tests
         /// of <see cref="ShooterStillWorking(ObjectBase, string)"/>, plus the hard cap, the
         /// depth-sampling verdict and the post-unblock grace. Named apart from that overload
@@ -341,6 +317,32 @@ namespace AutoTOT
             return true;
         }
 
+        /// <summary>
+        /// Observation anchoring. The batch anchor (longest enroute incl. span) is released first;
+        /// its ACTUAL launches are watched here to extrapolate the launcher's live cadence and
+        /// rewrite the shared impact time every held order releases against.
+        ///
+        /// WHY the anchor's last launch predicts the group's impact: a grouped salvo's convergent
+        /// impact lands when its LAST round's solo flight ends (MissileGroup.cs:106-141 ;
+        /// AdjustMembersVelocities applies symmetric ±40% speed clamps, so the farthest trailer
+        /// flies at exactly solo speed until it closes up; then the group cashes in together,
+        /// Missile.cs:839-842). Cadence is MEASURED, not read: no INI declares it, and the realized
+        /// value comes from per-cell hatch animations and engage-task reassignment.
+        ///
+        /// The prediction updated every tick (k = launches observed, n = anchor shots):
+        ///
+        ///   interval  = (lastLaunch - firstLaunch) / (k-1)          once k >= 2,
+        ///               else the INI interval (a-priori seed)
+        ///   lastRound = lastLaunch + interval * (n - k)               while k < n,
+        ///               else lastLaunch (ripple complete)
+        ///   impact    = lastRound + liveEstimate - centering,
+        ///               where centering = ReleaseLead for independent salvos (their arrivals are
+        ///               centered on the trailing edge minus the lead) and 0 for grouped salvos
+        ///               (they land tight at the trailing edge).
+        ///
+        /// Finalizes when the first wave has fully launched (k >= n), or when launches stall
+        /// (shortfall / gating) ; held orders keep whatever prediction was last written.
+        /// </summary>
         private static void UpdateAnchorTracking(float simNow)
         {
             if (_scheduled.Count == 0) return;
@@ -353,20 +355,22 @@ namespace AutoTOT
                 // Dead shooter: ReleaseDueLaunches drops the entry; held orders keep the last
                 // prediction already written into their ImpactAtSim.
                 if (it.Unit == null || it.Unit.IsDestroyed) continue;
-                // Dead anchor TARGET, post-launch. Re-election is impossible once the anchor has
-                // fired, because its ripple IS the clock. With one target that only affects the
-                // anchor's own shot; with several it would strand every surviving target on a
-                // prediction that stops being updated while its followers keep waiting. So lock the
-                // strike on the last prediction now and say so, rather than letting it drift.
+                // Dead anchor TARGET, after the anchor fired. With rounds away its ripple IS the
+                // clock, so the strike is locked on the last prediction: with one target that only
+                // affects the anchor's own shot, but with several every surviving target would
+                // otherwise be stranded on a prediction that stops updating while its followers wait.
+                // With nothing away yet there is no clock to lock, and RetireAnchor re-anchors the
+                // survivors rather than freeing them onto an impact no round was going to make.
                 if (it.Target == null || it.Target.IsDestroyed)
                 {
-                    a.RippleDone = true;
-                    NoteScheduleExit(a, simNow, "anchor target destroyed after launch");
                     _scheduled.RemoveAt(i);
-                    Bootstrap.Log.LogInfo(
-                        $"[AutoTOT] anchor target lost after launch ({it.AmmoId} from " +
-                        $"{UnitNaming.SafeName(it.Unit)}); impact locked at sim {a.ImpactAtSim:0.0} " +
-                        $"for the {(a.Followers?.Count ?? 0)} order(s) still held.");
+                    if (a.LaunchTimes.Count > 0)
+                        Bootstrap.Log.LogInfo(
+                            $"[AutoTOT] anchor target lost after launch ({it.AmmoId} from " +
+                            $"{UnitNaming.SafeName(it.Unit)}); impact locked at sim {a.ImpactAtSim:0.0} " +
+                            $"for the {(a.Followers?.Count ?? 0)} order(s) still held.");
+                    RetireAnchor(a, simNow, "anchor target destroyed after launch");
+                    NoteScheduleExit(a, simNow, "anchor target destroyed after launch");
                     continue;
                 }
 
@@ -380,8 +384,11 @@ namespace AutoTOT
                 // 2026-09-07c straight-line run put 49.5s and a full climb-and-descent in that gap
                 // and produced zero lines describing it. They now run until the ripple is done.
                 // asc-residual: the one number that says whether the ascent model is good.
-                // Observed order-to-first-round against what was predicted at commit, scored once
+                // Observed order-to-first-round against the lead the release gate used, scored once
                 // when the first launch lands. Positive = the boat took longer than predicted.
+                // That lead is refreshed while the order is held and frozen at release
+                // (RefreshEnvelopeLead stops once Fired is set), so this is the same baseline the
+                // follower-side scorer snapshots when the order is registered.
                 if (VerboseLog && k >= 1 && !a.LoggedEnvelopeResidual && it.EnvelopeLead > 0f && a.FiredAtSim >= 0f)
                 {
                     a.LoggedEnvelopeResidual = true;
@@ -445,24 +452,8 @@ namespace AutoTOT
                 }
                 // Held orders in this batch follow the live prediction; their release condition is
                 // re-evaluated against it every tick. Uses anchor->followers index for O(followers).
-                if (a.Followers != null)
-                {
-                    LogImpactMove(a, it, pred, simNow, "tracking");
-                    for (int j = 0; j < a.Followers.Count; j++)
-                        a.Followers[j].ImpactAtSim = pred;
-                }
-                // Every target in the strike, not just the anchor's: the followers aimed elsewhere
-                // are being retimed above, so their board rows have to follow or they show a frozen
-                // impact and a drifting ETA for a shot that is in fact still on schedule.
-                if (a.BoardTargets != null)
-                {
-                    for (int j = 0; j < a.BoardTargets.Count; j++)
-                        EngagementBoard.UpdateImpact(a.BoardTargets[j], pred);
-                }
-                else
-                {
-                    EngagementBoard.UpdateImpact(it.Target, pred);
-                }
+                if (a.Followers != null) LogImpactMove(a, it, pred, simNow, "tracking");
+                PublishImpact(a, pred);
 
                 bool complete = k >= n;
                 // Stall = launches stopped (gated/short), or NOTHING launched for a long while
@@ -484,100 +475,7 @@ namespace AutoTOT
                     a.RippleDone = true;
                     NoteScheduleExit(a, simNow, complete ? "ripple complete" : "ripple stalled");
                     _scheduled.RemoveAt(i);   // its caches are fields, so they go with it
-                    float span = (k > 1) ? a.LaunchTimes[k - 1] - a.LaunchTimes[0] : 0f;
-
-                    // A stalled ripple is finalized on the rounds that ACTUALLY flew, which is what
-                    // the log line has always claimed. It used to keep a prediction extrapolated
-                    // over the rounds that never left, so an order that fired 1 of 2 had its impact
-                    // set from a modelled second launch that never happened. Re-predicting with
-                    // n = k also lets the live-round path answer, since every round is now away by
-                    // definition. See docs/plans/open/aircraft-anchor-impact-slide.md.
-                    if (stalled && !complete && k > 0)
-                    {
-                        // D6 of the beta-release audit, before the re-prediction so the terms
-                        // reported are the ones it is about to use.
-                        LogStallCentering(a, it, n, k, span, interval);
-                        // Centering from what flew, not from what was ordered. k == 1 spans nothing,
-                        // so it centers on the single arrival, which is the same answer a one-round
-                        // order would have produced at commit.
-                        float observedCentering = (k > 1) ? span * 0.5f : 0f;
-                        float onObserved = PredictAnchorImpact(a, it, k, k, interval, simNow,
-                                                               out AnchorPredictTerms stallTerms,
-                                                               observedCentering);
-                        if (stallTerms.Valid) pred = onObserved;
-                        LogImpactMove(a, it, pred, simNow, "stall-finalize");
-                        if (a.Followers != null)
-                            for (int j = 0; j < a.Followers.Count; j++)
-                                a.Followers[j].ImpactAtSim = pred;
-                        if (a.BoardTargets != null)
-                            for (int j = 0; j < a.BoardTargets.Count; j++)
-                                EngagementBoard.UpdateImpact(a.BoardTargets[j], pred);
-                        else
-                            EngagementBoard.UpdateImpact(it.Target, pred);
-                    }
-
-                    // Nothing launched: there is no shot to anchor on, so the prediction written to
-                    // the board every tick above is for an impact that will never happen.
-                    //
-                    // This used to drop one board row and warn, and nothing else. The followers were
-                    // freed (RippleDone releases the hold) but kept the phantom ImpactAtSim, so they
-                    // released against a time no round was going to make, having already burned their
-                    // own release windows waiting out the anchor's full hold. That is the 65s to 92s
-                    // past-due dump seen in three separate 2026-09-07 logs. Two more gaps sat beside
-                    // it: only `it.Target` was dropped rather than every row in `BoardTargets`, and
-                    // PromoteNewAnchor could never run here, because its call site requires the
-                    // shooter or target to be DESTROYED and is additionally guarded by `!s.Fired`,
-                    // while this anchor is alive and has fired its order.
-                    //
-                    // So: hand the strike to the longest-enroute survivor and give it an impact it
-                    // can actually make. Only drop the rows when there is no survivor to take over.
-                    // See docs/plans/open/anchor-liveness.md.
-                    if (k == 0)
-                    {
-                        bool rehomed = PromoteAbandonedAnchor(a, simNow);
-                        if (!rehomed)
-                        {
-                            if (a.BoardTargets != null)
-                                for (int j = 0; j < a.BoardTargets.Count; j++)
-                                    EngagementBoard.Drop(a.BoardTargets[j]);
-                            else
-                                EngagementBoard.Drop(it.Target);
-                        }
-                        Bootstrap.Log.LogWarning(
-                            $"[AutoTOT] order abandoned {it.AmmoId} from {UnitNaming.SafeName(it.Unit)} -> " +
-                            $"{UnitNaming.SafeName(it.Target)}: nothing launched, " +
-                            (rehomed
-                                ? "strike re-anchored on the longest-enroute survivor."
-                                : "no survivor to re-anchor on, engagement dropped so other " +
-                                  "shooters are not held against it.") +
-                            SubmarineFacts.Describe(it.Unit, it.AmmoId));
-                    }
-                    Bootstrap.Log.LogInfo(
-                        $"[AutoTOT] anchored {UnitNaming.SafeName(it.Target)}: {k}/{n} launched over {span:0.0}s " +
-                        $"(cadence {interval:0.0}s), impact set to sim {pred:0.0}" +
-                        // D1's endpoint. The per-move trace is thresholded, so the total is stated
-                        // here explicitly rather than left to be diffed out of the first and last
-                        // anchor-slide lines. A ship anchor should read about 0.0s.
-                        (VerboseLog && !float.IsNaN(a.FirstPred)
-                            ? $" (slid {pred - a.FirstPred:+0.0;-0.0}s from {a.FirstPred:0.0}, " +
-                              $"anchor {PlatformTag(it.Unit)}, {ShooterDisplacement(a, it, simNow)})"
-                            : "") +
-                        (stalled && !complete ? ", ripple stalled, anchored on launches observed" : "") +
-                        (stalled && k == 0 ? " (NOTHING launched)" : "") +
-                        SubmarineFacts.Describe(it.Unit, it.AmmoId));
-
-                    // Diagnostic: the range-aware τ_form model's internals (now the LIVE model, so
-                    // `candidate` == `applied groupDelay`). Kept for sanity-checking modded/untested
-                    // missiles ; watch that `candidate` tracks the observed residual.
-                    if (VerboseLog && it.Grouped && span > 0f &&
-                        FlightTime.GroupFormingTauDiag(it.Unit, it.AmmoId, it.Target, span,
-                            out float pSpan, out float tauForm, out float candidate))
-                    {
-                        Bootstrap.Log.LogInfo(
-                            $"[AutoTOT] group-tau {it.AmmoId}: span {span:0.0}s, Pspan {pSpan:0}, " +
-                            $"2.5Pspan {2.5f * pSpan:0}, tauForm {tauForm:0.0}s, candidate {candidate:0.0}s " +
-                            $"(applied groupDelay {GroupDelay(it, span):0.0}s)");
-                    }
+                    FinalizeRipple(a, it, k, n, interval, pred, complete, stalled, simNow);
                 }
                 // Submarines re-log on a sim cadence even when k has not moved: a boat holding at
                 // 0/8 while it comes up to launch depth is otherwise one line and no trace at all,
@@ -597,22 +495,90 @@ namespace AutoTOT
         }
 
         /// <summary>
+        /// Finish an anchor's ripple, complete or stalled: re-predict a stalled one on the rounds that
+        /// actually flew, abandon one that launched nothing, and state the impact the strike is set to.
+        /// The caller has already marked it RippleDone and taken it out of <c>_scheduled</c>.
+        /// </summary>
+        private static void FinalizeRipple(Scheduled a, Intent it, int k, int n, float interval,
+                                           float pred, bool complete, bool stalled, float simNow)
+        {
+            float span = (k > 1) ? a.LaunchTimes[k - 1] - a.LaunchTimes[0] : 0f;
+
+            // A stalled ripple is finalized on the rounds that ACTUALLY flew, which is what
+            // the log line has always claimed. It used to keep a prediction extrapolated
+            // over the rounds that never left, so an order that fired 1 of 2 had its impact
+            // set from a modelled second launch that never happened. Re-predicting with
+            // n = k also lets the live-round path answer, since every round is now away by
+            // definition. See docs/plans/done/2026-09-07-aircraft-anchor-impact-slide.md.
+            if (stalled && !complete && k > 0)
+            {
+                // D6 of the beta-release audit, before the re-prediction so the terms
+                // reported are the ones it is about to use.
+                LogStallCentering(a, it, n, k, span, interval);
+                // Centering from what flew, not from what was ordered. k == 1 spans nothing,
+                // so it centers on the single arrival, which is the same answer a one-round
+                // order would have produced at commit.
+                float observedCentering = (k > 1) ? span * 0.5f : 0f;
+                float onObserved = PredictAnchorImpact(a, it, k, k, interval, simNow,
+                                                       out AnchorPredictTerms stallTerms,
+                                                       observedCentering);
+                if (stallTerms.Valid) pred = onObserved;
+                LogImpactMove(a, it, pred, simNow, "stall-finalize");
+                PublishImpact(a, pred);
+            }
+
+            // Nothing launched: there is no shot to anchor on, so the prediction written to the
+            // board every tick above is for an impact that will never happen. Freeing the
+            // followers onto it was the 65 s to 92 s past-due dump in three 2026-09-07 logs;
+            // AbandonAnchor re-anchors them on the longest-enroute survivor instead. See
+            // docs/plans/open/anchor-liveness.md.
+            if (k == 0) AbandonAnchor(a, simNow, "nothing launched within the stall window");
+            Bootstrap.Log.LogInfo(
+                $"[AutoTOT] anchored {UnitNaming.SafeName(it.Target)}: {k}/{n} launched over {span:0.0}s " +
+                $"(cadence {interval:0.0}s), impact set to sim {pred:0.0}" +
+                // D1's endpoint. The per-move trace is thresholded, so the total is stated
+                // here explicitly rather than left to be diffed out of the first and last
+                // anchor-slide lines. A ship anchor should read about 0.0s.
+                (VerboseLog && !float.IsNaN(a.FirstPred)
+                    ? $" (slid {pred - a.FirstPred:+0.0;-0.0}s from {a.FirstPred:0.0}, " +
+                      $"anchor {PlatformTag(it.Unit)}, {ShooterDisplacement(a, it, simNow)})"
+                    : "") +
+                (stalled && !complete ? ", ripple stalled, anchored on launches observed" : "") +
+                (stalled && k == 0 ? " (NOTHING launched)" : "") +
+                SubmarineFacts.Describe(it.Unit, it.AmmoId));
+
+            // The group-drag model's internals for the ripple that flew: the distance the
+            // first round covers during the span, the forming time, and the delay they give,
+            // which IS the groupDelay applied (it used to be recomputed and printed a second
+            // time beside itself). Kept for modded or untested groupable missiles: watch
+            // that `candidate` tracks the observed residual.
+            if (VerboseLog && it.Grouped && span > 0f &&
+                FlightTime.GroupFormingTauDiag(it.Unit, it.AmmoId, it.Target, span,
+                    out float pSpan, out float tauForm, out float candidate))
+            {
+                Bootstrap.Log.LogInfo(
+                    $"[AutoTOT] group-tau {it.AmmoId}: span {span:0.0}s, Pspan {pSpan:0}, " +
+                    $"2.5Pspan {2.5f * pSpan:0}, tauForm {tauForm:0.0}s, candidate {candidate:0.0}s");
+            }
+        }
+
+        /// <summary>
         /// One exit for an anchor that will never finish its ripple, whatever removed it: a
-        /// destroyed shooter, a destroyed target, or a dispatch the game refused.
+        /// destroyed shooter, a destroyed target, a dispatch the game refused, or a no-launch stall.
         ///
         /// Three cases, and the middle one is finding 1 of
         /// docs/plans/open/BETA-RELEASE-AUDIT-PLAN.md.
         ///
         /// <list type="bullet">
         /// <item>Not yet released. Nothing has changed for the survivors, so the impact stands and
-        /// <see cref="PromoteNewAnchor"/> hands the role over with it.</item>
+        /// <see cref="PromoteAnchor"/> hands the role over with it.</item>
         /// <item>Released, no round observed. This was the unrecoverable one. The entry left
         /// <c>_scheduled</c> with <c>Fired</c> set and <c>RippleDone</c> false, and only
         /// UpdateAnchorTracking sets <c>RippleDone</c>, which walks <c>_scheduled</c>. So the
         /// followers held on an anchor that no loop could reach any more, with no timeout, for the
-        /// rest of the mission. They are freed here and the strike is re-anchored on the
-        /// longest-enroute survivor, retimed from now, because the old impact came from a shot that
-        /// never existed.</item>
+        /// rest of the mission. <see cref="AbandonAnchor"/> frees them and re-anchors the strike on
+        /// the longest-enroute survivor, retimed from now, because the old impact came from a shot
+        /// that never existed.</item>
         /// <item>Released with rounds away. The last prediction was built from real launches, so it
         /// is the best answer available and it is locked. Followers free on RippleDone.</item>
         /// </list>
@@ -625,7 +591,7 @@ namespace AutoTOT
 
             if (!lost.Fired)
             {
-                PromoteNewAnchor(lost, simNow);
+                PromoteAnchor(lost, simNow, retime: false);
                 return;
             }
 
@@ -642,7 +608,22 @@ namespace AutoTOT
                 return;
             }
 
-            bool rehomed = PromoteAbandonedAnchor(lost, simNow);
+            AbandonAnchor(lost, simNow, reason);
+        }
+
+        /// <summary>
+        /// A released anchor that launched nothing: hand the strike to the longest-enroute survivor
+        /// with an impact it can still make, or, with no survivor, drop the board rows nothing is held
+        /// against any more. Reached from <see cref="RetireAnchor"/> and from the no-launch stall in
+        /// <see cref="UpdateAnchorTracking"/>, which used to carry its own copy of this.
+        ///
+        /// Only never-fired rows are dropped (<see cref="EngagementBoard.Drop"/> leaves a fired row
+        /// alone). A fired row may still have a follower's rounds in flight at its target, and the
+        /// tick's prune removes it once nothing is working there, which is the right moment.
+        /// </summary>
+        private static void AbandonAnchor(Scheduled lost, float simNow, string reason)
+        {
+            bool rehomed = PromoteAnchor(lost, simNow, retime: true);
             if (!rehomed)
             {
                 if (lost.BoardTargets != null)
@@ -652,34 +633,86 @@ namespace AutoTOT
                     EngagementBoard.Drop(lost.Item.Target);
             }
 
+            Intent it = lost.Item;
             Bootstrap.Log.LogWarning(
-                $"[AutoTOT] anchor retired {lost.Item?.AmmoId} from " +
-                $"{UnitNaming.SafeName(lost.Item?.Unit)} ({reason}) having launched nothing: " +
+                $"[AutoTOT] anchor retired {it?.AmmoId} from {UnitNaming.SafeName(it?.Unit)} -> " +
+                $"{UnitNaming.SafeName(it?.Target)} ({reason}) having launched nothing: " +
                 (rehomed
                     ? "strike re-anchored on the longest-enroute survivor and retimed."
-                    : "no survivor to re-anchor on, engagement dropped so other shooters are not " +
-                      "held against it."));
+                    : "no survivor to re-anchor on, so the strike ends with it.") +
+                SubmarineFacts.Describe(it?.Unit, it?.AmmoId));
         }
 
         /// <summary>
-        /// Re-elect an anchor after the sitting one is abandoned having launched NOTHING, and give
-        /// the strike an impact time the survivors can still make.
-        ///
-        /// Distinct from <see cref="PromoteNewAnchor"/> in the one respect that matters. There the
-        /// impact is deliberately held, because it was derived from the lost anchor's enroute time,
-        /// which was the largest, so every survivor could still make it. Here that reasoning fails:
-        /// the impact came from a shot that never existed, and the survivors have been holding
-        /// station against it for the anchor's entire no-launch window, which on the 2026-09-07 runs
-        /// was the full 300 s hard cap. By the time they were freed they were already 65 s to 92 s
-        /// past their own release points and were dumped as a batch that could not arrive together.
-        ///
-        /// So the impact is recomputed from the new anchor's enroute time at the current moment,
-        /// which is by construction the longest remaining shot and therefore a time every survivor
-        /// can still meet.
-        ///
-        /// False when nothing can take over, which is the caller's signal to drop the board rows.
+        /// Hand the anchor's prediction to every order held against it and to every strike target's
+        /// board row. The rows of targets other than the anchor's must follow too, or they show a
+        /// frozen impact and a drifting ETA for shots that are in fact still on schedule.
         /// </summary>
-        private static bool PromoteAbandonedAnchor(Scheduled lost, float simNow)
+        private static void PublishImpact(Scheduled a, float impactSim)
+        {
+            if (a.Followers != null)
+                for (int j = 0; j < a.Followers.Count; j++)
+                    a.Followers[j].ImpactAtSim = impactSim;
+            PublishBoardImpact(a, impactSim);
+        }
+
+        /// <summary>
+        /// Write the shared impact to the board row of every target in the strike, or of the anchor's
+        /// own target when the strike has only that one. A destroyed target is skipped:
+        /// <see cref="EngagementBoard.UpdateImpact"/> creates a row when there is none, so publishing
+        /// to a dead target re-created, every tick, the row the prune had just removed, and the row
+        /// then stayed until the mission ended.
+        /// </summary>
+        private static void PublishBoardImpact(Scheduled a, float impactSim)
+        {
+            if (a.BoardTargets != null)
+            {
+                for (int j = 0; j < a.BoardTargets.Count; j++)
+                {
+                    ObjectBase t = a.BoardTargets[j];
+                    if (t != null && !t.IsDestroyed) EngagementBoard.UpdateImpact(t, impactSim);
+                }
+            }
+            else if (a.Item?.Target != null && !a.Item.Target.IsDestroyed)
+            {
+                EngagementBoard.UpdateImpact(a.Item.Target, impactSim);
+            }
+        }
+
+        /// <summary>
+        /// Re-elect an anchor when the sitting one leaves the schedule: the longest-enroute survivor
+        /// takes over, exactly as <see cref="Schedule"/> would have chosen it had the loser never been
+        /// there. False when nothing can take over.
+        ///
+        /// <paramref name="retime"/> separates the two situations this is called in.
+        ///
+        /// <list type="bullet">
+        /// <item><b>Held</b> (false): the anchor was dropped BEFORE it released anything, because its
+        /// shooter or its target died while the strike was still being held. With one target per
+        /// strike this never mattered, since losing the anchor's target lost the only engagement. A
+        /// multi-target strike is different: the other targets' orders are still live, still held,
+        /// and still keyed to an anchor that will now never launch, so without this they coast
+        /// forever on the impact time fixed at commit. The shared impact time is deliberately NOT
+        /// recomputed. It was set from the lost anchor's enroute time, which was the largest, so
+        /// every survivor can still make it; re-deriving it would pull the whole strike earlier and
+        /// could put a shot past due.</item>
+        /// <item><b>Retimed</b> (true): the anchor released and launched NOTHING. There the
+        /// reasoning above fails. The impact came from a shot that never existed, and the survivors
+        /// have been holding station against it for the anchor's entire no-launch window, which on
+        /// the 2026-09-07 runs was the full 300 s hard cap. By the time they were freed they were
+        /// already 65 s to 92 s past their own release points and were dumped as a batch that could
+        /// not arrive together. So the impact is recomputed from the new anchor's enroute time at the
+        /// current moment, which is by construction the longest remaining shot and therefore a time
+        /// every survivor can still meet.</item>
+        /// </list>
+        ///
+        /// A follower that has already released is never a candidate, in either case. Its round is
+        /// in the air, so no impact time can reach it; and it has left <c>_scheduled</c>, so
+        /// <see cref="UpdateAnchorTracking"/> could never observe its ripple, and every follower
+        /// re-pointed at it would hold on an anchor nothing can finish, for the rest of the mission.
+        /// The held case used to lack this test.
+        /// </summary>
+        private static bool PromoteAnchor(Scheduled lost, float simNow, bool retime)
         {
             List<Scheduled> followers = lost.Followers;
             if (followers == null || followers.Count == 0) return false;
@@ -690,87 +723,7 @@ namespace AutoTOT
             foreach (Scheduled f in followers)
             {
                 Intent fi = f.Item;
-                // A follower that has already released is beyond help: its round is in the air and
-                // no impact time can reach it. It is also not a candidate to anchor anything.
                 if (f.Fired) continue;
-                if (fi.Unit == null || fi.Unit.IsDestroyed || fi.Target == null || fi.Target.IsDestroyed)
-                    continue;
-                survivors.Add(f);
-                float flightEst = f.LastFlightEst >= 0f
-                    ? f.LastFlightEst
-                    : FlightTime.Estimate(fi.Unit, fi.AmmoId, fi.Target);
-                if (flightEst <= FlightTime.MinValidSeconds) continue;
-                float enroute = flightEst + fi.ReleaseLead + fi.StartupLead + GroupDelay(fi, fi.ReleaseLead);
-                if (enroute > bestEnroute) { bestEnroute = enroute; best = f; }
-            }
-            if (best == null || bestEnroute <= 0f) return false;
-
-            // The new shared impact: the longest remaining shot, timed from now. Every survivor can
-            // meet it by definition, which is exactly what the phantom could not offer.
-            float pred = simNow + bestEnroute;
-
-            best.IsAnchor = true;
-            best.AnchorShots = Mathf.Max(1, best.Item.AnchorShots);
-            LauncherFactsSource.Facts bf = LauncherFactsSource.Get(best.Item.Unit, best.Item.AmmoId);
-            best.IniInterval = (bf.Valid && bf.ShotInterval > 0f) ? bf.ShotInterval : LauncherFactsSource.FallbackShotInterval;
-            best.Anchor = null;
-            best.HasPredict = false;
-            best.LoggedAnchorWait = false;
-            best.ImpactAtSim = pred;
-
-            var newFollowers = new List<Scheduled>(survivors.Count);
-            foreach (Scheduled f in survivors)
-            {
-                if (f == best) continue;
-                f.Anchor = best;
-                f.LoggedAnchorWait = false;
-                f.ImpactAtSim = pred;
-                newFollowers.Add(f);
-            }
-            best.Followers = newFollowers;
-
-            var boards = new List<ObjectBase>();
-            if (lost.BoardTargets != null)
-                foreach (ObjectBase t in lost.BoardTargets)
-                    if (t != null && !t.IsDestroyed) boards.Add(t);
-            best.BoardTargets = boards;
-            for (int j = 0; j < boards.Count; j++) EngagementBoard.UpdateImpact(boards[j], pred);
-
-            Bootstrap.Log.LogInfo(
-                $"[AutoTOT] anchor re-elected after abandonment: {lost.Item.AmmoId} from " +
-                $"{UnitNaming.SafeName(lost.Item.Unit)} launched nothing; " +
-                $"{best.Item.AmmoId} from {UnitNaming.SafeName(best.Item.Unit)} -> " +
-                $"{UnitNaming.SafeName(best.Item.Target)} takes over ({bestEnroute:0.0}s " +
-                $"enroute) for {newFollowers.Count} follower(s), impact RETIMED from sim " +
-                $"{lost.ImpactAtSim:0.0} to sim {pred:0.0}.");
-            return true;
-        }
-
-        /// <summary>
-        /// Re-elect an anchor after the sitting one is dropped BEFORE it released anything (its
-        /// shooter or its target died while the strike was still being held).
-        ///
-        /// With one target per strike this never mattered: losing the anchor's target lost the only
-        /// engagement. A multi-target strike is different. The other targets' orders are still live,
-        /// still held, and still keyed to an anchor that will now never launch, so without this they
-        /// coast forever on the impact time fixed at commit. The longest-enroute survivor takes over,
-        /// exactly as <see cref="Schedule"/> would have chosen it had the loser never been there.
-        ///
-        /// The shared impact time is deliberately NOT recomputed. It was set from the lost anchor's
-        /// enroute time, which was the largest, so every survivor can still make it; re-deriving it
-        /// would pull the whole strike earlier and could put a shot past due.
-        /// </summary>
-        private static void PromoteNewAnchor(Scheduled lost, float simNow)
-        {
-            List<Scheduled> followers = lost.Followers;
-            if (followers == null || followers.Count == 0) return;
-
-            Scheduled best = null;
-            float bestEnroute = float.NegativeInfinity;
-            var survivors = new List<Scheduled>(followers.Count);
-            foreach (Scheduled f in followers)
-            {
-                Intent fi = f.Item;
                 if (fi.Unit == null || fi.Unit.IsDestroyed || fi.Target == null || fi.Target.IsDestroyed)
                     continue;   // its own drop pass will deal with it
                 survivors.Add(f);
@@ -780,18 +733,23 @@ namespace AutoTOT
                 float flightEst = f.LastFlightEst >= 0f
                     ? f.LastFlightEst
                     : FlightTime.Estimate(fi.Unit, fi.AmmoId, fi.Target);
-                float enroute = flightEst + fi.ReleaseLead + fi.StartupLead + GroupDelay(fi, fi.ReleaseLead);
+                // A retimed impact is built from this shot's estimate, so it has to be a real one. A
+                // held impact only needs the ordering.
+                if (retime && flightEst <= FlightTime.MinValidSeconds) continue;
+                float enroute = EnrouteSeconds(fi, flightEst, GroupDelay(fi, fi.ReleaseLead));
                 if (enroute > bestEnroute) { bestEnroute = enroute; best = f; }
             }
-            if (best == null) return;
+            if (best == null || (retime && bestEnroute <= 0f)) return false;
 
             best.IsAnchor = true;
             best.AnchorShots = Mathf.Max(1, best.Item.AnchorShots);
-            LauncherFactsSource.Facts f2 = LauncherFactsSource.Get(best.Item.Unit, best.Item.AmmoId);
-            best.IniInterval = (f2.Valid && f2.ShotInterval > 0f) ? f2.ShotInterval : LauncherFactsSource.FallbackShotInterval;
+            best.IniInterval = LauncherFactsSource.Get(best.Item.Unit, best.Item.AmmoId).ShotIntervalOrFallback;
             best.Anchor = null;
             best.HasPredict = false;
             best.LoggedAnchorWait = false;
+            // Retimed: the longest remaining shot, timed from now. Every survivor can meet it by
+            // definition, which is exactly what the phantom could not offer.
+            if (retime) best.ImpactAtSim = simNow + bestEnroute;
 
             var newFollowers = new List<Scheduled>(survivors.Count);
             foreach (Scheduled f in survivors)
@@ -799,24 +757,36 @@ namespace AutoTOT
                 if (f == best) continue;
                 f.Anchor = best;
                 f.LoggedAnchorWait = false;
+                if (retime) f.ImpactAtSim = best.ImpactAtSim;
                 newFollowers.Add(f);
             }
             best.Followers = newFollowers;
 
-            // Carry the board rows over, minus the one whose target is gone.
+            // Carry the board rows over, minus any whose target is gone.
             var boards = new List<ObjectBase>();
             if (lost.BoardTargets != null)
                 foreach (ObjectBase t in lost.BoardTargets)
                     if (t != null && !t.IsDestroyed) boards.Add(t);
             best.BoardTargets = boards;
+            if (retime) PublishBoardImpact(best, best.ImpactAtSim);
 
-            Bootstrap.Log.LogInfo(
-                $"[AutoTOT] anchor re-elected before release: {lost.Item.AmmoId} from " +
-                $"{UnitNaming.SafeName(lost.Item.Unit)} is gone; " +
-                $"{best.Item.AmmoId} from {UnitNaming.SafeName(best.Item.Unit)} -> " +
-                $"{UnitNaming.SafeName(best.Item.Target)} takes over " +
-                $"({bestEnroute:0.0}s enroute) for {newFollowers.Count} follower(s), " +
-                $"impact held at sim {best.ImpactAtSim:0.0}.");
+            if (retime)
+                Bootstrap.Log.LogInfo(
+                    $"[AutoTOT] anchor re-elected after abandonment: {lost.Item.AmmoId} from " +
+                    $"{UnitNaming.SafeName(lost.Item.Unit)} launched nothing; " +
+                    $"{best.Item.AmmoId} from {UnitNaming.SafeName(best.Item.Unit)} -> " +
+                    $"{UnitNaming.SafeName(best.Item.Target)} takes over ({bestEnroute:0.0}s " +
+                    $"enroute) for {newFollowers.Count} follower(s), impact RETIMED from sim " +
+                    $"{lost.ImpactAtSim:0.0} to sim {best.ImpactAtSim:0.0}.");
+            else
+                Bootstrap.Log.LogInfo(
+                    $"[AutoTOT] anchor re-elected before release: {lost.Item.AmmoId} from " +
+                    $"{UnitNaming.SafeName(lost.Item.Unit)} is gone; " +
+                    $"{best.Item.AmmoId} from {UnitNaming.SafeName(best.Item.Unit)} -> " +
+                    $"{UnitNaming.SafeName(best.Item.Target)} takes over " +
+                    $"({bestEnroute:0.0}s enroute) for {newFollowers.Count} follower(s), " +
+                    $"impact held at sim {best.ImpactAtSim:0.0}.");
+            return true;
         }
     }
 }

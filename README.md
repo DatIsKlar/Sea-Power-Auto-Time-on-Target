@@ -181,11 +181,14 @@ sizes can be set in advance. An empty roster means the panel follows the single 
 ### Multi-target strike
 
 A strike is assembled one target at a time. Pick a target and its shooters as usual,
-press **+ TARGET**, then pick the next target and repeat. The staged set appears
+press **+ TARGET**, then pick the next target and repeat. The missile ticks stay as you set them,
+so the same shooters can be staged against several targets without re-ticking; untick a row to
+leave it out of the next target. The staged set appears
 directly above the fire buttons, grouped by target and removable per group, and **FIRE STRIKE**
 launches all of it on a single shared impact time. Whenever anything is staged, **FIRE STRIKE**
 becomes the panel's single green commit button and **FIRE THIS TARGET** stays available beside
-it, so a pop-up threat can still be engaged without disturbing the plan. There is no collection window: a
+it, so a pop-up threat can still be engaged without disturbing the plan. It fires only rows not
+already staged against that target, so nothing is sent twice. There is no collection window: a
 staged strike waits as long as you need.
 
 Press **Alt+H** to also collect the orders you issue in the game's own interface. This does
@@ -267,7 +270,7 @@ Sources live in five folders by concern: `Core/` (pipeline + lifecycle),
 | `Core/AnchorChainEntry.cs` | AnchorChain entry point (`[ACPlugin]` + `IAnchorChainMod`) |
 | `Core/Bootstrap.cs` | Mod-menu gate, Harmony patching + DOTS shield install, config, pump/HUD lifecycle, Unity-exception forwarding |
 | `Core/Patches.cs` | Harmony prefix on `ObjectBase.InsertEngageTask` |
-| `Core/Coordinator.cs` (+`Coordinator.Anchor.cs`, `Coordinator.Release.cs`, `Coordinator.Diagnostics.cs`) | Core pipeline: batching and anchor selection; observation anchoring; open-loop release and fire; the coordinator's log lines |
+| `Core/Coordinator.cs` (+`Coordinator.Anchor.cs`, `Coordinator.Release.cs`, `Coordinator.Channels.cs`, `Coordinator.Diagnostics.cs`) | Core pipeline: batching and anchor selection; observation anchoring; open-loop release and fire; the channel and magazine budget; the coordinator's log lines |
 | `Simulation/FlightTime.cs` | Flight-time API + caches: estimate entry, 3-tier kinematic wiring, speed profiles, group forming delay |
 | `Simulation/FlightTime.Integrator.cs` | Grounded step-integrator (primary tier, beta): setup, which reads the game state, and phase diagnostics |
 | `Simulation/FlightTime.Solve.cs` | The integration loop as a pure function of a snapshot, so it can run off the main thread |
@@ -275,7 +278,7 @@ Sources live in five folders by concern: `Core/` (pipeline + lifecycle),
 | `Simulation/FlightTime.Reflection.cs` | Reflection resolution for the game's sim internals (beta/legacy drift) + the typed-delegate fast path for per-step thrust/drag |
 | `Simulation/FlightTime.Stats.cs` | Estimator cost counters (simulations, steps, which tier answered) behind the `Profiling` switch |
 | `Simulation/WaypointSim.cs` | Reflection port of the public `SimulateShotLinear`, the middle-tier fallback estimator |
-| `UI/Hud.cs` (+`Hud.Render.cs`, `Hud.Mouse.cs`, `Hud.Styles.cs`) | IMGUI planner panel: layout/data, drawing, pointer capture, styling |
+| `UI/Hud.cs` (+`Hud.Rows.cs`, `Hud.Render.cs`, `Hud.Actions.cs`, `Hud.Labels.cs`, `Hud.Mouse.cs`, `Hud.Styles.cs`) | IMGUI planner panel: layout, row data, drawing, strike actions, labels, pointer capture, styling |
 | `Diagnostics/LaunchDiagnostics.cs` (+`LaunchDiagnostics.Expectations.cs`, `LaunchDiagnostics.Tracing.cs`) | Impact reports; launch shortfall detection; per-missile tracing. Feeds anchor observations |
 | `Diagnostics/EngagementBoard.cs` | Per-target engagement state behind the HUD's ENGAGEMENTS list |
 | `Diagnostics/TelemetryCadence.cs` | Sampling offsets shared by the model and live-flight traces |
@@ -284,6 +287,7 @@ Sources live in five folders by concern: `Core/` (pipeline + lifecycle),
 | `Support/GameUnits.cs` | Shared unit conversions (Unity units ↔ metres/nm/knots) |
 | `Support/GameMath.cs` | Horizontal flatten, elevation and pitch helpers shared by the flight-time setup paths |
 | `Support/UnitNaming.cs` | The one name-for-display helper, shared by the logs and the panel |
+| `Support/ShipAmmoKey.cs` | The (unit, ammunition) dictionary key used on the per-frame paths |
 | `Support/ModLog.cs` | Shared exception reporting, with and without the verbose gate |
 | `Support/LauncherFacts.cs` | Launcher cadence/ready rounds/reserve + cache, reload-wave helpers |
 | `Support/TtlCache.cs` | Tiny real-time TTL cache used on the per-frame UI paths |
@@ -293,12 +297,14 @@ Sources live in five folders by concern: `Core/` (pipeline + lifecycle),
 
 After first launch: `<Sea Power>/BepInEx/config/com.seapowermods.autotot.cfg`
 
-All settings take effect live when edited (BepInEx reloads the file; no restart needed).
+Most settings take effect live when edited (BepInEx reloads the file; no restart needed). Three are
+read once when the game starts and need a restart: `Enabled`, `AutoModeOnStart` and
+`EstimatorThreads`.
 
 | Section | Key | Default | Meaning |
 |---|---|---|---|
-| General | `Enabled` | `true` | Master on/off. When off, mod does nothing and the panel hides. |
-| General | `AutoModeOnStart` | `false` | Whether auto-coordination is armed at mission start. The planner panel works regardless. |
+| General | `Enabled` | `true` | Master on/off. When off, mod does nothing and the panel hides. Read at game start. |
+| General | `AutoModeOnStart` | `false` | Whether auto-coordination starts armed. Read at game start; the hotkey toggle then carries across missions. The planner panel works regardless. |
 | Interface | `ShowIndicator` | `true` | Show the planner panel and header bar. |
 | Interface | `ToggleModifier` | `LeftAlt` | Modifier held with hotkeys (`None` for single-key). |
 | Interface | `ToggleKey` | `T` | Key (with modifier) to arm/disarm auto-coordination. |
@@ -314,7 +320,7 @@ All settings take effect live when edited (BepInEx reloads the file; no restart 
 | Debug | `VerticalProfile` | `false` | Log a 1 s trace of every submarine depth change and every aircraft altitude change, with the hull parameters each model uses. Order a depth or altitude change with no engagement and one manoeuvre becomes one labelled block in the log. |
 | Debug | `Profiling` | `false` | Log a timing report every 60 frames: the mod's share of the frame, worst frame, where the time went, and how many flight simulations ran. |
 | Debug | `VerifySolve` | `false` | Run every threaded flight simulation a second time on the main thread and warn if the answers differ. Doubles the simulation work, so use it to check correctness rather than to measure speed. |
-| Performance | `EstimatorThreads` | `-1` | Worker threads for flight simulation. `-1` takes a quarter of the logical cores, at least 1 and at most 4. `0` runs everything on the main thread. Raise it only if the profiling line shows the queue backing up. |
+| Performance | `EstimatorThreads` | `-1` | Worker threads for flight simulation. `-1` takes a quarter of the logical cores, at least 1 and at most 4. `0` runs everything on the main thread. Raise it only if the profiling line shows the queue backing up. Read at game start. |
 
 ## Compatibility
 

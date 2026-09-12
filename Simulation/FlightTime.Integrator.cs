@@ -7,8 +7,8 @@ namespace AutoTOT
     internal static partial class FlightTime
     {
 
-        // PHASE-0 EXPERIMENT (uncommitted): live 60 Hz physics step instead of the production
-        // 0.1s. Revert to 0.1f to restore the authoritative integrator.
+        // The production step. A 60 Hz step was tried offline and did not help; see
+        // docs/plans/done/2026-09-11-timestep-ab-comparison.md.
         private const float IntegrationStepSim = 0.1f;
         // Altitude at which the game's air-density curve (1 - 0.00163*h)^4.256 reaches zero. Used by
         // the setup half to classify a high ballistic lofter and by the step loop to arm the vacuum
@@ -55,6 +55,23 @@ namespace AutoTOT
         // only the numerical resolution, not the controller.
         private const float LookaheadSim = 2f;
         private const float MinLookaheadU = 50f;
+        // Waypoint laws shared by every waypoint type, Kappa and Immediate alike. UpdateWaypoint
+        // advances a waypoint's progress by at most 2.5 times this tick's flat travel, and steers at
+        // a point 1.5 s ahead (DesiredPosition) while the pre-apex guard looks 8 s ahead
+        // (FuturePosition), Waypoint.cs:383-387. Named so they cannot be mistaken for per-weapon
+        // tuning.
+        private const float WaypointProgressCatchupMultiplier = 2.5f;
+        private const float WaypointSteeringLookaheadSim = 1.5f;
+        private const float WaypointFutureLookaheadSim = 8f;
+        private const float WaypointDistanceEpsilonU = 0.001f;
+        internal const int SampledCurveMinimumNodeCount = 2;
+
+        // Fly a non-kinematic round along its waypoint route (FlightTime.Waypoints.cs) instead of
+        // commanding a climb or dive angle toward a stage altitude. Settable so the lab can score
+        // the same build with it on and off.
+        internal static bool WaypointLegSteering = true;
+        // BuildAltitudeNodes only constructs a loft curve when its loft leg exceeds one game unit.
+        private const float MinimumLoftLegDistanceU = 1f;
 
         // Isolation gates. Each mirrors one piece of the live mover's behaviour, kept separate
         // so a single rebuild can A/B them independently. Every one below is validated and on.
@@ -269,9 +286,10 @@ namespace AutoTOT
 
                     // Horizontal analogue of railDeg: rail bearing vs bearing to target. `bearingErr`
                     // cannot see this, measuring the SHIP's heading instead. Meaningless when the
-                    // rail is near-vertical, which is every VLS shot.
+                    // rail is near-vertical, which is every VLS shot. Trace-only, like everything
+                    // it feeds, so it is not formatted on every estimate the panel asks for.
                     float railAzDeg = float.NaN;
-                    if (rail != null)
+                    if (rail != null && Coordinator.TraceFlightModel)
                     {
                         Vector3 tt = GameMath.Flatten(targetPos - launchPos);
                         if (!GameMath.TryFlatDirection(rail.forward, out Vector3 rf)) railAzTxt = "vertical";
@@ -284,9 +302,9 @@ namespace AutoTOT
 
                     // Re-emitted whenever the rail moves, so the formula above is measured rather
                     // than assumed.
-                    string railKey = unit.GetInstanceID() + "/" + (ap._ammunitionFileName ?? "?");
                     if (Coordinator.TraceFlightModel && vwp != null)
                     {
+                        string railKey = unit.GetInstanceID() + "/" + (ap._ammunitionFileName ?? "?");
                         try
                         {
                             _railLogCount.TryGetValue(railKey, out int n);
@@ -339,7 +357,8 @@ namespace AutoTOT
         /// </summary>
         private readonly struct StageProfile
         {
-            internal readonly float FinalDist, FinalAlt, TermDist, TermAlt, DescentDeg, DescentOnsetDeg;
+            internal readonly float FinalDist, TermDist, TermAlt, DescentDeg, DescentOnsetDeg;
+            internal readonly bool TerminalLinear;
             /// <summary>Altitude of the outer cruise leg, before the final-flight phase begins.</summary>
             internal readonly float CruiseAlt;
             /// <summary>Where the final-flight phase begins, and the altitude it commands. The game
@@ -348,18 +367,33 @@ namespace AutoTOT
             /// <summary>Distance-to-target outside which the round enters the loft at all. 0 = the
             /// ammunition has no sea-skimming boundary, so it always lofts.</summary>
             internal readonly float LoftEntryDist;
-            internal StageProfile(float finalDist, float finalAlt, float termDist, float termAlt,
+            internal StageProfile(float finalDist, float termDist, float termAlt,
                                   float descentDeg, float descentOnsetDeg, float cruiseAlt,
-                                  float finalFlightDist, float finalFlightAlt, float loftEntryDist)
+                                  float finalFlightDist, float finalFlightAlt, float loftEntryDist,
+                                  bool terminalLinear)
             {
-                FinalDist = finalDist; FinalAlt = finalAlt; TermDist = termDist;
+                FinalDist = finalDist; TermDist = termDist;
                 TermAlt = termAlt; DescentDeg = descentDeg; DescentOnsetDeg = descentOnsetDeg;
                 CruiseAlt = cruiseAlt; FinalFlightDist = finalFlightDist;
                 FinalFlightAlt = finalFlightAlt; LoftEntryDist = loftEntryDist;
+                TerminalLinear = terminalLinear;
             }
         }
 
-        private static StageProfile ResolveStageProfile(AmmunitionParameters ap, float maxVelKn)
+        /// <summary>Resolve the live terminal waypoint's endpoint for the kinematic surface path.
+        /// AAW endpoints are relative to the target; other surface endpoints are absolute, with an
+        /// unset negative value represented by OnLineToTarget.</summary>
+        internal static float ResolveKinematicTerminalEndAlt(AmmunitionParameters ap,
+                                                              float targetAlt0)
+        {
+            return ap._targetType == Ammunition.Target.AAW
+                ? targetAlt0 + ap._terminalAltUnity
+                : (ap._terminalAltUnity < 0f ? targetAlt0 : ap._terminalAltUnity);
+        }
+
+        private static StageProfile ResolveStageProfile(AmmunitionParameters ap, float maxVelKn,
+                                                        bool nonKin, bool isTerminalLoft,
+                                                        bool isAir, float targetAlt0)
         {
             bool toSkim = ap._loftToSkim && ap._seaSkimmingStartDistToTargetUnity > 0f;
             float finalDist = toSkim
@@ -399,13 +433,17 @@ namespace AutoTOT
             // finalAlt is left exactly as it was and now feeds ONLY this fallback. Twelve shipped
             // ammunition declare no TerminalAlt while giving different sea-skimming and
             // final-flight altitudes, so redefining it here would silently move their terminal leg.
-            float termAlt = ap._terminalAltUnity > 0f ? ap._terminalAltUnity : finalAlt;
+            bool terminalLinear = !nonKin && !isTerminalLoft && !isAir && termDist > 0f;
+            float termAlt = terminalLinear
+                ? ResolveKinematicTerminalEndAlt(ap, targetAlt0)
+                : (ap._terminalAltUnity > 0f ? ap._terminalAltUnity : finalAlt);
             float descentDeg = ap._finalFlightPhaseMaxAngle > SetAngleEpsilonDeg ? ap._finalFlightPhaseMaxAngle
                              : (ap._seaSkimmingMaxDescentAngle > SetAngleEpsilonDeg ? ap._seaSkimmingMaxDescentAngle : DefaultDescentDeg);
             float descentOnsetDeg = Mathf.Max(descentDeg,
                 Mathf.Max(ap._finalFlightPhaseMaxAngle, ap._seaSkimmingMaxDescentAngle));
-            return new StageProfile(finalDist, finalAlt, termDist, termAlt, descentDeg, descentOnsetDeg,
-                                    cruiseAlt, finalFlightDist, finalFlightAlt, loftEntryDist);
+            return new StageProfile(finalDist, termDist, termAlt, descentDeg, descentOnsetDeg,
+                                    cruiseAlt, finalFlightDist, finalFlightAlt, loftEntryDist,
+                                    terminalLinear);
         }
 
         /// <summary>
@@ -536,6 +574,16 @@ namespace AutoTOT
             return -1f;
         }
 
+        /// <summary>Resolve the target-dependent SelectivePopUp gate while the Unity objects are
+        /// still available. The pure solver only receives the resulting trajectory choice.</summary>
+        private static bool ResolveTerminalPopUpEnabled(AmmunitionParameters ap, ObjectBase target)
+        {
+            if (ap._terminalPopUpDist <= 0f) return false;
+            if (!ap._selectivePopUp || target == null) return true;
+            if (target is Vessel vessel) return vessel.VP != null && vessel.VP._displacement <= 420f;
+            return target is Submarine;
+        }
+
         /// <summary>Compass yaw of a flattened heading vector, in Unity's euler-y convention.</summary>
         private static float YawOf(Vector3 h) => Mathf.Atan2(h.x, h.z) * Mathf.Rad2Deg;
 
@@ -603,6 +651,26 @@ namespace AutoTOT
         /// name, the only thing a solve and a round share, repeats whenever the same weapon is
         /// fired twice. Pairing on it filed a 396s flight against a 230s round's input.
         /// </summary>
+        // Ammunition whose setup fell back from a game-supplied altitude input, warned once each.
+        // Main thread only, like the setup that fills it.
+        private static readonly System.Collections.Generic.HashSet<string> _setupFallbackWarned =
+            new System.Collections.Generic.HashSet<string>();
+
+        /// <summary>
+        /// Say, once per ammunition and cause, that setup replaced a value the game supplies with the
+        /// model's own. Either replacement changes the altitude law the round is flown on, which on a
+        /// lofting round is worth seconds, and both used to happen with no trace at all.
+        /// </summary>
+        private static void WarnSetupFallback(AmmunitionParameters ap, string what, Exception e)
+        {
+            string ammo = ap?._ammunitionFileName ?? "?";
+            if (!_setupFallbackWarned.Add(ammo + "/" + what)) return;
+            Bootstrap.Log.LogWarning(
+                $"[AutoTOT] estimator fallback {ammo}: {what} threw ({e.GetType().Name}: {e.Message}), " +
+                $"so the round is flown on the model's own altitude law instead of the game's. " +
+                $"Flight-time estimates for it may be several seconds off.");
+        }
+
         internal static string DumpInputFor(ObjectBase unit, string ammoId, ObjectBase target)
         {
             try
@@ -612,7 +680,18 @@ namespace AutoTOT
                 // already ran, and repeating them here would double every traced line.
                 if (!TryBuildSolveInput(unit, ap, target, out SolveInput input, out _, false, default))
                     return null;
-                return SolveInputDump.Write(input.AmmoLabel, in input, ap);
+                // The parity contract with tools/lab: the answer this build's step loop gives for
+                // exactly this input, at the production step. The lab replays the same input and
+                // must reproduce it. EstAtLaunch cannot serve: it comes through the estimate cache,
+                // so it may belong to an earlier solve from a different position.
+                IntegratedPhases parityPhases = default;
+                parityPhases.DiveStartU = -1f;
+                // Solve ends in ModelStats.LoopDone, which times against this thread's loop stamp.
+                // Stamp it here, or the profiler charges the time since the last setup to the loop.
+                ModelStats.LoopStarting();
+                float inGameEstimate = Solve(in input, ap, ref parityPhases);
+                return SolveInputDump.Write(input.AmmoLabel, in input, ap,
+                                            inGameEstimate, IntegrationStepSim);
             }
             catch (Exception e)
             {
@@ -633,7 +712,7 @@ namespace AutoTOT
         /// ceiling as the cruise altitude put these rounds in air far thinner than they ever reach,
         /// which cost them drag and landed them early by 4 to 9 seconds.
         ///
-        /// See docs/plans/open/non-cruise-loft-profile.md.
+        /// See docs/plans/done/2026-09-11-non-cruise-loft-profile.md.
         /// </summary>
         internal static float LoftProfileAltU(bool ballisticLoft, float ceilingU,
                                               float climbTan, float descentTan,
@@ -755,15 +834,39 @@ namespace AutoTOT
                                                              : unit._velocityInKnots, 0f);
                 float maxFlight = ap._maxFlightTime > 0f ? ap._maxFlightTime : MaxFlightTimeFallback;
                 float targetAlt0 = Mathf.Max(targetPos.y, 0f);
+                float flatDistTotal = GameMath.FlatDistance(targetPos, launchPos);
 
-                float loftAlt = -1f;
+                float configuredLoftAlt = -1f;
                 if (_loftCapMethod != null)
                 {
                     float cap = (float)_loftCapMethod.Invoke(null,
                         new object[] { ap, Mathf.Max(launchPos.y, 0f), targetAlt0 });
                     float floor = Mathf.Max(Mathf.Max(launchPos.y, 0f), targetAlt0);
                     if (cap > floor + AltToleranceU)
-                        loftAlt = cap;
+                        configuredLoftAlt = cap;
+                }
+                float loftAlt = configuredLoftAlt;
+                // The live non-cruise path does not fly the configured ceiling directly.
+                // Missile.TuneWaypoints replaces its KappaLoft waypoint's LoftHeight with this
+                // range-dependent choice before launch. Missing this step caused the shared
+                // altitude residual on optimized-loft, non-terminal-loft rounds.
+                if (!nonKin && configuredLoftAlt > 0f && _optimalLoftMethod != null)
+                {
+                    float altMin = Mathf.Max(Mathf.Max(launchPos.y, 0f), targetAlt0);
+                    try
+                    {
+                        loftAlt = (float)_optimalLoftMethod.Invoke(null, new object[]
+                        {
+                            ap, launchPos, targetPos, targetVel, startVelKnots, isAir,
+                            dragFactor, altMin, configuredLoftAlt
+                        });
+                        loftAlt = Mathf.Clamp(loftAlt, altMin, configuredLoftAlt);
+                    }
+                    catch (Exception e)
+                    {
+                        loftAlt = configuredLoftAlt;
+                        WarnSetupFallback(ap, "the game's loft-altitude search", e);
+                    }
                 }
                 bool lofting = loftAlt > Mathf.Max(launchPos.y, 0f) + AltToleranceU;
 
@@ -800,14 +903,17 @@ namespace AutoTOT
                 string railAzTxt = geom.RailAzText;
                 float initialPhaseDur = Mathf.Max(ap._initialFlightPhaseDuration, 0f);
 
-                float launchBearingErrDeg = LaunchBearingErrDeg(unit, launchPos, targetPos);
+                // Printed by the sim-launch trace alone.
+                float launchBearingErrDeg = Coordinator.TraceFlightModel
+                    ? LaunchBearingErrDeg(unit, launchPos, targetPos) : -1f;
 
                 float maxVelKn = Mathf.Max(ap._maxVelocityInKnots, 1f);
                 float loftVelKn = ap._maxLoftVelocityInKnots > 0f ? ap._maxLoftVelocityInKnots : maxVelKn;
                 float termVelKn = ap._terminalVelocityInKnots > 0f ? ap._terminalVelocityInKnots : maxVelKn;
                 float decelRate = ap._deceleration * GravityKnPerMs;
 
-                StageProfile stage = ResolveStageProfile(ap, maxVelKn);
+                StageProfile stage = ResolveStageProfile(ap, maxVelKn, nonKin, isTerminalLoft,
+                                                         isAir, targetAlt0);
                 float finalDist = stage.FinalDist;
                 float cruiseAlt = stage.CruiseAlt;
                 float finalFlightDist = stage.FinalFlightDist;
@@ -868,7 +974,7 @@ namespace AutoTOT
                 float prevAltErr = float.NaN;
 
                 Vector2[] altNodes = null;
-                float flatDistTotal = GameMath.FlatDistance(targetPos, launchPos);
+                float kappaEndFlat = 0f;
 
                 // The hold needs BOTH conditions, and the launch range is why it is resolved here
                 // rather than beside the stage profile.
@@ -886,16 +992,29 @@ namespace AutoTOT
                 // loft speed there cost +59.1s on 2026-09-08, against -0.4s before the hold existed.
                 float loftSpeedHoldDist = (lofting && flatDistTotal > finalDist)
                                         ? ResolveLoftSpeedHoldDist(ap) : 0f;
-                if (isTerminalLoft && _altNodesMethod != null && flatDistTotal > 1f)
+                // Kinematic missiles are flown by Waypoint.KappaLoft whether TerminalLoft is set
+                // or not. BuildAltitudeNodes is the game's sampled form of that same cubic curve;
+                // the resolved override is the altitude TuneWaypoints selected for this shot.
+                if (!nonKin && lofting && _altNodesMethod != null &&
+                    flatDistTotal > MinimumLoftLegDistanceU)
                 {
                     try
                     {
-                        object[] an = { ap, Mathf.Max(launchPos.y, 0f), targetAlt0, flatDistTotal, -1f, 0f };
+                        object[] an = { ap, Mathf.Max(launchPos.y, 0f), targetAlt0,
+                                        flatDistTotal, loftAlt, 0f };
                         var nodes = _altNodesMethod.Invoke(null, an)
                             as System.Collections.Generic.List<Vector2>;
-                        if (nodes != null && nodes.Count >= 2) altNodes = nodes.ToArray();
+                        if (nodes != null && nodes.Count >= SampledCurveMinimumNodeCount)
+                        {
+                            altNodes = nodes.ToArray();
+                            kappaEndFlat = (float)an[5];
+                        }
                     }
-                    catch { altNodes = null; }
+                    catch (Exception e)
+                    {
+                        altNodes = null;
+                        WarnSetupFallback(ap, "the game's altitude-node sample", e);
+                    }
                 }
                 float nextSample = NoseOverIntervalSim;
                 bool trackDiag = Coordinator.TraceFlightModel && emitDiag;
@@ -903,7 +1022,8 @@ namespace AutoTOT
                 if (trackDiag)
                     Bootstrap.Log.LogInfo($"[AutoTOT] sim-launch {ammoLabel}: launchPitch " +
                         $"{(launchPitch >= 0f ? launchPitch.ToString("0.0") + "°" : "n/a (heading)")}" +
-                        $", initPhase {initialPhaseDur:0.0}s, turnRate {turnRate:0.0}/s, loftAlt {loftAlt:0}u" +
+                        $", initPhase {initialPhaseDur:0.0}s, turnRate {turnRate:0.0}/s, " +
+                        $"loftAlt {loftAlt:0}u (configured {configuredLoftAlt:0}u)" +
                         $", descentDeg {descentDeg:0.0}°, onsetDeg {descentOnsetDeg:0.0}°" +
                         $", bearingErr {(launchBearingErrDeg >= 0f ? launchBearingErrDeg.ToString("0.0") + "°" : "n/a")}" +
                         // Launch range, so each shot self-records its geometry. Two ranges per shot
@@ -935,62 +1055,98 @@ namespace AutoTOT
                         // stale because the ship keeps turning between planning and launch.
                         $", railAz {railAzTxt}");
 
+                // The waypoint route the round will fly. Only for a surface target: an air target
+                // gets RelativeToTarget heights and Linear legs, which are not ported.
+                bool surfaceRoute = nonKin && !isTerminalLoft && !target.IsAirUnit &&
+                                    ap._targetType != Ammunition.Target.AAW;
+                // Every round of an ammunition with GroupSize above 1 joins or creates a group
+                // (Missile.cs:2129, :3244); a single round leads its own.
+                bool groupLeader = ap._maxGroupSize > 1 && !(target is LandUnit);
+                // Resolved once and handed to both the route and the snapshot.
+                bool popUpEnabled = ResolveTerminalPopUpEnabled(ap, target);
+                float popUpDist = Mathf.Max(ap._terminalPopUpDist, 0f);
+                WaypointLeg[] legs = surfaceRoute
+                    ? BuildNonKinLegs(flatDistTotal, targetAlt0,
+                        ap._maxLoftAltUnity, ap._maxLoftAngle, ap._loftToSkim,
+                        ap._seaSkimmingStartDistToTargetUnity, ap._seaSkimmingAltUnity,
+                        ap._seaSkimmingMaxDescentAngle,
+                        ap._finalFlightPhaseDistToTargetUnity, ap._finalFlightPhaseAltUnity,
+                        ap._finalFlightPhaseMaxAngle,
+                        ap._terminalApproachDist, ap._terminalAltUnity, ap._terminalLoft,
+                        ap._terminalDiveDistance,
+                        popUpEnabled, popUpDist,
+                        ap._terrainFollowFlight,
+                        groupLeader ? ap._groupLeaderAltUnity : -1f)
+                    : null;
+
                 // The loop runs as a pure function of this snapshot. Building it here keeps every
                 // Unity read and every mutable-game-state read on the main thread, which is what
                 // makes the loop safe to run elsewhere. See FlightTime.Solve.cs.
                 input = new SolveInput(
-                    altNodes,
-                    ammoLabel,
-                    boostClimbDeg,
-                    decelRate,
-                    descentDeg,
-                    descentOnsetDeg,
-                    dragFactor,
-                    cruiseAlt,
-                    finalFlightAlt,
-                    finalFlightDist,
-                    finalDist,
-                    flatDistTotal,
-                    initialPhaseDur,
-                    isAir,
-                    isHighBallisticLofter,
-                    isTerminalLoft,
-                    launchPitch,
-                    loftAlt,
-                    loftEntryDist,
-                    loftSpeedHoldDist,
-                    loftVelKn,
-                    ap._ballisticLoft,
-                    loftClimbTan,
-                    loftDescentTan,
-                    launchPos.y,
-                    lofting,
-                    maxFlight,
-                    maxVelKn,
-                    nonKin,
-                    targetAlt0,
-                    targetPos,
-                    targetVel,
-                    termAlt,
-                    termDist,
-                    termVelKn,
-                    trackDiag,
-                    turnRate,
-                    toBearingTurnRate,
-                    turnRateBase,
-                    turnDerateThresholdKn,
-                    altLatchPhase,
-                    altLatched,
-                    att,
-                    launchHeading,
-                    nextSample,
-                    pos,
-                    prevAltErr,
-                    prevFlat,
-                    prevPitch,
-                    t,
-                    tlGliding,
-                    velKnots);
+                    altNodes: altNodes,
+                    ammoLabel: ammoLabel,
+                    boostClimbDeg: boostClimbDeg,
+                    decelRate: decelRate,
+                    descentDeg: descentDeg,
+                    descentOnsetDeg: descentOnsetDeg,
+                    dragFactor: dragFactor,
+                    cruiseAlt: cruiseAlt,
+                    finalFlightAlt: finalFlightAlt,
+                    finalFlightDist: finalFlightDist,
+                    finalDist: finalDist,
+                    flatDistTotal: flatDistTotal,
+                    initialPhaseDur: initialPhaseDur,
+                    performsSlightBallisticInitialFlight: ap._performsSlightBallisticInitialFlight,
+                    isAir: isAir,
+                    isHighBallisticLofter: isHighBallisticLofter,
+                    isTerminalLoft: isTerminalLoft,
+                    launchPitch: launchPitch,
+                    configuredLoftAlt: configuredLoftAlt,
+                    loftAlt: loftAlt,
+                    loftEntryDist: loftEntryDist,
+                    loftSpeedHoldDist: loftSpeedHoldDist,
+                    loftVelKn: loftVelKn,
+                    ballisticLoft: ap._ballisticLoft,
+                    loftClimbTan: loftClimbTan,
+                    loftDescentTan: loftDescentTan,
+                    launchAltU: launchPos.y,
+                    lofting: lofting,
+                    maxFlight: maxFlight,
+                    maxVelKn: maxVelKn,
+                    nonKin: nonKin,
+                    targetAlt0: targetAlt0,
+                    targetPos: targetPos,
+                    targetVel: targetVel,
+                    terminalLinear: stage.TerminalLinear,
+                    termAlt: termAlt,
+                    termDist: termDist,
+                    termVelKn: termVelKn,
+                    terminalPopUpEnabled: popUpEnabled,
+                    terminalPopUpDist: popUpDist,
+                    terminalPopUpHeight: Mathf.Max(ap._terminalPopUpHeight, 0f),
+                    terminalPopUpAngle: Mathf.Clamp(ap._terminalPopUpAngle, 0.01f, 89f),
+                    terminalVerticalTurnRate: Mathf.Max(ap._terminalVerticalTurnRate, 0f),
+                    trackDiag: trackDiag,
+                    turnRate: turnRate,
+                    toBearingTurnRate: toBearingTurnRate,
+                    turnRateBase: turnRateBase,
+                    turnDerateThresholdKn: turnDerateThresholdKn,
+                    altLatchPhase: altLatchPhase,
+                    altLatched: altLatched,
+                    att: att,
+                    launchHeading: launchHeading,
+                    nextSample: nextSample,
+                    pos: pos,
+                    prevAltErr: prevAltErr,
+                    prevFlat: prevFlat,
+                    prevPitch: prevPitch,
+                    t: t,
+                    tlGliding: tlGliding,
+                    kappaEndFlat: kappaEndFlat,
+                    kappaProgress: 0f,
+                    velKnots: velKnots,
+                    legs: legs,
+                    groupLeader: groupLeader);
 
                 return true;
             }

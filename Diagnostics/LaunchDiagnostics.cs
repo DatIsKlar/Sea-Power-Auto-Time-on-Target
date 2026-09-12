@@ -20,40 +20,6 @@ namespace AutoTOT
         // mutated and stored back once per tracked missile per frame. As a struct that was a copy of
         // roughly twenty fields each way, and it forced the two MaybeLog helpers to take the sample
         // and hand it back so the caller could reassign it.
-        /// <summary>
-        /// D8 of docs/plans/open/BETA-RELEASE-AUDIT-PLAN.md: how much vertical the flight model
-        /// discarded on this shot.
-        ///
-        /// Order intake accepts any missile the game says can engage the target, anti-air rounds
-        /// included, but the primary integrator schedules its stage altitudes against the sea beneath
-        /// the target and stops the clock on horizontal closest approach. For a surface target those
-        /// are the same geometry. For an aircraft at altitude the modelled ground track is shorter
-        /// than the path the round actually flies, and the difference is what this reports.
-        ///
-        /// Empty for anything at or near sea level, so a normal anti-ship run is unchanged.
-        /// </summary>
-        private const float AirTargetAltFloorFt = 500f;
-
-        private static string AirTargetGeometry(WeaponBase w, ObjectBase tgt)
-        {
-            try
-            {
-                if (tgt == null || tgt.transform == null) return null;
-                float altFt = tgt.transform.position.y * GameUnits.UnityToFeet;
-                if (altFt < AirTargetAltFloorFt) return null;
-
-                Vector3 from = w._launchPlatform != null && w._launchPlatform.transform != null
-                    ? w._launchPlatform.transform.position
-                    : (w.transform != null ? w.transform.position : Vector3.zero);
-                Vector3 d = tgt.transform.position - from;
-                float flatKm = new Vector2(d.x, d.z).magnitude * GameUnits.MetersPerUnity / 1000f;
-                float slantKm = d.magnitude * GameUnits.MetersPerUnity / 1000f;
-                return $"air-target alt {altFt:0}ft, flat {flatKm:0.0}km, slant {slantKm:0.0}km, " +
-                       $"climb ignored by the model. D8 of the beta-release audit";
-            }
-            catch { return null; }
-        }
-
         private sealed class FlightSample
         {
             public float LaunchTime; public string AmmoName; public string TargetName;
@@ -70,14 +36,6 @@ namespace AutoTOT
             public float PredictedImpact;  // stamped from EngagementBoard, so the residual survives
                                            // the target dying (the board row is pruned on death). -1 = none.
             public float LastTelemetrySim; // throttle for the periodic `track` telemetry line.
-            // D7 of docs/plans/open/aircraft-anchor-impact-slide.md: the round-based impact
-            // prediction, "now + range/speed", captured from the LIVE round at two fixed ages. This
-            // is the quantity the proposed fix would use in place of re-estimating from the shooter,
-            // so scoring it against the actual impact says whether the fix is sound. Two ages rather
-            // than one, so a prediction that drifts with the target's motion is distinguishable from
-            // one that is simply biased. -1 = never captured (flight too short, or not coordinated).
-            public float RoundPredEarlySim = -1f;
-            public float RoundPredLateSim = -1f;
             // sim-vs-actual gap characterization (grounded flight-model investigation)
             public float KinEstAtLaunch;   // FlightTime.Estimate captured at first sighting (active
                                            // estimator; the grounded integrator on beta). -1 = unavailable.
@@ -96,11 +54,6 @@ namespace AutoTOT
             public float LaunchVelKn;
             public ObjectBase Shooter;     // needed to re-run the estimate; always guard, it can die
             public string ShooterAmmoId;
-            // D8 of docs/plans/open/BETA-RELEASE-AUDIT-PLAN.md. The integrator schedules stage
-            // altitudes against max(targetPos.y, 0) and ends the flight on HORIZONTAL closest
-            // approach, so for an air target it flies to the sea beneath the aircraft and never
-            // times the climb. Captured at first sighting; empty for a surface target.
-            public string AirTargetNote;
             public bool Coordinated;       // captured at first sighting: is this a missile AutoTOT
                                            // fired (target has an EngagementBoard row)? Scopes all
                                            // verbose diagnostics to our own shots (not defensive SAMs).
@@ -113,6 +66,7 @@ namespace AutoTOT
             // outcome can be filed against it; the rest is what a replay needs in order to be a
             // fair test of the model rather than of the game's randomness.
             public string DumpKey;
+            public string AmmoFingerprint;
             public float MotorPerformance = 1f;
             public float MinCompression = float.MaxValue;
             public float MaxCompression;
@@ -139,6 +93,27 @@ namespace AutoTOT
             // that levelled off early, and those are different defects with different fixes.
             public readonly List<string> Track = new List<string>();
             public float NextTrackSample;
+            // Complete target-relative flight evidence at the same adaptive cadence as the log.
+            // Track remains for the existing `climb` command; FlightTrack is the extensible series
+            // used when a model discrepancy needs more than altitude and speed to explain it.
+            public readonly List<string> FlightTrack = new List<string>();
+            public float NextFlightTrackSample;
+            // Every term of Missile.SetMissileCourse's pre-apex guard, from launch on, with the
+            // full desired and future vectors and the waypoint's own progress. Sampled at a cadence
+            // and again on both sides of any change in its discrete state, so a guard that fires
+            // for three ticks is captured rather than stepped over. It replaced an older recorder
+            // that covered t+35..65 only, and carries every field that one had.
+            public readonly List<string> GuardTrack = new List<string>();
+            public float NextGuardSample;
+            public GuardFrame GuardPrev;   // last tick's values, for the line before a change
+            public GuardFrame GuardNext;   // the spare frame the next tick fills
+            public bool GuardLastWritten;
+            // Detailed counterparts to the compact, backwards-compatible StageChanges field, plus
+            // the group state transitions that otherwise existed only in the rotating log.
+            public readonly List<string> StageEvents = new List<string>();
+            public readonly List<string> GroupChanges = new List<string>();
+            public bool LastGroupActive;
+            public bool LastGroupLeader;
             // Where the target was going at launch, and where it actually was at impact. The
             // solver freezes target velocity at launch, so a target that manoeuvred afterwards is
             // unpredictable in principle rather than mispredicted, and has to be excluded. Until
@@ -161,6 +136,44 @@ namespace AutoTOT
 
         private static readonly List<WeaponBase> _trackerScratch = new List<WeaponBase>();
 
+        /// <summary>The tracker fields only the corpus writer reads, refreshed each tick for a dumped round.</summary>
+        private static void UpdateCorpusTail(WeaponBase w, ObjectBase tgt, FlightSample s)
+        {
+            // Group membership is assigned by Missile.JoinOrCreateMissileGroup a few frames after
+            // the round leaves the rail, so the first sighting often sees a valid grouped round as
+            // solo. Kept as a flight-wide observation rather than a launch-time snapshot.
+            CaptureGroupMembership(w, s);
+            // Compression band over the whole flight. Above 10x the game enlarges its own physics
+            // step, so the round flies a different trajectory and the flight time stops being
+            // comparable with a solve; the corpus needs to know that happened.
+            float comp = GameTime.TimeCompression;
+            if (comp < s.MinCompression) s.MinCompression = comp;
+            if (comp > s.MaxCompression) s.MaxCompression = comp;
+            float step = GameTime.fixedDeltaTime;
+            if (step > 0f)
+            {
+                if (step < s.MinFlownStep) s.MinFlownStep = step;
+                if (step > s.MaxFlownStep) s.MaxFlownStep = step;
+            }
+            s.TargetPosAtEnd = tgt.transform != null ? tgt.transform.position : s.TargetPosAtEnd;
+            s.TargetCourseAtEnd = tgt.getHeading();
+            s.TargetSpeedAtEnd = tgt._velocityInKnots;
+        }
+
+        /// <summary>
+        /// Preserve group state once the game assigns it.  Missile groups are formed asynchronously
+        /// after launch, so reading <c>_inMissileGroup</c> only when a tracker is opened loses the
+        /// label on rounds whose first sighting happens before formation completes.
+        /// </summary>
+        private static void CaptureGroupMembership(WeaponBase weapon, FlightSample sample)
+        {
+            Missile missile = weapon as Missile;
+            if (missile == null || !missile._inMissileGroup) return;
+
+            sample.InGroup = true;
+            if (missile.GroupLeader) sample.GroupLeader = true;
+        }
+
         internal static int LastWeaponCount;
 
         internal static int LastTrackedMissiles;
@@ -170,6 +183,8 @@ namespace AutoTOT
         internal static float LastFinalizeMs;
 
         internal static float LastCleanupMs;
+        internal static float LastEngageStateMs;
+        internal static float LastRetireMs;
 
         private static readonly Stopwatch _subSw = new Stopwatch();
 
@@ -231,7 +246,13 @@ namespace AutoTOT
 
             LastTrackedMissiles = _flightTracker.Count;
 
+            // Timed like the rest: engage-state sampling does a reflection call per launcher per
+            // open order, and retiring a tracker can write corpus files and run a re-estimate. Both
+            // used to sit inside the Diag stage with no sub-phase, so the printed phases did not add
+            // up to the stage and nothing said where the rest had gone.
+            if (Coordinator.ProfilingEnabled) _subSw.Restart();
             SampleEngageStates(simNow);
+            if (Coordinator.ProfilingEnabled) { _subSw.Stop(); LastEngageStateMs = (float)(_subSw.Elapsed.TotalMilliseconds); }
 
             if (Coordinator.ProfilingEnabled) _subSw.Restart();
             FinalizeExpectations(simNow);
@@ -241,7 +262,9 @@ namespace AutoTOT
             CollectDeadTrackers();
             if (Coordinator.ProfilingEnabled) { _subSw.Stop(); LastCleanupMs = (float)(_subSw.Elapsed.TotalMilliseconds); }
 
+            if (Coordinator.ProfilingEnabled) _subSw.Restart();
             RetireDeadTrackers();
+            if (Coordinator.ProfilingEnabled) { _subSw.Stop(); LastRetireMs = (float)(_subSw.Elapsed.TotalMilliseconds); }
         }
 
         /// <summary>
@@ -272,12 +295,11 @@ namespace AutoTOT
                 {
                     existing.LastDistM = distM;
                     existing.LastSeenTime = simNow;
-                    // Compression band over the whole flight. Above 10x the game enlarges its own
-                    // physics step, so the round flies a different trajectory and the flight time
-                    // stops being comparable with a solve; the corpus needs to know that happened.
-                    float comp = GameTime.TimeCompression;
-                    if (comp < existing.MinCompression) existing.MinCompression = comp;
-                    if (comp > existing.MaxCompression) existing.MaxCompression = comp;
+                    // Fields only the corpus writer reads (SolveInputDump.WriteResult), which runs
+                    // only for a round dumped at first sighting. They used to be updated for every
+                    // friendly round on every tick, a game heading read included, with both
+                    // diagnostic gates off.
+                    if (existing.DumpKey != null) UpdateCorpusTail(w, tgt, existing);
                     // Every 5s of flight, capped: enough to see the shape of a climb without
                     // turning a 700s flight into a wall of text.
                     if (verbose && simNow >= existing.NextTrackSample && existing.Track.Count < 150)
@@ -287,20 +309,16 @@ namespace AutoTOT
                         existing.Track.Add(
                             $"{simNow - existing.LaunchTime:0.#}:{tAlt:0.#}:{w._velocityInKnots:0}");
                     }
-                    float step = GameTime.fixedDeltaTime;
-                    if (step > 0f)
+                    if (verbose && existing.Coordinated)
                     {
-                        if (step < existing.MinFlownStep) existing.MinFlownStep = step;
-                        if (step > existing.MaxFlownStep) existing.MaxFlownStep = step;
+                        MaybeRecordFlightTrack(w, tgt, existing, simNow);
+                        MaybeRecordGroupChange(w, existing, simNow);
+                        RecordGuardTrack(w, existing, simNow);
                     }
-                    existing.TargetPosAtEnd = tgt.transform != null ? tgt.transform.position
-                                                                    : existing.TargetPosAtEnd;
-                    existing.TargetCourseAtEnd = tgt.getHeading();
-                    existing.TargetSpeedAtEnd = tgt._velocityInKnots;
                     if (!ReferenceEquals(existing.CurrentTarget, tgt))
                     {
                         existing.CurrentTarget = tgt;
-                        existing.CurrentTargetName = tgt.getUIDAndName();
+                        existing.CurrentTargetName = UnitNaming.SafeName(tgt);
                     }
                     if (verbose)
                     {
@@ -308,7 +326,6 @@ namespace AutoTOT
                         if (altU > existing.PeakAltU) existing.PeakAltU = altU;
                         existing.LastSpeedKn = w._velocityInKnots;
                         if (w._velocityInKnots > existing.PeakSpeedKn) existing.PeakSpeedKn = w._velocityInKnots;
-                        if (existing.Coordinated) SampleRoundPrediction(w, existing, distM, simNow);
                     }
                     // Refresh the stamped prediction while the board row still lives, so it picks up
                     // the anchor-finalized impact; keep the last non-negative value once it's gone.
@@ -350,16 +367,20 @@ namespace AutoTOT
                     if (verbose && coordinated && WaypointSim.Ready && WaypointSim.FullReady &&
                         w._launchPlatform != null && w._ap != null)
                         wpEst = WaypointSim.EndTime(w._launchPlatform, w._ap, tgt, emitDiag: true);
+                    string dumpKey = (Coordinator.TraceFlightModel && coordinated && w._ap != null &&
+                                      w._launchPlatform != null)
+                        ? FlightTime.DumpInputFor(w._launchPlatform, w._ap._ammunitionFileName, tgt)
+                        : null;
                     var fresh = new FlightSample
                     {
-                        LaunchTime = GameClock.LaunchStamp(w),
+                        LaunchTime = GameClock.LaunchStampOr(w, simNow),
                         AmmoName = (w._ap != null ? w._ap._ammunitionFileName : "?"),
-                        TargetName = tgt.getUIDAndName(),
+                        TargetName = UnitNaming.SafeName(tgt),
                         LastDistM = distM,
                         LastSeenTime = simNow,
                         Target = tgt,
                         CurrentTarget = tgt,
-                        CurrentTargetName = tgt.getUIDAndName(),
+                        CurrentTargetName = UnitNaming.SafeName(tgt),
                         PredictedImpact = pred0,   // -1 if this target isn't (yet) coordinated
                         LastTelemetrySim = -1f,
                         KinEstAtLaunch = est,
@@ -375,19 +396,34 @@ namespace AutoTOT
                         ShooterAmmoId = (w._ap != null ? w._ap._ammunitionFileName : null),
                         Coordinated = coordinated,
                         LastStage = w._flightStage,
-                        AirTargetNote = AirTargetGeometry(w, tgt),
-                        DumpKey = (Coordinator.TraceFlightModel && coordinated && w._ap != null &&
-                                   w._launchPlatform != null)
-                            ? FlightTime.DumpInputFor(w._launchPlatform, w._ap._ammunitionFileName, tgt)
-                            : null,
+                        DumpKey = dumpKey,
+                        // 48 formatted fields and a hash, read only by the corpus writer.
+                        AmmoFingerprint = dumpKey != null && w._ap != null
+                            ? SolveInputDump.AmmunitionFingerprint(w._ap) : string.Empty,
                         MotorPerformance = MotorPerformanceOf(w),
                         TargetPosAtLaunch = tgt.transform != null ? tgt.transform.position : Vector3.zero,
                         TargetCourseAtLaunch = tgt.getHeading(),
                         TargetSpeedAtLaunch = tgt._velocityInKnots,
+                        TargetPosAtEnd = tgt.transform != null ? tgt.transform.position : Vector3.zero,
+                        TargetCourseAtEnd = tgt.getHeading(),
+                        TargetSpeedAtEnd = tgt._velocityInKnots,
                         InGroup = InGroupNow(w),
                         GroupLeader = IsGroupLeader(w),
                         MaxGroupSize = w._ap != null ? w._ap._maxGroupSize : 0,
                     };
+                    Missile freshMissile = w as Missile;
+                    fresh.LastGroupActive = freshMissile != null && freshMissile._inMissileGroup;
+                    fresh.LastGroupLeader = freshMissile != null && freshMissile.GroupLeader;
+                    // The group is normally created after this first tracker pass; subsequent
+                    // passes update these sticky flags through CaptureGroupMembership above.
+                    CaptureGroupMembership(w, fresh);
+                    if (dumpKey != null)
+                        fresh.GroupChanges.Add(
+                            $"{simNow - fresh.LaunchTime:0.000}:{(fresh.LastGroupActive ? 1 : 0)}:" +
+                            $"{(fresh.LastGroupLeader ? 1 : 0)}:" +
+                            $"{(freshMissile != null ? freshMissile._inGroupVelocityInKnots : -1f):0.000}");
+                    if (verbose && coordinated)
+                        MaybeRecordFlightTrack(w, tgt, fresh, simNow);
                     fresh.MinCompression = GameTime.TimeCompression;
                     fresh.MaxCompression = GameTime.TimeCompression;
                     // First sighting of this missile => it just left the rail. Credit it to the
@@ -404,14 +440,14 @@ namespace AutoTOT
             }
         }
 
+        /// <summary>Flight-time seconds between samples of the recorded altitude/speed track.</summary>
+        private const float TrackSampleIntervalSim = 5f;
+
         /// <summary>
         /// The per-round thrust multiplier the game rolled at spawn (Missile.cs:62), or 1 when the
         /// round is not a missile or the field is unreadable. Recorded so a replay can reproduce
         /// the flight it is being scored against instead of averaging over the roll.
         /// </summary>
-        /// <summary>Flight-time seconds between samples of the recorded altitude/speed track.</summary>
-        private const float TrackSampleIntervalSim = 5f;
-
         private static float MotorPerformanceOf(WeaponBase w)
         {
             var missile = w as Missile;
@@ -581,7 +617,7 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// Drop the gathered trackers, logging each round's impact and its estimate-vs-actual gap on
+        /// Drop the gathered trackers, logging each round's impact and its actual-minus-estimate gap on
         /// the way out. Deliberately outside the timed region, matching the original instrumentation.
         /// </summary>
         private static void RetireDeadTrackers()
@@ -648,14 +684,11 @@ namespace AutoTOT
                         // residual for all of them reported one number as though several rounds had each
                         // landed on time. Observed 2026-09-07: three yj-18a HIT at +1.3/+1.6/+2.7s and
                         // nine rounds that were still 8.6 to 30.2 km out claimed those same residuals.
-                        // RoundPredictionScore has the identical flaw (its err is also measured against
-                        // LastSeenTime), so it is suppressed on the same condition.
                         string residual = "";
                         if (hit)
                         {
                             if (s.PredictedImpact >= 0f)
                                 residual = $", predicted {s.PredictedImpact:0.0}, residual {s.LastSeenTime - s.PredictedImpact:+0.0;-0.0}s";
-                            residual += RoundPredictionScore(s);
                         }
                         else
                         {
@@ -665,14 +698,14 @@ namespace AutoTOT
                         }
                         Bootstrap.Log.LogInfo(
                             $"[AutoTOT] impact {s.AmmoName} -> {s.TargetName}: {outcome} at sim {s.LastSeenTime:0.0} " +
-                            $"(flight {flightTime:0.0}s, final range {s.LastDistM:0} m){switched}{residual}" +
-                            (string.IsNullOrEmpty(s.AirTargetNote) ? "" : $" | {s.AirTargetNote}"));
+                            $"(flight {flightTime:0.0}s, final range {s.LastDistM:0} m){switched}{residual}");
                         // One corpus entry per round: the input it was solved from, and what the
                         // round then did. Written whenever the round was dumped, arrival or not,
                         // because a no-arrival is a fact the lab needs in order to exclude it.
                         if (!string.IsNullOrEmpty(s.DumpKey))
                             SolveInputDump.WriteResult(
-                                s.DumpKey, s.AmmoName, s.TargetName, flightTime, hit, s.LastDistM,
+                                s.DumpKey, s.AmmoName, s.AmmoFingerprint, s.TargetName,
+                                flightTime, hit, s.LastDistM,
                                 retargeted, s.MotorPerformance,
                                 s.MinCompression == float.MaxValue ? 1f : s.MinCompression,
                                 s.MaxCompression,
@@ -680,8 +713,9 @@ namespace AutoTOT
                                 s.MaxFlownStep, s.KinEstAtLaunch, s.LaunchTime,
                                 s.InGroup, s.GroupLeader, s.MaxGroupSize,
                                 s.PeakSpeedKn, s.PeakAltU, s.LastSpeedKn, s.Track,
+                                s.FlightTrack, s.GuardTrack,
                                 s.WpEstAtLaunch, s.LegacyEstAtLaunch,
-                                s.StageChanges,
+                                s.StageChanges, s.StageEvents, s.GroupChanges,
                                 s.TargetCourseAtLaunch, s.TargetSpeedAtLaunch,
                                 s.TargetCourseAtEnd, s.TargetSpeedAtEnd,
                                 (s.TargetPosAtEnd - s.TargetPosAtLaunch).magnitude);

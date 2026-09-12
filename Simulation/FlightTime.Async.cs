@@ -68,6 +68,26 @@ namespace AutoTOT
         internal static long WorkerFaults;
         internal static long WorkerAborts;
         private static readonly Dictionary<TofKey, float> _inFlightSince = new Dictionary<TofKey, float>();
+
+        // Sim time of the last SYNCHRONOUS cache write for a key that was in flight at the time. A
+        // worker result captured at an EARLIER sim time describes older geometry than the value
+        // already cached, and publishing it would overwrite the newer answer (chain-audit A1).
+        // Sim time, not real time: within one frame, or while paused, the game has not moved, so
+        // the worker's answer equals the synchronous one and publishing it only refreshes the
+        // entry. Comparing real time discarded those too, and after a commit longer than the cache
+        // TTL that left every order to be re-solved on the main thread on the next tick.
+        // Recorded only while the key is in flight, so it holds at most the in-flight set. Main
+        // thread only.
+        private static readonly Dictionary<TofKey, float> _syncWrittenAt = new Dictionary<TofKey, float>();
+
+        /// <summary>Worker results dropped because a synchronous solve had already answered the key.</summary>
+        internal static long AsyncSuperseded;
+
+        /// <summary>Called by the synchronous path after it writes the cache. Main thread only.</summary>
+        private static void NoteSyncWrite(TofKey key)
+        {
+            if (_inFlight.Contains(key)) _syncWrittenAt[key] = GameClock.SimNow();
+        }
         // Written by DrainCompleted, read by the census line. Real seconds, main thread only.
         internal static float LastPublishAgeReal;
         internal static float MaxPublishAgeReal;
@@ -176,6 +196,19 @@ namespace AutoTOT
         }
 
         /// <summary>
+        /// True while a worker is already solving this key. A caller that must not block uses it to
+        /// decide between waiting one more tick and solving the key itself: without it, a deferred
+        /// commit would solve on the main thread every order whose worker had not finished
+        /// yet, which is the cost it exists to avoid. Main thread only.
+        /// </summary>
+        internal static bool IsQueued(ObjectBase unit, string ammoId, ObjectBase target)
+        {
+            if (_workers == null) return false;
+            if (!TryKey(unit, ammoId, target, out _, out TofKey key)) return false;
+            return _inFlight.Contains(key);
+        }
+
+        /// <summary>
         /// Publish finished results into the cache. Main thread only, called once at the top of the
         /// tick, so the cache keeps a single writer.
         /// </summary>
@@ -193,6 +226,16 @@ namespace AutoTOT
                 if (LastPublishAgeReal > MaxPublishAgeReal) MaxPublishAgeReal = LastPublishAgeReal;
 
                 if (VerifySolve) VerifyAgainstMainThread(r);
+
+                // A synchronous solve answered this key after the game had moved on from the
+                // moment this request was captured, so the cache holds fresher geometry than this.
+                // Checked by stamp rather than by dropping the key from _inFlight at the
+                // synchronous write: that would let the key be queued again while this request was
+                // still running, and the older of the two results would then be the one published.
+                bool superseded = _syncWrittenAt.TryGetValue(r.Key, out float syncAt) &&
+                                  syncAt > r.CapturedSim;
+                _syncWrittenAt.Remove(r.Key);
+                if (superseded) { AsyncSuperseded++; continue; }
 
                 // Same plausibility bound the synchronous path applies. Without it a worker can
                 // publish an impossible flight time under a live key, and every caller for the next
@@ -212,8 +255,9 @@ namespace AutoTOT
                         $"a straight-line floor of " +
                         $"{StraightLineFloorSeconds(r.Unit, r.Ap, r.Target):0.0}s. Not cached.");
 
-                // The loop declined. The remaining tiers need ObjectBase, so they can only run here.
-                // Rare on the beta branch, where the integrator answers every call.
+                // The loop declined, as it does for a shot it cannot close (a SAM planned beyond its
+                // reach, for one; the Profiling tiers line counts them). The remaining tiers need
+                // ObjectBase, so they can only run here.
                 AsyncDeclined++;
                 ModelStats.Stalled();
                 if (r.Unit == null || r.Unit.IsDestroyed || r.Target == null || r.Target.IsDestroyed)
@@ -236,6 +280,8 @@ namespace AutoTOT
             while (_done.TryDequeue(out _)) { }
             _inFlight.Clear();
             _inFlightSince.Clear();
+            _syncWrittenAt.Clear();
+            AsyncSuperseded = 0;
             LastPublishAgeReal = 0f;
             MaxPublishAgeReal = 0f;
             AsyncCompleted = 0;
@@ -273,7 +319,8 @@ namespace AutoTOT
                 : ", workerFaults 0";
             Bootstrap.Log.LogInfo(
                 $"[AutoTOT] estimator-census: inFlight {_inFlight.Count}, queued {_pending.Count}, " +
-                $"completed {AsyncCompleted}, declined {AsyncDeclined}, oldestInFlight {oldest:0.00}s, " +
+                $"completed {AsyncCompleted}, declined {AsyncDeclined}, superseded {AsyncSuperseded}, " +
+                $"oldestInFlight {oldest:0.00}s, " +
                 $"publishAge last {LastPublishAgeReal:0.00}s max {MaxPublishAgeReal:0.00}s, " +
                 $"aborts {WorkerAborts}{faults}. D5 and D6 of the beta-release audit.");
         }
@@ -286,6 +333,7 @@ namespace AutoTOT
         private static void VerifyAgainstMainThread(SolveRequest r)
         {
             IntegratedPhases ph = default;
+            ModelStats.LoopStarting();   // see DumpInputFor: Solve times against this stamp
             float mine = Solve(in r.Input, r.Ap, ref ph);
             VerifyChecked++;
             if (mine.Equals(r.Result)) return;   // bitwise, so NaN == NaN counts as agreement

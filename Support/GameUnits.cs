@@ -21,6 +21,11 @@ namespace AutoTOT
         /// the game's own cockpit and sonar readouts.</summary>
         public const float UnityToFeet = 220.47266f;
 
+        /// <summary>Metres to Unity units, as the literal the game itself writes (Aircraft.cs,
+        /// AircraftLoader.cs). One over <see cref="MetersPerUnity"/> to seven digits; kept as the
+        /// game's own value so a conversion copied from the decompile matches it exactly.</summary>
+        public const float UnityPerMetre = 0.0148809375f;
+
         /// <summary>Metres per nautical mile (international definition).</summary>
         public const float MetersPerNm = 1852f;
 

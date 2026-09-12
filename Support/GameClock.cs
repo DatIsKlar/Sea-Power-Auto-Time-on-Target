@@ -51,6 +51,28 @@ namespace AutoTOT
             return -1f;
         }
 
+        private static bool _launchStampWarned;
+
+        /// <summary>
+        /// <see cref="LaunchStamp"/>, or <paramref name="fallback"/> when the field cannot be read.
+        /// Any caller whose stamp feeds timing must use this: a -1 appended to an anchor's launch
+        /// times would put the shared impact in the deep past and release every held order at once.
+        /// Warned once per session, since a miss means a game update renamed or retyped the field.
+        /// </summary>
+        public static float LaunchStampOr(WeaponBase w, float fallback)
+        {
+            float stamp = LaunchStamp(w);
+            if (stamp >= 0f) return stamp;
+            if (w != null && !_launchStampWarned)
+            {
+                _launchStampWarned = true;
+                Bootstrap.Log.LogWarning(
+                    "[AutoTOT] launch stamp unreadable (WeaponBase._launchTime); timing each round " +
+                    "from the moment it is first seen instead, which can be a frame late.");
+            }
+            return fallback;
+        }
+
         private static void Resolve()
         {
             _resolved = true;

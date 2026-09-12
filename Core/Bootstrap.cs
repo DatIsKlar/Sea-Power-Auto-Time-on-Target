@@ -39,9 +39,9 @@ namespace AutoTOT
         internal static float UiScaleMultiplier = 1f;    // fine-tune on top of UiScale
 
         // Config
+        // Only entries read after startup are fields; Enabled, AutoModeOnStart and EstimatorThreads
+        // are read once in LoadConfig and are locals there.
         private static ConfigFile _config;
-        private static ConfigEntry<bool> _cfgEnabled;
-        private static ConfigEntry<bool> _cfgDefaultOn;
         private static ConfigEntry<bool> _cfgShowIndicator;
         private static ConfigEntry<KeyCode> _cfgToggleModifier;
         private static ConfigEntry<KeyCode> _cfgToggleKey;
@@ -56,7 +56,6 @@ namespace AutoTOT
         private static ConfigEntry<bool> _cfgTraceFlightModel;
         private static ConfigEntry<bool> _cfgVerticalProfile;
         private static ConfigEntry<bool> _cfgProfiling;
-        private static ConfigEntry<int> _cfgEstimatorThreads;
         private static ConfigEntry<bool> _cfgVerifySolve;
 
         public static void InitIfEnabled()
@@ -249,11 +248,11 @@ namespace AutoTOT
             string path = Path.Combine(Paths.ConfigPath, Guid + ".cfg");
             _config = new ConfigFile(path, true);
 
-            _cfgEnabled = _config.Bind("General", "Enabled", true,
+            ConfigEntry<bool> cfgEnabled = _config.Bind("General", "Enabled", true,
                 "Master switch for the mod. If off, the mod does nothing and the on-screen indicator " +
                 "is hidden. Read once at startup: changing it mid-session takes effect on the next " +
                 "game start.");
-            _cfgDefaultOn = _config.Bind("General", "AutoModeOnStart", false,
+            ConfigEntry<bool> cfgDefaultOn = _config.Bind("General", "AutoModeOnStart", false,
                 "Whether the automatic 'coordinate normal group orders' mode is on at mission start. The planner panel works regardless of this.");
             _cfgShowIndicator = _config.Bind("Interface", "ShowIndicator", true,
                 "Show the on-screen ARMED/off indicator (also click it to toggle).");
@@ -303,7 +302,7 @@ namespace AutoTOT
                 "in the log. Verbose by design; leave it off for normal play.");
             _cfgProfiling = _config.Bind("Debug", "Profiling", false,
                 "Log per-frame timing every 60 frames to diagnose performance issues.");
-            _cfgEstimatorThreads = _config.Bind("Performance", "EstimatorThreads", -1,
+            ConfigEntry<int> cfgEstimatorThreads = _config.Bind("Performance", "EstimatorThreads", -1,
                 "Worker threads for flight-time simulation. 0 runs everything on the main thread, " +
                 "as before. -1 picks a count from the CPU: a quarter of the logical cores, at " +
                 "least 1 and at most 4. Raise it only if the profiling line shows the queue " +
@@ -320,13 +319,13 @@ namespace AutoTOT
             // pool mid-mission would strand queued work.
             // A hand-set count is clamped too. The field is free text in a config file, and a
             // mistyped 400 would start four hundred threads on a machine with sixteen cores.
-            int threads = _cfgEstimatorThreads.Value;
+            int threads = cfgEstimatorThreads.Value;
             if (threads < 0) threads = Mathf.Clamp(SystemInfo.processorCount / 4, 1, 4);
             else threads = Mathf.Min(threads, Mathf.Max(1, SystemInfo.processorCount));
             FlightTime.StartWorkers(threads);
 
-            Coordinator.Enabled = _cfgEnabled.Value;  // master switch, startup-only (see ApplyConfig)
-            Coordinator.Active = _cfgDefaultOn.Value; // runtime toggle's starting state
+            Coordinator.Enabled = cfgEnabled.Value;   // master switch, startup-only (see ApplyConfig)
+            Coordinator.Active = cfgDefaultOn.Value;  // runtime toggle's starting state
 
             ApplyConfig();
 
@@ -420,7 +419,19 @@ namespace AutoTOT
             private bool _resetPending;   // mission absent, debounce not yet elapsed, reset not yet done
             private float _absentSince;   // Time.unscaledTime when the mission first went absent
 
+            // A tick that throws every frame used to log once and then go silent for the session, so
+            // a persistent fault read exactly like a one-off. A repeat is now counted and restated on
+            // a real-time cadence.
+            private const float ErrorRelogSeconds = 30f;
             private string _lastErrorMsg;
+            private int _errorRepeats;
+            private float _lastErrorLogReal;
+
+            // Diagnostic for a mission change the exit debounce did not see: the mission clock
+            // restarts from zero, so a large backwards step with no reset in between means the new
+            // mission is running on the old one's state. Warned, not acted on, until it is seen.
+            private const float ClockBackwardsToleranceSeconds = 1f;
+            private float _lastSimNow = -1f;
 
             private void Update()
             {
@@ -443,16 +454,27 @@ namespace AutoTOT
                         Coordinator.Reset();
                         VerticalProfiler.Reset();   // run numbering restarts with the mission
                         _resetPending = false;
+                        _lastErrorMsg = null;
+                        _errorRepeats = 0;
+                        _lastSimNow = -1f;
                     }
                 }
                 _wasInMission = inMission;
 
                 if (!inMission) return;
 
+                float simNow = GameClock.SimNow();
+                if (_lastSimNow >= 0f && simNow < _lastSimNow - ClockBackwardsToleranceSeconds)
+                    Log.LogWarning(
+                        $"[AutoTOT] mission clock went back from {_lastSimNow:0.0}s to {simNow:0.0}s " +
+                        $"with no mission reset in between. A new mission may be running on the " +
+                        $"previous one's state; please send this log.");
+                _lastSimNow = simNow;
+
                 try
                 {
                     Coordinator.Tick();
-                    VerticalProfiler.Tick(GameClock.SimNow());
+                    VerticalProfiler.Tick(simNow);
                 }
                 catch (Exception e)
                 {
@@ -460,7 +482,21 @@ namespace AutoTOT
                     if (msg != _lastErrorMsg)
                     {
                         _lastErrorMsg = msg;
+                        _errorRepeats = 0;
+                        _lastErrorLogReal = Time.unscaledTime;
                         Log.LogError($"[AutoTOT] coordinator tick error:\n{e}");
+                    }
+                    else
+                    {
+                        _errorRepeats++;
+                        if (Time.unscaledTime - _lastErrorLogReal >= ErrorRelogSeconds)
+                        {
+                            Log.LogError(
+                                $"[AutoTOT] coordinator tick error repeated {_errorRepeats} time(s) " +
+                                $"in the last {Time.unscaledTime - _lastErrorLogReal:0}s: {msg}");
+                            _errorRepeats = 0;
+                            _lastErrorLogReal = Time.unscaledTime;
+                        }
                     }
                 }
             }

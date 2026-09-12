@@ -11,11 +11,14 @@ namespace AutoTOT
     /// one hull or one formation at a time, drawn from as many formations as you like. Lists each shooter's missiles with live flight-time readouts and lets
     /// you fire a hand-picked set as a coordinated Time-on-Target strike.
     ///
-    /// Split across four partial files:
-    ///   Hud.cs         ; lifecycle, selection tracking, window layout, shooter/row data
-    ///   Hud.Render.cs  ; panel content rendering + fire actions
-    ///   Hud.Mouse.cs   ; resize + mouse-over-UI capture
-    ///   Hud.Styles.cs  ; palette, textures, GUIStyle construction
+    /// Split across seven partial files:
+    ///   Hud.cs          ; lifecycle, selection tracking, window layout
+    ///   Hud.Rows.cs     ; shooter and missile-row data, per-frame row caches, selection prune
+    ///   Hud.Render.cs   ; panel content rendering
+    ///   Hud.Actions.cs  ; strike arm/fire, adding the selection to the strike or the roster
+    ///   Hud.Labels.cs   ; fog-of-war target names, hotkey hints, time formatting
+    ///   Hud.Mouse.cs    ; drag, resize and mouse-over-UI capture
+    ///   Hud.Styles.cs   ; palette, textures, GUIStyle construction, shared-skin push/pop
     ///
     /// While the cursor is over the panel it sets the game's MouseControlState to "UI"
     /// so clicks/drags don't leak into the camera or world selection (see Hud.Mouse.cs).
@@ -58,24 +61,6 @@ namespace AutoTOT
 
         // Reusable shooter list ; avoids allocating a new List<ObjectBase> every OnGUI call.
         private readonly List<ObjectBase> _shootersCache = new List<ObjectBase>();
-
-        /// <summary>
-        /// A shared-missile-group finding for one row: several checked shooters are close enough to
-        /// feed ONE group, and between them they have staged more rounds than that group can hold.
-        /// </summary>
-        private struct GroupShare
-        {
-            public int Combined;    // rounds staged across every shooter sharing this group
-            public int Cap;         // ap._maxGroupSize
-            public float JoinNm;    // ap._groupJoinRangeUnity, in nautical miles
-            public int Shooters;    // how many shooters are inside that radius, this one included
-        }
-
-        // Rebuilt once per drawn frame, keyed like _checked/_salvo. Cross-shooter by nature, so it
-        // cannot be computed from inside a single row. Frame-gated like _rowCache: this pass is
-        // O(shooters^2) and OnGUI fires several events per frame.
-        private readonly Dictionary<string, GroupShare> _groupShare = new Dictionary<string, GroupShare>();
-        private int _groupShareFrame = -1;
 
         private Vector2 _scroll;
         // The strike list scrolls on its own, so a long strike cannot push the shooter list off the
@@ -141,18 +126,6 @@ namespace AutoTOT
         // so the planner neither draws nor eats mouse input there.
         private static bool InMission() => Globals._mainGameViewModel != null;
 
-        // Human-readable form of a configured combo (e.g. "Alt+G", or just "G" with no modifier).
-        private static string Combo(KeyCode key)
-        {
-            if (Bootstrap.ToggleModifier == KeyCode.None) return key.ToString();
-            string mod = Bootstrap.ToggleModifier.ToString()
-                .Replace("Left", "").Replace("Right", "");   // "LeftAlt" -> "Alt"
-            return mod + "+" + key;
-        }
-
-        private static string HideHint() => Combo(Bootstrap.PanelKey);
-        private static string ToggleHint() => Combo(Bootstrap.ToggleKey);
-
         // Uniform UI scale for the whole panel. 0 in config = auto: 1x at 1080p, ~2x at 2160p.
         // Shared by OnGUI (GUI.matrix) and the Update-path input handlers (Hud.Mouse.cs), which
         // must divide real screen pixels by this to reach the panel's scaled GUI space.
@@ -194,11 +167,10 @@ namespace AutoTOT
             if (modOk && Input.GetKeyDown(Bootstrap.ToggleKey))
             {
                 Coordinator.Active = !Coordinator.Active;
-                LogDisabledEntry("auto-coordination toggle");
                 Bootstrap.Log.LogInfo($"[AutoTOT] auto-coordination {(Coordinator.Active ? "ON" : "OFF")}");
             }
-            if (modOk && Input.GetKeyDown(Bootstrap.StrikeArmKey)) { LogDisabledEntry("strike arm"); ToggleStrikeArmed(); }
-            if (modOk && Input.GetKeyDown(Bootstrap.FireStrikeKey)) { LogDisabledEntry("fire strike"); FireStrikeNow(); }
+            if (modOk && Input.GetKeyDown(Bootstrap.StrikeArmKey)) ToggleStrikeArmed();
+            if (modOk && Input.GetKeyDown(Bootstrap.FireStrikeKey)) FireStrikeNow();
 
             // A mission end clears the coordinator, and with it every unit the staged strike points
             // at. Checked here rather than in OnGUI so the list cannot be rendered stale for a frame.
@@ -212,6 +184,16 @@ namespace AutoTOT
                 // silently dropped from the panel. The set exists only to stop one log line per
                 // frame within a mission, so a mission boundary is the right place to forget it.
                 _rowErrorLogged.Clear();
+            }
+
+            // Prune destroyed ships from the selections and the staged strike on a frame cadence.
+            // Here and not in the draw: the draw path only runs with the panel expanded, so a
+            // collapsed or hidden panel held destroyed ships for the rest of the mission, and when
+            // it did run it counted OnGUI events, 2 to 4 per frame, not frames.
+            if (++_pruneCounter >= SelectionPruneIntervalFrames)
+            {
+                _pruneCounter = 0;
+                PruneCheckSalvo();
             }
 
             // While hidden, draw nothing and release any input capture so the camera is free.
@@ -238,33 +220,6 @@ namespace AutoTOT
             HandleDragInput();
             HandleResizeInput();
             UpdateMouseCapture();
-        }
-
-        private static int _drewFrame = -1;
-
-        /// <summary>
-        /// D2 of the beta-release audit, kept after the fix as a regression guard. Nothing should
-        /// reach a hotkey with the master switch off now that Update returns early, so a line here
-        /// means that early return has been bypassed.
-        /// </summary>
-        private static void LogDisabledEntry(string what)
-        {
-            if (Coordinator.Enabled) return;
-            Bootstrap.Log.LogWarning(
-                $"[AutoTOT] disabled-hotkey: {what} ran with Enabled=false. " +
-                $"D2 of the beta-release audit.");
-        }
-
-        /// <summary>
-        /// D10 of the beta-release audit: whether OnGUI has painted since the last board census.
-        /// The engagement board's only prune path is CollectSalvos, which is called from the draw
-        /// path, so the census needs to know whether that path ran.
-        /// </summary>
-        internal static bool DrewSinceLastCensus()
-        {
-            bool drew = _drewFrame >= 0;
-            _drewFrame = -1;
-            return drew;
         }
 
         private void OnEnable()
@@ -321,7 +276,6 @@ namespace AutoTOT
         private void OnGUI()
         {
             if (!Coordinator.Enabled || !Bootstrap.ShowIndicator || !InMission() || !_visible) return;
-            _drewFrame = Time.frameCount;   // D10: the board's prune path only runs from here
             EnsureStyles();
 
             // Everything below works in scaled GUI space (see EffectiveScale). sw/sh are the
@@ -432,12 +386,6 @@ namespace AutoTOT
             DrawDivider();
             DrawStatusLine(shooters, haveTarget);
 
-            // Periodically prune destroyed ships from _checked/_salvo to prevent unbounded growth.
-            if (++_pruneCounter >= SelectionPruneIntervalFrames)
-            {
-                _pruneCounter = 0;
-                PruneCheckSalvo();
-            }
             // Split the leftover height between the shooter list and the strike list. Both get an
             // explicit height, so neither can starve the other: an expanding view collapses to one
             // row the moment the window is short, which is exactly what a fixed-height strike list
@@ -490,7 +438,7 @@ namespace AutoTOT
 
             // Everything from here down is the chrome the budget above has to leave room for.
             Rect belowProbe = GUILayoutUtility.GetRect(0f, 0f, GUILayout.ExpandWidth(true));
-            DrawCommitRow(shooters, haveTarget && AnyChecked(shooters));
+            DrawCommitRow(shooters, haveTarget && AnyChecked(shooters), haveTarget && AnyFireable(shooters));
 
             // Live, post-launch state. It reports what is already in the air rather than what is
             // being built, so it goes below everything that builds.
@@ -510,564 +458,5 @@ namespace AutoTOT
             DrawResizeGrip();
         }
 
-        // Our scrollbar styling is applied only around our own scroll views and then restored, so
-        // we never restyle other mods' IMGUI (the BepInEx console and so on) via the shared skin.
-        // Both the shooter list and the strike list need it, hence the pair.
-        private GUIStyle _prevVBar, _prevVThumb, _prevHBar, _prevHThumb;
-
-        /// <summary>
-        /// Put the shared skin back if a draw threw between the push and the pop, then decline to
-        /// handle the exception. Written as an exception FILTER so the restore runs before the stack
-        /// unwinds any further, and the throw still reaches the game exactly as before. Without it a
-        /// single failed frame left every other IMGUI window in the process wearing this panel's
-        /// scrollbars for the rest of the session.
-        /// </summary>
-        private bool RestoreSharedSkin()
-        {
-            if (_prevVBar != null) PopScrollSkin();
-            return false;
-        }
-
-        private void PushScrollSkin()
-        {
-            _prevVBar = GUI.skin.verticalScrollbar; _prevVThumb = GUI.skin.verticalScrollbarThumb;
-            _prevHBar = GUI.skin.horizontalScrollbar; _prevHThumb = GUI.skin.horizontalScrollbarThumb;
-            GUI.skin.verticalScrollbar = _scrollTrack;
-            GUI.skin.verticalScrollbarThumb = _scrollThumb;
-            GUI.skin.horizontalScrollbar = _hScrollTrack;
-            GUI.skin.horizontalScrollbarThumb = _hScrollThumb;
-        }
-
-        private void PopScrollSkin()
-        {
-            GUI.skin.verticalScrollbar = _prevVBar;
-            GUI.skin.verticalScrollbarThumb = _prevVThumb;
-            GUI.skin.horizontalScrollbar = _prevHBar;
-            GUI.skin.horizontalScrollbarThumb = _prevHThumb;
-        }
-
-        private List<ObjectBase> GetShooters()
-        {
-            _shootersCache.Clear();
-
-            // A group, once assembled, IS the shooter list. Members are listed even when they carry
-            // nothing that can engage the current target: the per-ship "no missiles that can engage
-            // this target" line is the answer the player needs, and silently dropping the ship
-            // instead looks like the group forgot it.
-            if (_group.Count > 0)
-            {
-                for (int i = 0; i < _group.Count; i++)
-                {
-                    ObjectBase u = _group[i];
-                    if (u != null && !u.IsDestroyed && !_shootersCache.Contains(u)) _shootersCache.Add(u);
-                }
-                return _shootersCache;
-            }
-
-            if (_anchor == null || _anchor.IsDestroyed) return _shootersCache;
-
-            // No roster means "follow the selection", and the selection is one ship. Shooting with
-            // more than one hull goes through the roster, which is the only place the panel keeps
-            // a shooter list; there is no second, invisible way to assemble one.
-            if (IsMissileShip(_anchor)) _shootersCache.Add(_anchor);
-            return _shootersCache;
-        }
-
-        /// <summary>
-        /// Finds rows whose shooters will share one missile group and have staged more rounds than
-        /// the group can hold. Rebuilt once per drawn frame, before the row loop.
-        ///
-        /// Grouped ammo (GroupSize > 1) does not consume a fire-control channel per round: the first
-        /// round away forms a group and holds one channel, and every later round that JOINS that
-        /// group skips the channel check entirely. One ship therefore empties its magazine through a
-        /// single channel, which is why a lone Slava fires all 16 SS-N-12.
-        ///
-        /// The trap is a second shooter within the ammo's GroupJoinRange. Its rounds join the FIRST
-        /// ship's group instead of forming their own, so it never engages its own channels; the
-        /// shared group fills at GroupSize, nothing more can join, and neither ship has a spare
-        /// channel left. Both launchers then sit in the game's ReadyUpWhileWaiting with loaded tubes.
-        /// Measured: two Slavas 8 or 13 nm apart put up 16 rounds between them, the same pair at 25
-        /// or 40 nm put up all 32. Beyond the join range each ship forms its own group and is fine.
-        ///
-        /// The game measures group leader to firing mount, not ship to ship. Ship separation is the
-        /// proxy used here because the leader starts at its shooter, and at decision time (before
-        /// anything has launched) there is no leader to measure against.
-        /// </summary>
-        private void RecomputeGroupSharing(List<ObjectBase> shooters)
-        {
-            if (_groupShareFrame == Time.frameCount) return;
-            _groupShareFrame = Time.frameCount;
-            _groupShare.Clear();
-            if (_target == null || _target.IsDestroyed || shooters.Count < 2) return;
-
-            for (int i = 0; i < shooters.Count; i++)
-            {
-                ObjectBase a = shooters[i];
-                if (a == null || a.IsDestroyed) continue;
-
-                foreach (Row r in CachedEngageRows(a))
-                {
-                    if (!r.InRange) continue;
-                    string key = Key(a, r.AmmoId);
-                    if (!_checked.TryGetValue(key, out bool on) || !on) continue;
-
-                    LauncherFactsSource.Facts f = LauncherFactsSource.Get(a, r.AmmoId);
-                    if (!f.Valid || !f.CanGroup || f.MaxGroupSize <= 1 || f.GroupJoinRangeU <= 0f) continue;
-
-                    // The game groups on _ammunitionFileName, not on the ammo id, and the two are
-                    // not interchangeable elsewhere in this codebase. Resolve both sides.
-                    string ammoFile = a.getAmmunitionByName(r.AmmoId)?._ap?._ammunitionFileName;
-                    if (string.IsNullOrEmpty(ammoFile)) continue;
-
-                    int combined = _salvo.TryGetValue(key, out int mine) ? mine : 1;
-                    int peers = 1;
-                    float joinSq = f.GroupJoinRangeU * f.GroupJoinRangeU;
-                    for (int j = 0; j < shooters.Count; j++)
-                    {
-                        if (j == i) continue;
-                        ObjectBase b = shooters[j];
-                        if (b == null || b.IsDestroyed) continue;
-                        if ((b.transform.position - a.transform.position).sqrMagnitude > joinSq) continue;
-
-                        foreach (Row br in CachedEngageRows(b))
-                        {
-                            if (!br.InRange) continue;
-                            if (b.getAmmunitionByName(br.AmmoId)?._ap?._ammunitionFileName != ammoFile) continue;
-                            string bKey = Key(b, br.AmmoId);
-                            if (!_checked.TryGetValue(bKey, out bool bOn) || !bOn) continue;
-                            int bSalvo = _salvo.TryGetValue(bKey, out int sv) ? sv : 1;
-                            if (bSalvo <= 0) continue;
-                            combined += bSalvo;
-                            peers++;
-                        }
-                    }
-
-                    if (peers > 1 && combined > f.MaxGroupSize)
-                        _groupShare[key] = new GroupShare
-                        {
-                            Combined = combined,
-                            Cap = f.MaxGroupSize,
-                            JoinNm = f.GroupJoinRangeU * GameUnits.UnityToNm,
-                            Shooters = peers,
-                        };
-                }
-            }
-        }
-
-        private struct Row
-        {
-            public string AmmoId;
-            public int Count;          // rounds selectable here: stock, launcher and channels applied
-            public bool InRange;
-            // Guidance-channel state, carried so the row can EXPLAIN a count of zero instead of
-            // vanishing. int.MaxValue = this ammunition is not channel-limited at all.
-            public int ChannelCap;
-            public int ChannelsElsewhere;   // rounds of it already staged at other targets
-        }
-
-        private bool IsMissileShip(ObjectBase u)
-        {
-            if (u == null || u.IsDestroyed || !u.isUnit() || !u.IsPlayerObject) return false;
-            foreach (Row r in CachedEngageRows(u))
-                return true;
-            return false;
-        }
-
-        // Cached wrapper around EngageRows ; materialises the IEnumerable to a list once per
-        // ship per frame, then returns the same list for all callers within that frame.
-        private List<Row> CachedEngageRows(ObjectBase ship)
-        {
-            int id = ship.GetInstanceID();
-            if (_rowCache.TryGetValue(id, out List<Row> cached)) return cached;
-            var list = new List<Row>();
-            try
-            {
-                foreach (Row r in EngageRows(ship)) list.Add(r);
-            }
-            catch (System.Exception e)
-            {
-                // One unreadable ship used to take the whole panel down through DrawWindow, and the
-                // stack that came out named neither the ship nor the ammo. Contain it here: the ship
-                // lists as carrying nothing, everything else still draws, and the log says which hull
-                // and how many rows it managed before it threw.
-                list.Clear();
-                if (_rowErrorLogged.Add(id))
-                    Bootstrap.Log.LogError(
-                        $"[AutoTOT] engage rows failed for {UnitNaming.SafeName(ship)}; listing it as carrying " +
-                        $"nothing. This ship is excluded until the mission ends.\n{e}");
-            }
-            _rowCache[id] = list;
-            return list;
-        }
-
-        // Ships whose row build already threw, so the log carries one report each rather than one
-        // per frame. Instance ids, cleared with the rest of the selection state.
-        private readonly HashSet<int> _rowErrorLogged = new HashSet<int>();
-
-        /// <summary>
-        /// Rounds of this ammo this ship already has staged at OTHER targets. Entries for the
-        /// current target are excluded because committing the current selection replaces them
-        /// (AddToStrike removes the matching Unit+Ammo+Target entry first), so counting them would
-        /// charge the same rounds twice while the player edits a row they have already staged.
-        /// </summary>
-        private int StagedElsewhere(ObjectBase ship, string ammoId)
-        {
-            // Rounds the coordinator is already holding for this ship count too. They are a
-            // different pool (orders taken in through Alt+H or auto-coordination, plus anything
-            // committed and not yet away) and the panel used to ignore them entirely, so four
-            // rounds collected in-game still left the panel offering four more.
-            int n = Coordinator.HeldRounds(ship, ammoId);
-            for (int i = 0; i < _strike.Count; i++)
-            {
-                Coordinator.Shot s = _strike[i];
-                if (s.Unit == ship && s.AmmoId == ammoId && s.Target != _target)
-                    n += Mathf.Max(1, s.Salvo);
-            }
-            return n;
-        }
-
-        /// <summary>
-        /// Rounds of this ammunition the ship owes to orders that are not this target's: staged in
-        /// the panel against another target, plus everything the coordinator is holding or has
-        /// dispatched without seeing away. The magazine analogue of <see cref="StagedElsewhere"/>,
-        /// which answers the same question for guidance channels.
-        /// </summary>
-        private int AmmoCommittedElsewhere(ObjectBase ship, string ammoId)
-        {
-            int n = Coordinator.AmmoOutstanding(ship, ammoId);
-            for (int i = 0; i < _strike.Count; i++)
-            {
-                Coordinator.Shot s = _strike[i];
-                if (s.Unit == ship && s.AmmoId == ammoId && s.Target != _target)
-                    n += Mathf.Max(1, s.Salvo);
-            }
-            return n;
-        }
-
-        /// <summary>
-        /// True if anything staged in the panel has filled its shooter's guidance channels. The
-        /// coordinator's own flag cannot see planner picks until the strike is fired, and the title
-        /// bar is the only place this is readable with the panel collapsed.
-        /// </summary>
-        private bool AnyStagedChannelCap()
-        {
-            for (int i = 0; i < _strike.Count; i++)
-            {
-                Coordinator.Shot s = _strike[i];
-                if (s.Unit != null && Coordinator.IsChannelCapped(s.Unit, s.AmmoId)) return true;
-            }
-            return false;
-        }
-
-        /// <summary>
-        /// Rounds staged in the panel for this ship and ammunition, across every target. Published
-        /// to the coordinator so the intake gate can see picks that have not been fired yet; the
-        /// mirror of <see cref="StagedElsewhere"/> reading the coordinator's own holdings.
-        /// </summary>
-        private int StagedRoundsFor(ObjectBase ship, string ammoId)
-        {
-            int n = 0;
-            for (int i = 0; i < _strike.Count; i++)
-            {
-                Coordinator.Shot s = _strike[i];
-                if (s.Unit == ship && s.AmmoId == ammoId) n += Mathf.Max(1, s.Salvo);
-            }
-            return n;
-        }
-
-        // Missiles this ship carries that can engage the current target (by type). Each row
-        // also reports whether the target is within that missile's max range. With no target,
-        // all missiles are listed and treated as in range.
-        private IEnumerable<Row> EngageRows(ObjectBase ship)
-        {
-            if (ship == null) yield break;
-            bool haveTarget = _target != null && !_target.IsDestroyed;
-            float dist = haveTarget
-                ? (_target.transform.position - ship.transform.position).magnitude : 0f;
-
-            foreach (KeyValuePair<string, int> kv in ship.AmmunitionAmountDictionary)
-            {
-                if (kv.Value <= 0) continue;
-                Ammunition a = ship.getAmmunitionByName(kv.Key);
-                if (a?._ap == null || a._ap._type != Ammunition.Type.Missile) continue;
-
-                bool inRange = true;
-                if (haveTarget)
-                {
-                    // Wrong target type or weapon incompatibility -> hide entirely.
-                    if (!ship.DoesAmmoMatchTarget(a._ap, _target, out _))
-                        continue;
-                    inRange = dist <= ship.GetMaxRangeForAmmo(a, _target);
-                }
-
-                // Cap the selectable count at what the serving launchers can actually fire (loaded +
-                // magazine reserve), not the ship-wide inventory ; otherwise the salvo picker could
-                // request rounds sitting behind an unusable launcher, and the strike fires short.
-                int stock = Mathf.Min(kv.Value, LauncherFactsSource.AvailableRounds(ship, kv.Key));
-                // Rounds of this ammunition already spoken for elsewhere: staged at ANOTHER target
-                // in this panel, held by the coordinator, or dispatched and not yet away. The
-                // channel cap below subtracts its own kind of commitment, but ordinary ammunition
-                // has no channel cap at all, so before this a ship could be staged past its
-                // magazine simply by visiting two targets. Finding 11 of
-                // docs/plans/open/BETA-RELEASE-AUDIT-PLAN.md.
-                stock = Mathf.Max(0, stock - AmmoCommittedElsewhere(ship, kv.Key));
-                if (stock <= 0) continue;   // nothing physically firable: the row has no purpose
-                // Second cap: a radio-command weapon that cannot group holds one fire-control
-                // channel per round in flight, so the boat physically cannot put up more than it
-                // has channels. Offering more cannot deliver them: the surplus launches, fails to
-                // win a channel and self-destructs. See LauncherFactsSource.GuidanceChannelCap.
-                //
-                // Budget is per SHIP, not per target, so rounds this ship already has staged at
-                // other targets come off the count offered here. Without that subtraction each
-                // target was offered the full budget and a multi-target strike quietly ordered a
-                // multiple of it. Coordinator.ClampToGuidanceChannels is the backstop that also
-                // covers orders issued in the game's own interface; this only keeps the number the
-                // panel shows honest while staging.
-                int cap = LauncherFactsSource.GuidanceChannelCap(ship, kv.Key);
-                int elsewhere = cap == int.MaxValue ? 0 : StagedElsewhere(ship, kv.Key);
-                int left = cap == int.MaxValue ? int.MaxValue : Mathf.Max(0, cap - elsewhere);
-
-                // Count may legitimately be 0 here, and the row is still emitted. Dropping it left
-                // the ammunition simply missing from the list the moment its channels were spent at
-                // another target, with nothing to say why; the row explains itself instead and
-                // renders unselectable, the same way an out-of-range one does.
-                yield return new Row
-                {
-                    AmmoId = kv.Key,
-                    Count = Mathf.Min(stock, left),
-                    InRange = inRange,
-                    ChannelCap = cap,
-                    ChannelsElsewhere = elsewhere,
-                };
-            }
-        }
-
-        // Remove entries from _checked/_salvo for ships that no longer exist, preventing unbounded
-        // dictionary growth over long sessions. Liveness is tested against the game's own unit list
-        // (ObjectsManager._listOfAllUnits, which drops an object on destruction) ; NOT against the
-        // currently-selected shooters, which would wrongly wipe saved selections for every ship the
-        // player isn't looking at right now.
-        private static readonly HashSet<int> _liveIdScratch = new HashSet<int>();
-        private readonly List<string> _deadKeyScratch = new List<string>();
-        private void PruneCheckSalvo()
-        {
-            if (!Singleton<ObjectsManager>.InstanceExists()) return;
-
-            _liveIdScratch.Clear();
-            List<ObjectBase> units = Singleton<ObjectsManager>.Instance._listOfAllUnits;
-            for (int i = 0; i < units.Count; i++)
-            {
-                ObjectBase u = units[i];
-                if (u != null && !u.IsDestroyed) _liveIdScratch.Add(u.GetInstanceID());
-            }
-
-            _deadKeyScratch.Clear();
-            foreach (KeyValuePair<string, bool> kv in _checked)
-            {
-                int pipeIdx = kv.Key.IndexOf('|');
-                if (pipeIdx <= 0) continue;
-                if (!int.TryParse(kv.Key.Substring(0, pipeIdx), out int instanceId)) continue;
-                if (!_liveIdScratch.Contains(instanceId)) _deadKeyScratch.Add(kv.Key);
-            }
-            for (int i = 0; i < _deadKeyScratch.Count; i++)
-            {
-                _checked.Remove(_deadKeyScratch[i]);
-                _salvo.Remove(_deadKeyScratch[i]);
-            }
-
-            // Same liveness test for the staged strike: a shot whose shooter or target has died can
-            // never be fired, and holding the reference keeps a destroyed object alive.
-            _strike.RemoveAll(sh =>
-                sh.Unit == null || sh.Target == null ||
-                !_liveIdScratch.Contains(sh.Unit.GetInstanceID()) ||
-                !_liveIdScratch.Contains(sh.Target.GetInstanceID()));
-
-            _group.RemoveAll(u => u == null || !_liveIdScratch.Contains(u.GetInstanceID()));
-        }
-
-        private bool AnyChecked(List<ObjectBase> shooters)
-        {
-            foreach (ObjectBase ship in shooters)
-                foreach (Row r in CachedEngageRows(ship))
-                    if (r.InRange && _checked.TryGetValue(Key(ship, r.AmmoId), out bool on) && on) return true;
-            return false;
-        }
-
-        private static string Key(ObjectBase u, string ammoId) => u.GetInstanceID() + "|" + ammoId;
-
-        private string TargetLabel() => FoggedLabel(_target, _targetVehicle);
-
-        // Fog-of-war-correct label for any object: friendly objects show their name; enemies show
-        // their real class ONLY once classified, otherwise just the track number plus the game's own
-        // echo/emission descriptor. The contact wrapper comes from the player's plotting table (the
-        // same source the game uses), so nothing is exposed that the player hasn't identified.
-        private static string FoggedLabel(ObjectBase o, Vehicle known = null)
-        {
-            if (o == null) return "-";
-            if (o.IsPlayerObject)
-            {
-                try { return o.Name.Value; } catch { return UnitNaming.SafeName(o); }
-            }
-
-            Vehicle v = known;
-            if (v == null)
-            {
-                try { v = Globals._playerTaskforce?.PlottingTable?.VehicleForObject(o); } catch { v = null; }
-            }
-            if (v == null) return "Unknown contact";   // not on our plot -> reveal nothing
-
-            // Keep the track number on a classified contact too. Two contacts of the same class
-            // share a name, and the number is the only thing that tells the player which of them
-            // the panel is aimed at.
-            if (v.Class.HasValue)
-            {
-                try { return $"[{v.Id}] {v.Object.Name.Value}"; } catch { return $"Contact {v.Id}"; }
-            }
-            string s = $"Contact {v.Id}";
-            try { if (v.HasSignalInfo()) s += "; " + v.IncomingSignalInfo(); } catch { }
-            return s;
-        }
-
-        // Human-readable form of the configured strike-arm combo, for the panel hint.
-        private static string StrikeHint() => Combo(Bootstrap.StrikeArmKey);
-
-        private static string FireHint() => Combo(Bootstrap.FireStrikeKey);
-
-        /// <summary>
-        /// Fire whatever the strike holds, from the hotkey. Same commit the panel's FIRE STRIKE
-        /// button makes, so a strike built earlier can be launched with the panel hidden; a hidden
-        /// panel is a normal way to play, and having to open one to press a button you already
-        /// decided on is a delay the shot cannot always afford.
-        /// </summary>
-        private void FireStrikeNow()
-        {
-            int held = _strike.Count + Coordinator.StrikeCount;
-            if (held == 0)
-            {
-                Bootstrap.Log.LogInfo("[AutoTOT] fire-strike pressed with nothing staged.");
-                return;
-            }
-            Bootstrap.Log.LogInfo($"[AutoTOT] firing strike from hotkey: {held} order(s).");
-            Coordinator.FireStrike(_strike);
-            _strike.Clear();
-        }
-
-        private void ToggleStrikeArmed()
-        {
-            if (Coordinator.StrikeArmed) Coordinator.CancelStrike();
-            else Coordinator.ArmStrike();
-        }
-
-        /// <summary>
-        /// Move the currently checked rows into the staged strike against the current target, then
-        /// clear the checkboxes so the next formation and target can be picked. Rows already staged
-        /// for the same shooter, ammo and target are replaced rather than doubled up.
-        /// </summary>
-        private void AddSelectionToStrike(List<ObjectBase> shooters)
-        {
-            if (_target == null || _target.IsDestroyed) return;
-            int added = 0;
-            foreach (ObjectBase ship in shooters)
-                foreach (Row r in CachedEngageRows(ship))
-                {
-                    // Count 0 means every guidance channel is already staged at another target.
-                    // Without this the row would stage a Salvo of 0, which the coordinator floors
-                    // back up to 1 and orders a round the ship cannot guide.
-                    if (!r.InRange || r.Count <= 0) continue;
-                    string key = Key(ship, r.AmmoId);
-                    if (!_checked.TryGetValue(key, out bool on) || !on) continue;
-                    int salvo = Mathf.Min(_salvo.TryGetValue(key, out int sv) ? sv : 1, r.Count);
-                    _strike.RemoveAll(x => x.Unit == ship && x.AmmoId == r.AmmoId && x.Target == _target);
-                    _strike.Add(new Coordinator.Shot
-                    {
-                        Unit = ship, AmmoId = r.AmmoId, Salvo = salvo, Target = _target,
-                    });
-                    _checked[key] = false;
-                    added++;
-                }
-            if (added > 0) _strikeGeneration = Coordinator.ResetGeneration;
-        }
-
-        /// <summary>
-        /// Add the current selection to the shooter roster: just the selected ship, or every
-        /// missile-armed ship in its formation. Which one is the caller's choice, not a mode read
-        /// off the panel. No target is needed, which is the point: the roster is what you assemble
-        /// first, then aim, and it is not limited to one formation.
-        /// </summary>
-        private void AddSelectionToGroup(bool wholeFormation)
-        {
-            if (_anchor == null || _anchor.IsDestroyed) return;
-
-            if (wholeFormation && _anchor.Formation != null)
-            {
-                foreach (Station st in _anchor.Formation.Stations)
-                {
-                    ObjectBase u = st?.UnitObject;
-                    if (IsMissileShip(u) && !_group.Contains(u)) _group.Add(u);
-                }
-            }
-            if (IsMissileShip(_anchor) && !_group.Contains(_anchor)) _group.Add(_anchor);
-            _strikeGeneration = Coordinator.ResetGeneration;
-        }
-
-        /// <summary>
-        /// True when every ship + FORMATION would add is already in the roster. Tested against
-        /// IsMissileShip for the same reason AddSelectionToGroup filters on it: a formation's
-        /// non-missile hulls are never added, so counting them would leave the button reading
-        /// "+ FORMATION" forever with nothing left to add.
-        /// </summary>
-        private bool FormationFullyHeld(ObjectBase anchor)
-        {
-            if (anchor?.Formation == null) return false;
-            bool any = false;
-            foreach (Station st in anchor.Formation.Stations)
-            {
-                ObjectBase u = st?.UnitObject;
-                if (!IsMissileShip(u)) continue;
-                any = true;
-                if (!_group.Contains(u)) return false;
-            }
-            // AddSelectionToGroup also adds the anchor itself, whether or not it holds a station.
-            if (IsMissileShip(anchor))
-            {
-                any = true;
-                if (!_group.Contains(anchor)) return false;
-            }
-            return any;
-        }
-
-        /// <summary>Distinct targets in the staged strike, in the order they were first staged.</summary>
-        // Targets in the whole strike: the panel's staged rows first, then any target that only the
-        // collected in-game orders name. Both halves fire together, so both belong in the list and
-        // in the counts on the commit button.
-        private void CollectStrikeTargets(List<ObjectBase> into)
-        {
-            into.Clear();
-            foreach (Coordinator.Shot s in _strike)
-                if (s.Target != null && !into.Contains(s.Target)) into.Add(s.Target);
-            foreach (Coordinator.Shot s in CollectedOrders())
-                if (s.Target != null && !into.Contains(s.Target)) into.Add(s.Target);
-        }
-
-        // Orders the coordinator has caught from the game's own interface, refreshed once a frame.
-        private readonly List<Coordinator.Shot> _collected = new List<Coordinator.Shot>();
-        private int _collectedFrame = -1;
-
-        private List<Coordinator.Shot> CollectedOrders()
-        {
-            if (_collectedFrame != Time.frameCount)
-            {
-                _collectedFrame = Time.frameCount;
-                Coordinator.CollectStrikeIntents(_collected);
-            }
-            return _collected;
-        }
-
-        private static string FormatTime(float sec)
-        {
-            if (sec <= 0f) return "0:00";
-            int s = Mathf.RoundToInt(sec);
-            return $"{s / 60}:{s % 60:00}";
-        }
     }
 }

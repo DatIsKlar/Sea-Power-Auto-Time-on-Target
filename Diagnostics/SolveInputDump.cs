@@ -14,10 +14,10 @@ namespace AutoTOT
     /// game.
     ///
     /// <see cref="FlightTime.SolveInput"/> is a pure value: the step loop reads no Unity API and no
-    /// mutable game state, so a solve is fully determined by this struct plus the eight ammunition
-    /// fields the loop and the game's thrust helper read. Capturing those is therefore enough to
-    /// reproduce an estimate exactly, which is what makes an offline step-size sweep possible
-    /// without re-flying anything.
+    /// mutable game state, so a solve is fully determined by this struct plus the ammunition fields
+    /// the loop and the game's thrust helper read. Launch-time loft optimization is resolved before
+    /// the struct is written; configured/resolved heights and the resulting Kappa nodes are all
+    /// captured, so offline replay does not repeat a mutable game-state lookup.
     ///
     /// One file per round, under BepInEx/AutoTOT-solve/. Written only when TraceFlightModel is on,
     /// the same gate as the sim-track trace, and never on the normal path.
@@ -25,6 +25,11 @@ namespace AutoTOT
     internal static class SolveInputDump
     {
         private static readonly CultureInfo Inv = CultureInfo.InvariantCulture;
+        internal const string CaptureSchema = "rich-flight-v3";
+        // The assembly MVID changes with the compiled artifact and is available even when several
+        // development builds intentionally share the same user-facing mod version.
+        private static string ModBuildId =>
+            typeof(SolveInputDump).Assembly.ManifestModule.ModuleVersionId.ToString("N");
 
         // Monotonic, so two rounds of one ammunition launched on the same tick still get
         // separate entries.
@@ -33,7 +38,8 @@ namespace AutoTOT
         internal static string Directory => Path.Combine(Paths.BepInExRootPath, "AutoTOT-solve");
 
         /// <summary>Writes one input and returns its key, or null if it could not be written.</summary>
-        internal static string Write(string label, in FlightTime.SolveInput i, AmmunitionParameters ap)
+        internal static string Write(string label, in FlightTime.SolveInput i, AmmunitionParameters ap,
+                                     float inGameEstimate = float.NaN, float inGameStep = 0f)
         {
             try
             {
@@ -59,6 +65,13 @@ namespace AutoTOT
                 b.AppendLine(F("Label", label));
                 b.AppendLine(F("Key", key));
                 b.AppendLine(F("SolvedAtSim", GameClock.SimNow()));
+                b.AppendLine(F("ModBuild", ModBuildId));
+                b.AppendLine(F("CaptureSchema", CaptureSchema));
+                b.AppendLine(F("AmmoFingerprint", AmmunitionFingerprint(ap)));
+                // What this build's step loop returned for this exact input, and the step it ran
+                // at. tools/lab `parity` replays the input and must reproduce the value.
+                b.AppendLine(F("InGameEstimate", inGameEstimate));
+                b.AppendLine(F("InGameStep", inGameStep));
 
                 // Ammunition. Two fields the step loop reads directly, and six more that
                 // MissileSimulator.CalculateThrustOverTime reads out of the same object.
@@ -70,6 +83,54 @@ namespace AutoTOT
                 b.AppendLine(F("Ammo.SustainerBurnTime", ap._sustainerBurnTime));
                 b.AppendLine(F("Ammo.MaxVelocityInKnots", ap._maxVelocityInKnots));
                 b.AppendLine(F("Ammo.Kinematics", ap.Kinematics.ToString()));
+                b.AppendLine(F("Ammo.OptimizeLoftAlt", ap._optimizeLoftAlt));
+                b.AppendLine(F("Ammo.TerminalAltRaw", ap._terminalAltUnity));
+                b.AppendLine(F("Ammo.TerminalAltMode", ap._terminalAltMode.ToString()));
+                b.AppendLine(F("Ammo.LoftToSkim", ap._loftToSkim));
+                b.AppendLine(F("Ammo.TargetType", ap._targetType.ToString()));
+                // Raw trajectory/controller fields are retained even when SolveInput also carries
+                // their resolved value. That leaves future generalized models something to train
+                // against and makes modded ammunition changes attributable instead of anonymous.
+                b.AppendLine(F("Ammo.Deceleration", ap._deceleration));
+                b.AppendLine(F("Ammo.MaxLoftVelocityInKnots", ap._maxLoftVelocityInKnots));
+                b.AppendLine(F("Ammo.TerminalVelocityInKnots", ap._terminalVelocityInKnots));
+                b.AppendLine(F("Ammo.MaxLoftAngle", ap._maxLoftAngle));
+                b.AppendLine(F("Ammo.FinalFlightPhaseMaxAngle", ap._finalFlightPhaseMaxAngle));
+                b.AppendLine(F("Ammo.SeaSkimmingMaxDescentAngle", ap._seaSkimmingMaxDescentAngle));
+                b.AppendLine(F("Ammo.FinalFlightPhaseAltUnity", ap._finalFlightPhaseAltUnity));
+                b.AppendLine(F("Ammo.FinalFlightPhaseDistToTargetUnity", ap._finalFlightPhaseDistToTargetUnity));
+                b.AppendLine(F("Ammo.SeaSkimmingAltUnity", ap._seaSkimmingAltUnity));
+                b.AppendLine(F("Ammo.SeaSkimmingStartDistToTargetUnity", ap._seaSkimmingStartDistToTargetUnity));
+                b.AppendLine(F("Ammo.TerminalApproachDist", ap._terminalApproachDist));
+                b.AppendLine(F("Ammo.SearchForTargetsTime", ap._searchForTargetsTime));
+                b.AppendLine(F("Ammo.InitialFlightPhaseDuration", ap._initialFlightPhaseDuration));
+                b.AppendLine(F("Ammo.PerformsSlightBallisticInitialFlight", ap._performsSlightBallisticInitialFlight));
+                b.AppendLine(F("Ammo.MaxTurnRateDegrees", ap._maxTurnRateDegrees));
+                b.AppendLine(F("Ammo.ToBearingTurnRateDegrees", ap._toBearingTurnRateDegrees));
+                b.AppendLine(F("Ammo.MaxTurnG", ap._maxTurnG));
+                b.AppendLine(F("Ammo.SupportsBanking", ap._supportsBanking));
+                b.AppendLine(F("Ammo.BallisticLoft", ap._ballisticLoft));
+                b.AppendLine(F("Ammo.TerminalLoft", ap._terminalLoft));
+                b.AppendLine(F("Ammo.MaxFlightTime", ap._maxFlightTime));
+                b.AppendLine(F("Ammo.MaxGroupSize", ap._maxGroupSize));
+                b.AppendLine(F("Ammo.GuidanceType", ap._guidanceType.ToString()));
+                b.AppendLine(F("Ammo.MidCourseCorrection", ap._midCourseCorrection.ToString()));
+                b.AppendLine(F("Ammo.RequiresTargetToProceed", ap._requiresTargetToProceed));
+                b.AppendLine(F("Ammo.SeekerActiveRange", ap._seekerActiveRange));
+                b.AppendLine(F("Ammo.SeekerPassiveRange", ap._seekerPassiveRange));
+                b.AppendLine(F("Ammo.NavigationGain", ap._navigationGain));
+                b.AppendLine(F("Ammo.TerrainFollowFlight", ap._terrainFollowFlight));
+                b.AppendLine(F("Ammo.TerminalPopUpDist", ap._terminalPopUpDist));
+                b.AppendLine(F("Ammo.TerminalPopUpHeight", ap._terminalPopUpHeight));
+                b.AppendLine(F("Ammo.TerminalPopUpAngle", ap._terminalPopUpAngle));
+                b.AppendLine(F("Ammo.TerminalVerticalTurnRate", ap._terminalVerticalTurnRate));
+                b.AppendLine(F("Ammo.SelectivePopUp", ap._selectivePopUp));
+                b.AppendLine(F("Ammo.ForcePopUp", ap._forcePopUp));
+                // v3: the rest of what Missile.CreateWaypointConfigs reads, so the lab can rebuild
+                // the waypoint route from the capture alone.
+                b.AppendLine(F("Ammo.TerminalDiveDistance", ap._terminalDiveDistance));
+                b.AppendLine(F("Ammo.MaxLoftAltUnity", ap._maxLoftAltUnity));
+                b.AppendLine(F("Ammo.GroupLeaderAltUnity", ap._groupLeaderAltUnity));
 
                 b.AppendLine(F("AmmoLabel", i.AmmoLabel));
                 b.AppendLine(F("BoostClimbDeg", i.BoostClimbDeg));
@@ -83,10 +144,12 @@ namespace AutoTOT
                 b.AppendLine(F("FinalDist", i.FinalDist));
                 b.AppendLine(F("FlatDistTotal", i.FlatDistTotal));
                 b.AppendLine(F("InitialPhaseDur", i.InitialPhaseDur));
+                b.AppendLine(F("PerformsSlightBallisticInitialFlight", i.PerformsSlightBallisticInitialFlight));
                 b.AppendLine(F("IsAir", i.IsAir));
                 b.AppendLine(F("IsHighBallisticLofter", i.IsHighBallisticLofter));
                 b.AppendLine(F("IsTerminalLoft", i.IsTerminalLoft));
                 b.AppendLine(F("LaunchPitch", i.LaunchPitch));
+                b.AppendLine(F("ConfiguredLoftAlt", i.ConfiguredLoftAlt));
                 b.AppendLine(F("LoftAlt", i.LoftAlt));
                 b.AppendLine(F("LoftEntryDist", i.LoftEntryDist));
                 b.AppendLine(F("LoftSpeedHoldDist", i.LoftSpeedHoldDist));
@@ -102,9 +165,16 @@ namespace AutoTOT
                 b.AppendLine(F("TargetAlt0", i.TargetAlt0));
                 b.AppendLine(F("TargetPos", i.TargetPos));
                 b.AppendLine(F("TargetVel", i.TargetVel));
+                b.AppendLine(F("TerminalLinear", i.TerminalLinear));
+                b.AppendLine(F("TerminalEndAlt", i.TermAlt));
                 b.AppendLine(F("TermAlt", i.TermAlt));
                 b.AppendLine(F("TermDist", i.TermDist));
                 b.AppendLine(F("TermVelKn", i.TermVelKn));
+                b.AppendLine(F("TerminalPopUpEnabled", i.TerminalPopUpEnabled));
+                b.AppendLine(F("TerminalPopUpDist", i.TerminalPopUpDist));
+                b.AppendLine(F("TerminalPopUpHeight", i.TerminalPopUpHeight));
+                b.AppendLine(F("TerminalPopUpAngle", i.TerminalPopUpAngle));
+                b.AppendLine(F("TerminalVerticalTurnRate", i.TerminalVerticalTurnRate));
                 b.AppendLine(F("TurnRate", i.TurnRate));
                 b.AppendLine(F("ToBearingTurnRate", i.ToBearingTurnRate));
                 b.AppendLine(F("TurnRateBase", i.TurnRateBase));
@@ -120,7 +190,14 @@ namespace AutoTOT
                 b.AppendLine(F("PrevPitch", i.PrevPitch));
                 b.AppendLine(F("T", i.T));
                 b.AppendLine(F("TlGliding", i.TlGliding));
+                b.AppendLine(F("KappaEndFlat", i.KappaEndFlat));
+                b.AppendLine(F("KappaProgress", i.KappaProgress));
                 b.AppendLine(F("VelKnots", i.VelKnots));
+                // The route as built in game, for comparison with the lab's rebuild. Each leg is
+                // endDist/mode/alt/climb/descent/clamp+skip; empty means the older altitude law.
+                b.AppendLine(F("WaypointLegs", i.Legs == null ? "" : string.Join(";",
+                    System.Array.ConvertAll(i.Legs, l => l.ToString()))));
+                b.AppendLine(F("GroupLeader", i.GroupLeader));
                 b.AppendLine(F("AltNodes", i.AltNodes));
 
                 string file = Path.Combine(Directory, key + ".solveinput");
@@ -139,7 +216,8 @@ namespace AutoTOT
         /// Records what actually happened to a round, beside the input it was solved from. An input
         /// with no outcome is not a test case; this is the half that makes the pair scoreable.
         /// </summary>
-        internal static void WriteResult(string key, string ammoLabel, string targetName,
+        internal static void WriteResult(string key, string ammoLabel, string ammoFingerprint,
+                                         string targetName,
                                          float actualFlight, bool arrived, float finalRangeM,
                                          bool retargeted, float motorPerformance,
                                          float minCompression, float maxCompression,
@@ -148,8 +226,11 @@ namespace AutoTOT
                                          bool inGroup, bool groupLeader, int maxGroupSize,
                                          float peakSpeedKn, float peakAltU, float lastSpeedKn,
                                          List<string> track,
+                                         List<string> flightTrack,
+                                         List<string> guardTrack,
                                          float wpEst, float legacyEst,
-                                         List<string> stageChanges,
+                                         List<string> stageChanges, List<string> stageEvents,
+                                         List<string> groupChanges,
                                          float targetCourse0, float targetSpeed0,
                                          float targetCourse1, float targetSpeed1,
                                          float targetMovedU)
@@ -171,6 +252,8 @@ namespace AutoTOT
                 b.AppendLine("# AutoTOT flight outcome, paired with the .solveinput of the same name.");
                 b.AppendLine(F("Key", key));
                 b.AppendLine(F("Label", ammoLabel));
+                b.AppendLine(F("CaptureSchema", CaptureSchema));
+                b.AppendLine(F("AmmoFingerprint", ammoFingerprint));
                 b.AppendLine(F("Target", targetName));
                 b.AppendLine(F("ActualFlight", actualFlight));
                 b.AppendLine(F("Arrived", arrived));
@@ -206,6 +289,15 @@ namespace AutoTOT
                 // levelled off long before.
                 b.AppendLine(F("Track", track == null || track.Count == 0
                                         ? "" : string.Join(";", track)));
+                // Adaptive-cadence ground truth. Track is intentionally retained for compatibility
+                // with old corpus tools; FlightTrack contains the full target-relative state.
+                b.AppendLine(F("FlightTrack", flightTrack == null || flightTrack.Count == 0
+                                              ? "" : string.Join(";", flightTrack)));
+                // Field order is LaunchDiagnostics.GuardTrackFields. Vectors are x,y,z in Unity
+                // units; the last field says why the line was written.
+                b.AppendLine(F("GuardTrackFields", LaunchDiagnostics.GuardTrackFields));
+                b.AppendLine(F("GuardTrack", guardTrack == null || guardTrack.Count == 0
+                                             ? "" : string.Join(";", guardTrack)));
                 // The other estimator tiers, as they stood at launch. Recording them lets a tier
                 // be compared against the others offline, on the whole corpus, without re-flying.
                 b.AppendLine(F("WpEstAtLaunch", wpEst));
@@ -214,6 +306,10 @@ namespace AutoTOT
                 // phase boundaries have to be scored against.
                 b.AppendLine(F("StageChanges", stageChanges == null || stageChanges.Count == 0
                                                ? "" : string.Join(";", stageChanges)));
+                b.AppendLine(F("StageEvents", stageEvents == null || stageEvents.Count == 0
+                                              ? "" : string.Join(";", stageEvents)));
+                b.AppendLine(F("GroupChanges", groupChanges == null || groupChanges.Count == 0
+                                               ? "" : string.Join(";", groupChanges)));
                 // Target motion. A target that turned after launch was never predictable from a
                 // launch-time snapshot, so the lab can now exclude it rather than counting it as
                 // model error.
@@ -230,6 +326,7 @@ namespace AutoTOT
                 b.AppendLine(F("GameVersion", Application.version));
                 b.AppendLine(F("GameBranch", FlightTime.SimIsBeta ? "beta" : "public"));
                 b.AppendLine(F("ModVersion", Bootstrap.Version));
+                b.AppendLine(F("ModBuild", ModBuildId));
                 b.AppendLine(F("CapturedAt", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss", Inv)));
                 // One input per round now, so this can no longer be ambiguous. Still written, so a
                 // corpus mixing old and new captures reads uniformly.
@@ -263,6 +360,77 @@ namespace AutoTOT
         private static string F(string k, Quaternion q)
             => k + " = " + q.x.ToString("R", Inv) + "," + q.y.ToString("R", Inv) + "," +
                q.z.ToString("R", Inv) + "," + q.w.ToString("R", Inv);
+
+        /// <summary>A stable fingerprint of the raw ammunition fields that influence either flight
+        /// model. It is deliberately data-derived rather than based on the ammunition name, so two
+        /// versions of a modded weapon cannot silently occupy the same training cohort.</summary>
+        internal static string AmmunitionFingerprint(AmmunitionParameters ap)
+        {
+            if (ap == null) return string.Empty;
+            var b = new StringBuilder();
+            b.AppendLine(F("MinVelocity", ap.MinVelocity));
+            b.AppendLine(F("LiftFactor", ap.LiftFactor));
+            b.AppendLine(F("Acceleration", ap._acceleration));
+            b.AppendLine(F("AccelerationTime", ap._accelerationTime));
+            b.AppendLine(F("SustainerBurnAcceleration", ap._sustainerBurnAcceleration));
+            b.AppendLine(F("SustainerBurnTime", ap._sustainerBurnTime));
+            b.AppendLine(F("MaxVelocity", ap._maxVelocityInKnots));
+            b.AppendLine(F("Kinematics", ap.Kinematics.ToString()));
+            b.AppendLine(F("OptimizeLoftAlt", ap._optimizeLoftAlt));
+            b.AppendLine(F("TerminalAlt", ap._terminalAltUnity));
+            b.AppendLine(F("TerminalAltMode", ap._terminalAltMode.ToString()));
+            b.AppendLine(F("LoftToSkim", ap._loftToSkim));
+            b.AppendLine(F("TargetType", ap._targetType.ToString()));
+            b.AppendLine(F("Deceleration", ap._deceleration));
+            b.AppendLine(F("MaxLoftVelocity", ap._maxLoftVelocityInKnots));
+            b.AppendLine(F("TerminalVelocity", ap._terminalVelocityInKnots));
+            b.AppendLine(F("MaxLoftAngle", ap._maxLoftAngle));
+            b.AppendLine(F("FinalMaxAngle", ap._finalFlightPhaseMaxAngle));
+            b.AppendLine(F("SeaSkimMaxDescent", ap._seaSkimmingMaxDescentAngle));
+            b.AppendLine(F("FinalAlt", ap._finalFlightPhaseAltUnity));
+            b.AppendLine(F("FinalDist", ap._finalFlightPhaseDistToTargetUnity));
+            b.AppendLine(F("SeaSkimAlt", ap._seaSkimmingAltUnity));
+            b.AppendLine(F("SeaSkimDist", ap._seaSkimmingStartDistToTargetUnity));
+            b.AppendLine(F("TerminalDist", ap._terminalApproachDist));
+            b.AppendLine(F("SearchTime", ap._searchForTargetsTime));
+            b.AppendLine(F("InitialDuration", ap._initialFlightPhaseDuration));
+            b.AppendLine(F("SlightBallisticInitial", ap._performsSlightBallisticInitialFlight));
+            b.AppendLine(F("TurnRate", ap._maxTurnRateDegrees));
+            b.AppendLine(F("BearingTurnRate", ap._toBearingTurnRateDegrees));
+            b.AppendLine(F("MaxTurnG", ap._maxTurnG));
+            b.AppendLine(F("SupportsBanking", ap._supportsBanking));
+            b.AppendLine(F("BallisticLoft", ap._ballisticLoft));
+            b.AppendLine(F("TerminalLoft", ap._terminalLoft));
+            b.AppendLine(F("MaxFlight", ap._maxFlightTime));
+            b.AppendLine(F("MaxGroupSize", ap._maxGroupSize));
+            b.AppendLine(F("GuidanceType", ap._guidanceType.ToString()));
+            b.AppendLine(F("MidCourseCorrection", ap._midCourseCorrection.ToString()));
+            b.AppendLine(F("RequiresTargetToProceed", ap._requiresTargetToProceed));
+            b.AppendLine(F("SeekerActiveRange", ap._seekerActiveRange));
+            b.AppendLine(F("SeekerPassiveRange", ap._seekerPassiveRange));
+            b.AppendLine(F("NavigationGain", ap._navigationGain));
+            b.AppendLine(F("TerrainFollowFlight", ap._terrainFollowFlight));
+            b.AppendLine(F("TerminalPopUpDist", ap._terminalPopUpDist));
+            b.AppendLine(F("TerminalPopUpHeight", ap._terminalPopUpHeight));
+            b.AppendLine(F("TerminalPopUpAngle", ap._terminalPopUpAngle));
+            b.AppendLine(F("TerminalVerticalTurnRate", ap._terminalVerticalTurnRate));
+            b.AppendLine(F("SelectivePopUp", ap._selectivePopUp));
+            b.AppendLine(F("ForcePopUp", ap._forcePopUp));
+
+            // FNV-1a is compact, deterministic on the game's older runtime, and sufficient as a
+            // change detector. This is provenance, not a security boundary.
+            unchecked
+            {
+                ulong hash = 14695981039346656037UL;
+                string value = b.ToString();
+                for (int n = 0; n < value.Length; n++)
+                {
+                    hash ^= value[n];
+                    hash *= 1099511628211UL;
+                }
+                return "fnv1a64:" + hash.ToString("x16", Inv);
+            }
+        }
 
         private static string F(string k, Vector2[] nodes)
         {

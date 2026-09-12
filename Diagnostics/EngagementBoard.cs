@@ -1,4 +1,3 @@
-using System;
 using System.Collections.Generic;
 using SeaPower;
 using UnityEngine;
@@ -98,30 +97,6 @@ namespace AutoTOT
         internal static bool HasFired(ObjectBase target)
             => _byTarget.TryGetValue(target, out Engagement e) && e.FiredAtSim >= 0f;
 
-        /// <summary>
-        /// D10 of docs/plans/open/BETA-RELEASE-AUDIT-PLAN.md: how many rows the board is holding,
-        /// how many have fired, and the age of the oldest scheduled impact. The only prune path is
-        /// CollectSalvos, which the HUD calls while DRAWING, so the census is how a run says whether
-        /// pruning stopped when the panel was hidden. Read-only; it prunes nothing itself, which is
-        /// the point.
-        /// </summary>
-        internal static void Census(float simNow, out int rows, out int fired, out float oldestAgeSim)
-        {
-            rows = _byTarget.Count;
-            fired = 0;
-            oldestAgeSim = 0f;
-            foreach (KeyValuePair<ObjectBase, Engagement> kv in _byTarget)
-            {
-                Engagement e = kv.Value;
-                if (e.FiredAtSim >= 0f)
-                {
-                    fired++;
-                    float age = simNow - e.FiredAtSim;
-                    if (age > oldestAgeSim) oldestAgeSim = age;
-                }
-            }
-        }
-
         /// <summary>True if AutoTOT is coordinating this target (a row exists) ; i.e. a missile at
         /// it is one we fired, not an auto-fired defensive SAM. Scopes verbose per-missile
         /// diagnostics to our own shots.</summary>
@@ -214,9 +189,9 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// Drop fired targets that are idle and past their grace window, or gone. Never-fired rows
-        /// stay: they belong to held orders and are dropped via <see cref="Drop"/> or
-        /// <see cref="Clear"/>.
+        /// Drop every row whose target is gone, and fired rows that are idle and past their grace
+        /// window. Never-fired rows of live targets stay: they belong to held orders and are dropped
+        /// via <see cref="Drop"/> or <see cref="Clear"/>.
         ///
         /// Called from the coordinator's tick, not from the draw. It used to run only inside
         /// <see cref="CollectSalvos"/>, which the HUD calls while painting, so hiding the panel or
@@ -237,14 +212,17 @@ namespace AutoTOT
             {
                 ObjectBase t = kv.Key;
                 Engagement e = kv.Value;
+                // Tested before the never-fired filter, which exists for held orders: a dead
+                // target's held orders are already being dropped by the release loop, and its row
+                // otherwise outlived them to the end of the mission.
+                if (t == null || t.IsDestroyed) { _pruneScratch.Add(t); continue; }
                 if (e.FiredAtSim < 0f) continue;
                 // "Active" has to include an order that has fired but whose rounds have not left
                 // the rail yet, or a slow launcher (a submarine climbing to launch depth) loses its
                 // row mid-ascent and the round that follows is treated as one we never fired.
                 bool active = IsStillWorking(t) || LaunchDiagnostics.HasPendingLaunch(t);
                 bool inGrace = (now - e.FiredAtSim) < EngageGrace;
-                if (t == null || t.IsDestroyed || (!active && !inGrace))
-                    _pruneScratch.Add(t);
+                if (!active && !inGrace) _pruneScratch.Add(t);
             }
             for (int i = 0; i < _pruneScratch.Count; i++) _byTarget.Remove(_pruneScratch[i]);
         }

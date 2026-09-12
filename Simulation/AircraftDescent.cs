@@ -64,7 +64,7 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// Seconds to reach <see cref="State.TargetAltU"/>. False when the seed is unusable or the
+        /// Seconds to descend below <see cref="State.GateAltU"/>, the launch ceiling. False when the seed is unusable or the
         /// aircraft makes no progress. Only descent is modelled: a climb request returns false rather
         /// than a wrong answer.
         ///

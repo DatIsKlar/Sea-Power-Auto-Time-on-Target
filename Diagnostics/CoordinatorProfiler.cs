@@ -16,11 +16,13 @@ namespace AutoTOT
         /// <summary>Timed sections. Nesting is fine: Tick wraps the four stage entries.</summary>
         internal enum Stage
         {
-            Tick, Diag, Commit, Anchor, Release,
+            Tick, Diag, Pending, Commit, Anchor, Release,
             FlightEstimate, GroupDelay, AnchorPredict, PredictFlight, PredictGroupDelay,
             // Model runs driven by the HUD, which happen in OnGUI and are therefore OUTSIDE the tick
             // entirely. Reported separately so they cannot be mistaken for tick cost, or hidden by it.
-            UiEstimate,
+            // UiEnvelope is the panel's launch-envelope query, a step-integrated submarine ascent or
+            // aircraft descent per row, which was untimed before.
+            UiEstimate, UiEnvelope,
         }
 
         /// <summary>Per-frame tallies that are counted rather than timed.</summary>
@@ -49,7 +51,7 @@ namespace AutoTOT
         internal static readonly double MsPerTick = 1000.0 / Stopwatch.Frequency;
 
         private static int _frameCount;
-        private static float _accScanLoopMs, _accFinalizeMs, _accCleanupMs;
+        private static float _accScanLoopMs, _accEngageStateMs, _accFinalizeMs, _accCleanupMs, _accRetireMs;
         private static int _accScheduled;
         // Split of FlightEstimate time by cache outcome. Timed here rather than counted, because the
         // cost of a hit and a miss differ by orders of magnitude and the average of the two is not
@@ -132,12 +134,15 @@ namespace AutoTOT
         }
 
         /// <summary>Sub-phase timings measured inside LaunchDiagnostics and reported here.</summary>
-        internal static void AddDiagPhases(float scanLoopMs, float finalizeMs, float cleanupMs)
+        internal static void AddDiagPhases(float scanLoopMs, float engageStateMs, float finalizeMs,
+                                           float cleanupMs, float retireMs)
         {
             if (!Enabled) return;
             _accScanLoopMs += scanLoopMs;
+            _accEngageStateMs += engageStateMs;
             _accFinalizeMs += finalizeMs;
             _accCleanupMs += cleanupMs;
+            _accRetireMs += retireMs;
         }
 
         /// <summary>Close the frame, and emit the report once every <see cref="ReportIntervalFrames"/>.</summary>
@@ -184,7 +189,7 @@ namespace AutoTOT
             // Tick PLUS the UI stage. UiEstimate runs in OnGUI, outside the tick by construction, so
             // a share computed from the tick alone understates the mod's real cost (it read 9.3%
             // where the honest figure was 26.8%).
-            double autoTotMs = (Ms(Stage.Tick) + Ms(Stage.UiEstimate)) * perFrame;
+            double autoTotMs = (Ms(Stage.Tick) + Ms(Stage.UiEstimate) + Ms(Stage.UiEnvelope)) * perFrame;
             double share = frameAvg > 0.001 ? 100.0 * autoTotMs / frameAvg : 0d;
             double staleAvg = _releaseCount > 0 ? _accReleaseStaleness / _releaseCount : 0d;
 
@@ -193,8 +198,8 @@ namespace AutoTOT
                 $"  frame {frameAvg:F2}ms avg ({1000.0 / (frameAvg > 0.001 ? frameAvg : 1):F0} fps), worst {_maxFrameMs:F2}ms => AutoTOT {autoTotMs:F2}ms/frame = {share:F1}% (tick + UI)\n" +
                 $"  release staleness: {_releaseCount} orders released, age of the flight estimate each " +
                 $"one released against {staleAvg:F2}s avg, {_maxReleaseStaleness:F2}s worst (sim seconds)\n" +
-                $"  Diag {Ms(Stage.Diag):F1}ms: scan {_accScanLoopMs:F1} | finalize {_accFinalizeMs:F1} | cleanup {_accCleanupMs:F1} (weapons {LaunchDiagnostics.LastWeaponCount}, tracked {LaunchDiagnostics.LastTrackedMissiles}, uncredited {LaunchDiagnostics.UncreditedLaunches})\n" +
-                $"  Commit {Ms(Stage.Commit):F1}ms | Anchor {Ms(Stage.Anchor):F1}ms (PredictAnchorImpact {Ms(Stage.AnchorPredict):F1}ms) | Release {Ms(Stage.Release):F1}ms (avg sched {_accScheduled * perFrame:F1})\n" +
+                $"  Diag {Ms(Stage.Diag):F1}ms: scan {_accScanLoopMs:F1} | engage-state {_accEngageStateMs:F1} | finalize {_accFinalizeMs:F1} | cleanup {_accCleanupMs:F1} | retire {_accRetireMs:F1} (weapons {LaunchDiagnostics.LastWeaponCount}, tracked {LaunchDiagnostics.LastTrackedMissiles}, uncredited {LaunchDiagnostics.UncreditedLaunches})\n" +
+                $"  Pending {Ms(Stage.Pending):F1}ms | Commit {Ms(Stage.Commit):F1}ms | Anchor {Ms(Stage.Anchor):F1}ms (PredictAnchorImpact {Ms(Stage.AnchorPredict):F1}ms) | Release {Ms(Stage.Release):F1}ms (avg sched {_accScheduled * perFrame:F1})\n" +
                 $"    -> FlightTime.Estimate: {Ms(Stage.FlightEstimate):F1}ms over {N(Counter.FlightCalls)} calls ({N(Counter.FlightCalls) * perFrame:F2}/frame)\n" +
                 $"       hits: {N(Counter.FlightHits)} calls, {_accFlightHitMs:F1}ms total @ {avgHitMs:F3}ms avg\n" +
                 $"       misses: {N(Counter.FlightMisses)} calls, {_accFlightMissMs:F1}ms total @ {avgMissMs:F3}ms avg\n" +
@@ -207,7 +212,7 @@ namespace AutoTOT
                 $"main and worker threads, so it exceeds the frame budget it is measured beside), " +
                 $"{usPerKStep:F0}us/1k steps\n" +
                 $"       tiers: integrator {ModelStats.TierCount(ModelStats.Tier.Integrator)}, waypoint {ModelStats.TierCount(ModelStats.Tier.Waypoint)}, maxRange {ModelStats.TierCount(ModelStats.Tier.MaxRangePrecise)}, failed {ModelStats.TierCount(ModelStats.Tier.Failed)}, integrator declined {ModelStats.Stalls}\n" +
-                $"    -> UI (outside tick): {Ms(Stage.UiEstimate):F1}ms over {N(Counter.UiEstimateCalls)} calls\n" +
+                $"    -> UI (outside tick): {Ms(Stage.UiEstimate):F1}ms over {N(Counter.UiEstimateCalls)} calls, launch envelope {Ms(Stage.UiEnvelope):F1}ms\n" +
                 $"    -> GroupDelay: {Ms(Stage.GroupDelay):F1}ms over {N(Counter.GroupDelayCalls)} calls\n" +
                 $"    -> PredictAnchorImpact: FlightEst {Ms(Stage.PredictFlight):F1}ms over {N(Counter.PredictFlightCalls)} calls | GroupDelay {Ms(Stage.PredictGroupDelay):F1}ms over {N(Counter.PredictGroupDelayCalls)} calls\n" +
                 $"  Cache {hitRate:F0}% hit ({totalHits}/{total}) [ToT {FlightTime.TofHits}/{FlightTime.TofMisses} h/m, sz {FlightTime.TofCacheSize}, evTtl {FlightTime.TofEvictionsTtl}, evCap {FlightTime.TofEvictionsCapacity}] [Profile {FlightTime.ProfileHits}/{FlightTime.ProfileMisses} h/m, sz {FlightTime.ProfileCacheSize}, evTtl {FlightTime.ProfileEvictionsTtl}, evCap {FlightTime.ProfileEvictionsCapacity}] [Facts {LauncherFactsSource.CacheHits}/{LauncherFactsSource.CacheMisses} h/m, sz {LauncherFactsSource.CacheSize}]");
@@ -217,7 +222,7 @@ namespace AutoTOT
         {
             _frameCount = 0;
             _accScheduled = 0;
-            _accScanLoopMs = _accFinalizeMs = _accCleanupMs = 0f;
+            _accScanLoopMs = _accEngageStateMs = _accFinalizeMs = _accCleanupMs = _accRetireMs = 0f;
             _accFlightHitMs = _accFlightMissMs = 0d;
             _lastFlightCallMs = 0d;
             _maxTickMs = _maxTickReleaseMs = 0d;
