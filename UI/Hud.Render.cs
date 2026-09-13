@@ -493,14 +493,21 @@ namespace AutoTOT
                     GUI.color = Color.white;
                 }
 
-                // The Run A deadlock: the launcher raises a submerged boat only to the weapon's own
-                // depth ceiling, which can still be below the depth its guidance radar mast needs.
-                // The boat then sits there and never fires. We warn rather than command a depth,
-                // because surfacing a submarine is the player's call, not the mod's.
+                // Every guiding sensor this ammo can use has been shot away. The game's launcher
+                // holds the engage task in ReadyUpWhileWaiting forever when hasFreeWeaponChannel()
+                // finds no operable, on, channel-free sensor (WeaponSystemLauncher.cs:436-450), so
+                // this really is a launch that never happens.
+                //
+                // This is NOT the depth case it was originally written for, and that case does not
+                // exist: no ammunition in the game both requires launcher guidance and declares a
+                // nonzero MaxDepth (0 of 437 screened), so the launcher's own depth branch always
+                // drives a submerged boat to the SURFACE before firing, which is shallower than any
+                // periscope depth. Measured: an Echo II at -200 ft fired both its SS-N-3 102 s after
+                // the order. The ascent is covered by the launch-depth row below.
                 if (rf.SensorUnavailable)
                 {
                     GUI.color = Warn;
-                    GUILayout.Label("     ⚠ guidance radar unavailable : come to periscope depth or this order will not fire", _row);
+                    GUILayout.Label("     ⚠ no guidance radar left : this order will not fire until one is repaired", _row);
                     GUI.color = Color.white;
                 }
 
@@ -519,10 +526,8 @@ namespace AutoTOT
                     bool air = ship is Aircraft || ship is Helicopter;
                     GUI.color = Warn;
                     GUILayout.Label(air
-                        ? $"     ⚠ outside launch altitude : ~{envelopeDelay:0}s to descend into the " +
-                          "launch band, timing estimated; fly in the band for exact coordination"
-                        : $"     ⚠ submerged : ~{envelopeDelay:0}s to reach launch depth, timing " +
-                          "estimated; come to launch depth for exact coordination", _row);
+                        ? $"     ⚠ ~{envelopeDelay:0}s estimated to reach launch altitude"
+                        : $"     ⚠ ~{envelopeDelay:0}s estimated to reach launch depth", _row);
                     GUI.color = Color.white;
                 }
             }
@@ -710,7 +715,8 @@ namespace AutoTOT
             // The breakdown draws a line per shooter, not per order, so it is counted that way too.
             float wanted = _strikeTargetScratch.Count * RowHeight +
                            (_strikeDetail ? StrikeOrderLineCount(_strikeTargetScratch, collected) * StrikeOrderLineH : 0f) + 4f;
-            return RowHeight + Mathf.Min(wanted, Mathf.Max(StrikeListMinH, _listsAvailH * StrikeListShare));
+            return RowHeight +
+                   Mathf.Min(wanted, Mathf.Max(StrikeListMinH, _listsAvailH * StrikeListShare));
         }
 
         // The staged multi-target strike: one group per target, each removable, directly above the
@@ -751,6 +757,11 @@ namespace AutoTOT
                 return;
             }
 
+            // Targets picked out of one formation. These missiles carry their own active seeker and
+            // do not divide a formation up the way a grouped salvo divides a single ship's salvo, so
+            // a round sent at a ship deep in a formation locks onto whatever it detects first. The
+            // player then sees rounds land on ships they did not pick and reads it as a mod fault.
+            // Nothing the coordinator schedules changes it, so the panel says so before the commit.
             // Height the list would like: one row per target, plus its orders when expanded. Capped
             // at a share of the window, so beyond that the list scrolls instead of growing.
             float listH = StrikeSectionHeight() - RowHeight;

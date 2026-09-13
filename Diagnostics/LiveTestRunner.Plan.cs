@@ -39,6 +39,10 @@ namespace AutoTOT
             public bool VerticalProfile;
             public bool Profiling;
             public bool VerifySolve;
+            // Stage the panel on the first shot and hold it on screen for this long instead of
+            // firing, so a screenshot can verify a label the runner cannot read. 0 disables. The
+            // run still ends normally, with no rounds and no corpus captures.
+            public float PanelHoldSec;
             // Delay firing until the geometry is right. See LiveTestRunner.HoldSatisfied.
             public float HoldUntilSec;
             public string HoldShooter;
@@ -126,6 +130,7 @@ namespace AutoTOT
                 else if (key.Equals("VerticalProfile", StringComparison.OrdinalIgnoreCase)) cur.VerticalProfile = ParseB(val, false);
                 else if (key.Equals("Profiling", StringComparison.OrdinalIgnoreCase)) cur.Profiling = ParseB(val, false);
                 else if (key.Equals("VerifySolve", StringComparison.OrdinalIgnoreCase)) cur.VerifySolve = ParseB(val, false);
+                else if (key.Equals("PanelHoldSec", StringComparison.OrdinalIgnoreCase)) cur.PanelHoldSec = ParseF(val, 0f);
                 else if (key.Equals("HoldUntilSec", StringComparison.OrdinalIgnoreCase)) cur.HoldUntilSec = ParseF(val, 0f);
                 else if (key.Equals("HoldUntilRangeNm", StringComparison.OrdinalIgnoreCase))
                 {

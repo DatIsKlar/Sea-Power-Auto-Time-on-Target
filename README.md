@@ -243,6 +243,14 @@ the full flight-time model in [`docs/model/`](docs/model/00-index.md).
   the game-UI path) and led by **half** their ripple span (independent salvos: centers
   the arrivals) or the **full** span (grouped salvos: they converge at the ripple's
   trailing edge).
+- **Orders that share one ship's launch clock are one ripple.** The game fires every
+  round of one launch system on a ship at a single cadence (`SharedLaunchInterval`),
+  across all of that ship's launchers and all of its orders, so two orders from one
+  ship interleave rather than fire side by side. Independent orders on one clock are
+  led by half the ship's whole ripple, less the round-weighted mean of how much shorter
+  each order's flight is than the longest, so every arrival from that ship straddles
+  the time on target. Orders released far enough apart that the clock has gone idle,
+  and grouped salvos, keep their own leads.
 - **Observation anchoring**: the batch's slowest order releases first; its *actual*
   launches are observed and rewrite the shared impact time every tick, so the batch
   locks to the launcher's realized cadence instead of an INI promise.
@@ -354,6 +362,18 @@ read once when the game starts and need a restart: `Enabled`, `AutoModeOnStart` 
   the game refuses a shot at a contact astern and the weapons were never fired
   at all. Ships are unaffected: a hull closing at 20 kn against a missile is
   perfectly holdable.
+- **A missile that climbs vertically scatters its own arrival time by several seconds,
+  and no estimate can predict which way.** The game steers a round toward a point on its
+  route projected ahead by the round's GROUND speed. A round holding 90 degrees of pitch
+  has none, so that point and the one 8 s beyond it collapse onto the missile itself, the
+  guard that would otherwise nose it over at its loft altitude never fires, and it sails
+  through the commanded altitude before anything brings it back. Whether a given round
+  escapes that turns on float rounding in its velocity, amplified by the guidance loop,
+  and it is decided per round. Measured on 36 YJ-20 rounds at 65, 93 and 200 nm: about
+  three quarters overshot their 1190 u loft ceiling to 1425 u and flew 5 to 6 s longer for
+  it. The estimator models the common case, so the rounds that capture cleanly arrive
+  about 5 s early. The weapon has to sustain exactly vertical flight to do this and only
+  the YJ-20 does, for 44 s at a time; no other missile measured reaches 90 degrees at all.
 - **Shots at aircraft arrive a few seconds early.** Coordinating anti-air missiles
   works and the mod does not stop you, but the flight model was built and measured
   against surface targets. Over three shots at an airliner at 6,000 ft, 20,000 ft and
@@ -383,13 +403,18 @@ read once when the game starts and need a restart: `Enabled`, `AutoModeOnStart` 
 - Coordinates **across** orders/missile types, not **within** one salvo: a single
   order of N same-type missiles launches over the launcher's own salvo interval
   (grouped salvos converge at the trailing edge; independent salvos are centered).
+  The same spread applies across orders that share a ship's launch clock: two 2-round
+  Harpoon orders from one Spruance leave 5 s apart over 15 s whichever order each round
+  belongs to, and the mod centres those 15 s on the time on target rather than
+  shortening them.
 - Held orders track the anchor's predicted impact until the anchor's ripple
   completes; after that the impact time is final. A salvo ordered after the anchor
   finalized joins a fresh batch with its own anchor.
 - **Against a ship formation, rounds often strike a ship other than the one you
   picked.** These missiles carry their own active seeker and do not split up the way
   a grouped salvo does, so one sent at a ship deep in a formation locks onto whatever
-  it detects first. Ships at the back of a formation can absorb nothing at all while
+  it detects first. The planner warns when two or more of your targets are in one
+  formation. Ships at the back of a formation can absorb nothing at all while
   the rounds meant for them kill the escorts in front. This is the game's seeker
   behaviour, not something the mod schedules around; the log marks such rounds
   `[RETARGETED -> ...]` so their flight times are not mistaken for estimator error.

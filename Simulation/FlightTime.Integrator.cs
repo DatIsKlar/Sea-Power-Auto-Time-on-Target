@@ -29,7 +29,12 @@ namespace AutoTOT
         private const float MaxLaunchElevationDeg = 90f;
         // An ini angle field left at its default reads as 0. This is the "was it actually set"
         // threshold, well under any angle a real round commands.
-        private const float SetAngleEpsilonDeg = 0.01f;
+        internal const float SetAngleEpsilonDeg = 0.01f;
+        /// <summary>SolveInput.SeekerBrakeRangeU for an ammunition that can never open the drag
+        /// brake window. Negative rather than zero, because zero is the struct's own default and has
+        /// to keep meaning "not known", so an object initializer that omits the field falls back to
+        /// the older altitude gate instead of silently claiming there is no window.</summary>
+        internal const float NoSeekerBrakeWindow = -1f;
         /// <summary>g in knots per second, for converting an ini deceleration in g into knots/s.
         /// Shared with WaypointSim, which computes the same decel from the same two factors.</summary>
         internal const float GravityKnPerMs = 9.8f * 1.94384f;
@@ -153,10 +158,12 @@ namespace AutoTOT
         // and no further.
         private const bool TurnRateGDerate = true;
 
-        // Non-kinematic + SupportsBanking gets a SECOND rotation call per tick: performToTargetRoll
-        // at a hardcoded 60 deg/s on top of the normal RotateTowards (WeaponBase.cs:1773-1776,
-        // :1789-1792). It assigns local euler to WORLD rotation, which is gimbal-degenerate near
-        // vertical, so after a VLS launch that budget lands on PITCH. The two sum.
+        // Non-kinematic + SupportsBanking gets a SECOND rotation call per tick: RollTowardsLevel
+        // takes its banking branch into performToTargetRoll, a hardcoded 60 deg/s RotateTowards on
+        // top of the normal one. Cited by name rather than by line, because the decompile
+        // renumbers on every beta bump. performToTargetRoll assigns local euler to WORLD rotation,
+        // which is gimbal-degenerate near vertical, so after a VLS launch that budget lands on
+        // PITCH. The two sum.
         private const bool BankingAddsRollBudgetToPitch = true;
         private const float BankingRollRateDeg = 60f;   // WeaponBase.cs:1792, hardcoded
 
@@ -195,7 +202,7 @@ namespace AutoTOT
         }
 
         private static LaunchGeometry ResolveLaunchGeometry(
-            ObjectBase unit, AmmunitionParameters ap, Vector3 launchPos, Vector3 targetPos)
+            ObjectBase unit, AmmunitionParameters ap, WeaponSystem launcher, Vector3 launchPos, Vector3 targetPos)
         {
             float launchPitch = -1f;
             float launchPitchIni = -1f;
@@ -204,40 +211,16 @@ namespace AutoTOT
             string railAzTxt = "n/a";
             try
             {
-                var launchers = unit.GetWeaponSystemsForAmmunition(ap._ammunitionFileName);
-                if (launchers != null && launchers.Count > 0)
+                // The launcher is the caller's, picked once by ResolveLauncher, so the attitude and the
+                // launch position describe the same one.
+                if (launcher != null)
                 {
-                    // Fixed mounts for one ammo can point in completely different directions (two
-                    // MK141s, Port and Starboard, 180 deg apart), so `launchers[0]` would read the
-                    // wrong bearing half the time. The round comes off whichever launcher bears:
-                    // pick the one whose horizontal rail direction is closest to the target.
-                    int pick = 0;
-                    if (launchers.Count > 1)
-                    {
-                        Vector3 toTgtH = GameMath.Flatten(targetPos - launchPos);
-                        float best = float.MaxValue;
-                        for (int li = 0; li < launchers.Count; li++)
-                        {
-                            var lw = launchers[li]?._vwp;
-                            Transform lt = null;
-                            var lc = launchers[li]?._containers;
-                            if (lc != null && lc.Count > 0 && lc[0]?._gunObject != null)
-                                lt = lc[0]._gunObject.transform;
-                            else if (lw != null && lw._containerBaseObject != null)
-                                lt = lw._containerBaseObject.transform;
-                            if (lt == null || toTgtH.sqrMagnitude < 1e-6f) continue;
-                            Vector3 lf = GameMath.Flatten(lt.forward);
-                            if (lf.sqrMagnitude < GameMath.MinFlatSqrMagnitude) continue;   // vertical: no bearing
-                            float off = Vector3.Angle(lf, toTgtH);
-                            if (off < best) { best = off; pick = li; }
-                        }
-                    }
-                    var vwp = launchers[pick]?._vwp;
+                    var vwp = launcher._vwp;
                     if (vwp != null && vwp._fixVerticalLaunchAngleForLauncher)
                         launchPitchIni = vwp._fixVerticalLaunchAngle + vwp._additionalFixVerticalLaunchAngle;
                     launchPitch = launchPitchIni;
 
-                    var ws = launchers[pick];
+                    var ws = launcher;
                     // The object the game actually elevates: gunObject per container, or the
                     // shared container base when they are joined (WeaponSystem.alignToTarget
                     // :1379-1381). gunObj is populated either way, so prefer it.
@@ -352,6 +335,82 @@ namespace AutoTOT
         }
 
         /// <summary>
+        /// The launcher the engage task will take for this shot, or null when the unit has none for
+        /// this ammunition. Read by both the launch position and the launch attitude.
+        /// </summary>
+        private static WeaponSystem ResolveLauncher(ObjectBase unit, AmmunitionParameters ap, Vector3 targetPos)
+        {
+            try
+            {
+                // Which launcher the round leaves from, asked the way the GAME asks it.
+                //
+                // Fixed mounts for one ammo can point in completely different directions (two
+                // MK141s, Port and Starboard, 180 deg apart), and the round flies off the canister
+                // it was in, so reading the wrong one costs the whole turn between them: a Spruance
+                // Harpoon was modelled 180 deg out on nine rounds of ten and one of them scored
+                // +5.28 s against +0.95 for its sibling.
+                //
+                // WeaponSelector is the game's own ordering and it is by FIRING ARC, not by rail
+                // bearing: preferred arc first in declaration order, then firing arc, then nearest
+                // arc edge, then the rest. An arc routinely covers a bearing its canisters point
+                // 120 deg away from, which is exactly why comparing rail.forward to the target got
+                // it wrong. Element 0 is the launcher the engage task takes.
+                var launchers = WeaponSelector.GetWeaponSystemsForAmmunition(
+                    unit, targetPos, ap._ammunitionFileName, null);
+                // Null or empty means every launcher was filtered out (all inoperable, offline, out
+                // of ammo, or _engageOnlyInsideArc with the target outside). Fall back to the raw
+                // list so a shot still gets an elevation rather than none.
+                if (launchers == null || launchers.Count == 0)
+                    launchers = unit.GetWeaponSystemsForAmmunition(ap._ammunitionFileName);
+                return launchers != null && launchers.Count > 0 ? launchers[0] : null;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// The mean world position of every cell of <paramref name="launcher"/>. A round spawns as a
+        /// child of its container's gun object at that container's attachment offset
+        /// (decompiled-beta-new <c>WeaponContainer.createAmmunitionObjectInstance</c>), measured in game
+        /// at 0.00 m on every ship-launched round. The mean rather than the next cell: it sat within
+        /// 0.44 to 1.71 m of the spawn, a few milliseconds of flight, and needs no model of the order
+        /// the cells fire in. False when the launcher has no cells, as an aircraft hardpoint does.
+        /// Main thread only: reads transforms.
+        /// </summary>
+        internal static bool LauncherCellMean(WeaponSystem launcher, out Vector3 mean, out int cells)
+        {
+            mean = Vector3.zero;
+            cells = 0;
+            if (launcher?._containers == null) return false;
+            try
+            {
+                Vector3 sum = Vector3.zero;
+                foreach (WeaponContainer container in launcher._containers)
+                {
+                    if (container == null || container._gunObject == null || container._attachmentPositions == null)
+                        continue;
+                    Transform gun = container._gunObject.transform;
+                    foreach (Vector3 attachment in container._attachmentPositions)
+                    {
+                        sum += gun.TransformPoint(attachment);
+                        cells++;
+                    }
+                }
+                if (cells == 0) return false;
+                mean = sum / cells;
+                return true;
+            }
+            catch
+            {
+                mean = Vector3.zero;
+                cells = 0;
+                return false;
+            }
+        }
+
+        /// <summary>
         /// Where the final and terminal flight phases begin, and the altitudes and descent angles
         /// they command. Depends only on the ammunition's own parameters.
         /// </summary>
@@ -406,6 +465,20 @@ namespace AutoTOT
                 : (ap._finalFlightPhaseAltUnity > 0f ? ap._finalFlightPhaseAltUnity
                    : (ap._seaSkimmingAltUnity > 0f ? ap._seaSkimmingAltUnity : 0f));
             float termDist = ap._terminalApproachDist;
+            // A TerminalLoft weapon has NO terminal-approach leg. `CreateWaypointConfigs` guards
+            // that waypoint with `ap._terminalApproachDist > 0f && !ap._terminalLoft`
+            // (Missile.cs:2228), and the same guard rejects the terminal dive (:2158) and every
+            // runtime terminal branch (MissileSimulator.cs:601, :745, :1231). What such a round
+            // actually flies is the LOFT leg, which for kinematic ammunition is a KappaLoft whose
+            // EndHeight is OnLineToTarget: a direct run at the target, not a climb to a ceiling.
+            //
+            // Building the leg anyway put the terminal endpoint at the round's cruise altitude,
+            // and for usn_rim-162h that is 272 u (60,000 ft) against a terminal distance of
+            // 275 u. A 5 nm shot therefore starts INSIDE the leg and is commanded to climb for
+            // its whole flight: modelled 19.9 s against a recorded 9.0 s flown flat at 30 m.
+            // Exposure scales with cruise altitude over launch range, which is why usn_rim-66b
+            // declares the same flag and is unaffected at 13.6 u.
+            if (isTerminalLoft) termDist = 0f;
             if (SearchTimeTerminalOnset && ap._searchForTargetsTime > 0f)
             {
                 // Distance the missile still covers at cruise while the seeker searches.
@@ -437,8 +510,17 @@ namespace AutoTOT
             float termAlt = terminalLinear
                 ? ResolveKinematicTerminalEndAlt(ap, targetAlt0)
                 : (ap._terminalAltUnity > 0f ? ap._terminalAltUnity : finalAlt);
-            float descentDeg = ap._finalFlightPhaseMaxAngle > SetAngleEpsilonDeg ? ap._finalFlightPhaseMaxAngle
-                             : (ap._seaSkimmingMaxDescentAngle > SetAngleEpsilonDeg ? ap._seaSkimmingMaxDescentAngle : DefaultDescentDeg);
+            // _finalFlightPhaseMaxAngle constrains the final-flight waypoint, and
+            // Missile.CreateWaypointConfigs builds that leg only when
+            // _finalFlightPhaseDistToTargetUnity is positive. With no such leg the descent to
+            // cruise altitude rides the sea-skimming leg instead, whose constraint is
+            // _seaSkimmingMaxDescentAngle. Preferring the final-flight angle unconditionally flew
+            // usn_agm-84d's descent at 30 degrees against a recorded, flat -45.00.
+            float seaSkimDescentDeg = ap._seaSkimmingMaxDescentAngle > SetAngleEpsilonDeg
+                                    ? ap._seaSkimmingMaxDescentAngle : DefaultDescentDeg;
+            float descentDeg = finalFlightDist > 0f && ap._finalFlightPhaseMaxAngle > SetAngleEpsilonDeg
+                             ? ap._finalFlightPhaseMaxAngle
+                             : seaSkimDescentDeg;
             float descentOnsetDeg = Mathf.Max(descentDeg,
                 Mathf.Max(ap._finalFlightPhaseMaxAngle, ap._seaSkimmingMaxDescentAngle));
             return new StageProfile(finalDist, termDist, termAlt, descentDeg, descentOnsetDeg,
@@ -476,6 +558,43 @@ namespace AutoTOT
         /// the observed stage change: ss-n-3b 1378 u predicted against 1381 u observed, ss-n-3
         /// 595 u against 595 u.</para>
         /// </summary>
+        /// <summary>
+        /// The seeker range that opens and closes the drag brake, in Unity units, or 0 when no such
+        /// window can exist for this ammunition.
+        ///
+        /// <para>The live mover hands <c>CalculateDrag</c> the CurrentTarget's altitude when there
+        /// is one and the round's OWN altitude when there is not (<c>Missile.cs:3170-3175</c>). That
+        /// altitude's air density sits in a denominator floored at 0.001, so the choice is worth up
+        /// to 800 times on the lift-induced term. <c>CurrentTarget</c> is null in exactly one case
+        /// (<c>WeaponBase.cs:362</c>): the seeker is on, it holds no echo, and the ammunition
+        /// declares no <c>TargetMemory</c>.</para>
+        ///
+        /// <para>The window exists because the two tests use different distances. Activation is
+        /// <c>ShouldActivateMissileSeeker</c>, called from <c>MaintainHeight.takeAction</c> on a
+        /// vector the state has already FLATTENED to the missile's own altitude. Detection is
+        /// <c>ActiveRadarSeeker.isInRange</c>, a plain 3-D magnitude. A round far above its target
+        /// therefore switches its seeker on long before it can see anything, and brakes in between.
+        /// A sea skimmer crosses both at once and never brakes at all.</para>
+        ///
+        /// <para>Measured on 12 <c>plan_yj-20</c> rounds over two launch ranges against a declared
+        /// 716.5 u: the window opens at flat 708.7 to 717.0 u and closes at slant 709.4 to 715.4 u.
+        /// Both edges are this one field. See <c>docs/plans/open/yj-20-motor-sensitivity.md</c>.</para>
+        /// </summary>
+        private static float ResolveSeekerBrakeRange(AmmunitionParameters ap)
+        {
+            // WeaponBase.cs:387. Target memory falls through to the intended target, so
+            // CurrentTarget is never null and the game never brakes.
+            if (ap._targetMemory) return NoSeekerBrakeWindow;
+            // Missile.cs:382. Activation lives inside this branch; without it the seeker comes up
+            // somewhere else, by which time the round is close enough to see and the window is
+            // already shut. usn_agm-84d takes this exit and was measured taking it.
+            if (!ap._midCourseCorrection.AllowsLauncherGuidance) return NoSeekerBrakeWindow;
+            // WeaponBase.cs:374. An unguided seeker returns the intended target unconditionally.
+            if (ap._guidanceType == AmmunitionParameters.GuidanceType.None) return NoSeekerBrakeWindow;
+            float range = Mathf.Max(ap._seekerActiveRange, ap._seekerPassiveRange);
+            return range > 0f ? range : NoSeekerBrakeWindow;
+        }
+
         /// <returns>Flat distance to target in Unity units, or 0 when no hold applies.</returns>
         private static float ResolveLoftSpeedHoldDist(AmmunitionParameters ap)
         {
@@ -584,8 +703,9 @@ namespace AutoTOT
             return target is Submarine;
         }
 
-        /// <summary>Compass yaw of a flattened heading vector, in Unity's euler-y convention.</summary>
-        private static float YawOf(Vector3 h) => Mathf.Atan2(h.x, h.z) * Mathf.Rad2Deg;
+        /// <summary>Compass yaw of a flattened heading vector, in Unity's euler-y convention. Internal
+        /// so the lab's scorer rebuilds a launch attitude with this function rather than a copy.</summary>
+        internal static float YawOf(Vector3 h) => Mathf.Atan2(h.x, h.z) * Mathf.Rad2Deg;
 
         internal static void ClearRailLog()
         { _railLogged.Clear(); _railLoggedAz.Clear(); _railLogCount.Clear(); }
@@ -630,14 +750,19 @@ namespace AutoTOT
         internal static float IntegratedEndTime(ObjectBase unit, AmmunitionParameters ap, ObjectBase target)
             => IntegratedEndTimeCore(unit, ap, target, out _, emitDiag: false);
 
+        /// <summary>
+        /// The traced integration behind `int-phases`, `sim-launch` and `sim-track`, from the round's
+        /// recorded <paramref name="launch"/> state so the trace describes the rail it actually flew,
+        /// the same input its at-launch estimate and its capture now use.
+        /// </summary>
         internal static bool TryIntegratedPhaseDiag(ObjectBase unit, string ammoId, ObjectBase target,
-            out float interceptTime, out IntegratedPhases phases)
+            in LaunchState launch, out float interceptTime, out IntegratedPhases phases)
         {
             interceptTime = -1f; phases = default;
             if (unit == null || target == null) return false;
             AmmunitionParameters ap = unit.getAmmunitionByName(ammoId)?._ap;
             if (ap == null) return false;
-            interceptTime = IntegratedEndTimeCore(unit, ap, target, out phases, emitDiag: true);
+            interceptTime = IntegratedEndTimeCore(unit, ap, target, out phases, emitDiag: true, launch);
             return phases.Valid;
         }
 
@@ -671,19 +796,28 @@ namespace AutoTOT
                 $"Flight-time estimates for it may be several seconds off.");
         }
 
-        internal static string DumpInputFor(ObjectBase unit, string ammoId, ObjectBase target)
+        /// <summary>
+        /// Capture the solve input for a round that has just left the rail, from its recorded
+        /// <paramref name="launch"/> state, so the stored <c>LaunchHeading</c> is the rail the round
+        /// actually flew rather than the one the live pick names. The two differ when a ship has two
+        /// fixed launchers for one ammunition and the game hands a round the other one after the
+        /// solve; see docs/plans/done/2026-09-13-launcher-pick-by-arc.md.
+        /// </summary>
+        internal static string DumpInputFor(ObjectBase unit, string ammoId, ObjectBase target,
+                                            in LaunchState launch)
         {
             try
             {
                 if (!TryKey(unit, ammoId, target, out AmmunitionParameters ap, out _)) return null;
                 // emitDiag false: sim-launch and sim-track are emitted by the estimate this round
                 // already ran, and repeating them here would double every traced line.
-                if (!TryBuildSolveInput(unit, ap, target, out SolveInput input, out _, false, default))
+                if (!TryBuildSolveInput(unit, ap, target, out SolveInput input, out _, false, launch))
                     return null;
                 // The parity contract with tools/lab: the answer this build's step loop gives for
                 // exactly this input, at the production step. The lab replays the same input and
-                // must reproduce it. EstAtLaunch cannot serve: it comes through the estimate cache,
-                // so it may belong to an earlier solve from a different position.
+                // must reproduce it. EstAtLaunch now comes from the same launch state with no cache
+                // between, so the two agree wherever the integrator ran, but EstAtLaunch falls back to
+                // the live tiers where it declines and this value does not.
                 IntegratedPhases parityPhases = default;
                 parityPhases.DiveStartU = -1f;
                 // Solve ends in ModelStats.LoopDone, which times against this thread's loop stamp.
@@ -818,13 +952,25 @@ namespace AutoTOT
                 bool nonKin = ap.Kinematics == AmmunitionParameters.KinematicsLevel.None;
                 if (!nonKin && _dragMethod == null) return false;
 
-                Vector3 launchPos = launch.Valid ? launch.PosU : unit.transform.position;
                 // The override is set only by the retargeting diagnostic; see LaunchState.TargetPosU.
                 // Velocity still comes from the live target, which is right: a ship's course holds
                 // far better over a flight than its position does.
                 Vector3 targetPos = (launch.Valid && launch.TargetPosU != Vector3.zero)
                                   ? launch.TargetPosU : target.transform.position;
-                Vector3 targetVel = target._velocityVecInUnity;
+                // The launcher the engage task will take, picked once for both the launch position
+                // and the launch attitude below.
+                WeaponSystem launcher = ResolveLauncher(unit, ap, targetPos);
+                // A ship's round leaves from one of its launcher's cells, not from the ship's centre:
+                // 37 to 48 m away on a vertical-launch ship, 16 m for a Harpoon canister. A round already
+                // in flight passes its own position in `launch`; a unit without cells (an aircraft
+                // hardpoint) keeps its own position.
+                Vector3 launchPos = launch.Valid ? launch.PosU : unit.transform.position;
+                int launchCells = 0;
+                if (!launch.Valid && LauncherCellMean(launcher, out Vector3 cellMean, out launchCells))
+                    launchPos = cellMean;
+                // What the ship will cover, not what it reports; see TargetMapVelocity. The same
+                // rounded value feeds the loft search below, so both halves of the setup agree.
+                Vector3 targetVel = TargetMapVelocity(target, out float targetMoveStep);
                 bool isAir = unit.IsAirUnit;
 
                 ApplyEvasiveBoost(ap, target, launchPos, targetPos, ref targetVel);
@@ -832,7 +978,9 @@ namespace AutoTOT
                 float dragFactor = ap.GetDragFactor(isAir);
                 float startVelKnots = Mathf.Max(launch.Valid ? launch.VelKnots
                                                              : unit._velocityInKnots, 0f);
-                float maxFlight = ap._maxFlightTime > 0f ? ap._maxFlightTime : MaxFlightTimeFallback;
+                float maxFlight = Mathf.Min(
+                    ap._maxFlightTime > 0f ? ap._maxFlightTime : MaxFlightTimeFallback,
+                    SolveLoopCeilingSim);
                 float targetAlt0 = Mathf.Max(targetPos.y, 0f);
                 float flatDistTotal = GameMath.FlatDistance(targetPos, launchPos);
 
@@ -895,7 +1043,7 @@ namespace AutoTOT
                 float toBearingTurnRate = ResolveToBearingTurnRate(ap);
                 float turnDerateThresholdKn = ResolveTurnDerateThreshold(ap, turnRateBase);
 
-                LaunchGeometry geom = ResolveLaunchGeometry(unit, ap, launchPos, targetPos);
+                LaunchGeometry geom = ResolveLaunchGeometry(unit, ap, launcher, launchPos, targetPos);
                 float launchPitch = geom.Pitch;
                 float launchPitchIni = geom.PitchIni;
                 Transform rail = geom.Rail;
@@ -1029,6 +1177,9 @@ namespace AutoTOT
                         // Launch range, so each shot self-records its geometry. Two ranges per shot
                         // cannot falsify a fixed-offset-plus-drift decomposition; three can.
                         $", range {flatDistTotal:0}u ({flatDistTotal * GameUnits.MetersPerUnity / 1000f:0.0}km)" +
+                        // Where the solve started: the launcher's cell mean, a round's own recorded
+                        // position, or the unit's centre when the launcher has no cells.
+                        $", launchFrom {(launch.Valid ? "launch state" : launchCells > 0 ? $"{launchCells} cells, {(launchPos - unit.transform.position).magnitude * GameUnits.MetersPerUnity:0.0}m from centre" : "unit centre")}" +
                         // Both values, so the ini default and the rail's real orientation can be
                         // compared directly on one line.
                         $", iniPitch {(launchPitchIni >= 0f ? launchPitchIni.ToString("0.0") + "°" : "n/a")}" +
@@ -1082,71 +1233,76 @@ namespace AutoTOT
                 // The loop runs as a pure function of this snapshot. Building it here keeps every
                 // Unity read and every mutable-game-state read on the main thread, which is what
                 // makes the loop safe to run elsewhere. See FlightTime.Solve.cs.
-                input = new SolveInput(
-                    altNodes: altNodes,
-                    ammoLabel: ammoLabel,
-                    boostClimbDeg: boostClimbDeg,
-                    decelRate: decelRate,
-                    descentDeg: descentDeg,
-                    descentOnsetDeg: descentOnsetDeg,
-                    dragFactor: dragFactor,
-                    cruiseAlt: cruiseAlt,
-                    finalFlightAlt: finalFlightAlt,
-                    finalFlightDist: finalFlightDist,
-                    finalDist: finalDist,
-                    flatDistTotal: flatDistTotal,
-                    initialPhaseDur: initialPhaseDur,
-                    performsSlightBallisticInitialFlight: ap._performsSlightBallisticInitialFlight,
-                    isAir: isAir,
-                    isHighBallisticLofter: isHighBallisticLofter,
-                    isTerminalLoft: isTerminalLoft,
-                    launchPitch: launchPitch,
-                    configuredLoftAlt: configuredLoftAlt,
-                    loftAlt: loftAlt,
-                    loftEntryDist: loftEntryDist,
-                    loftSpeedHoldDist: loftSpeedHoldDist,
-                    loftVelKn: loftVelKn,
-                    ballisticLoft: ap._ballisticLoft,
-                    loftClimbTan: loftClimbTan,
-                    loftDescentTan: loftDescentTan,
-                    launchAltU: launchPos.y,
-                    lofting: lofting,
-                    maxFlight: maxFlight,
-                    maxVelKn: maxVelKn,
-                    nonKin: nonKin,
-                    targetAlt0: targetAlt0,
-                    targetPos: targetPos,
-                    targetVel: targetVel,
-                    terminalLinear: stage.TerminalLinear,
-                    termAlt: termAlt,
-                    termDist: termDist,
-                    termVelKn: termVelKn,
-                    terminalPopUpEnabled: popUpEnabled,
-                    terminalPopUpDist: popUpDist,
-                    terminalPopUpHeight: Mathf.Max(ap._terminalPopUpHeight, 0f),
-                    terminalPopUpAngle: Mathf.Clamp(ap._terminalPopUpAngle, 0.01f, 89f),
-                    terminalVerticalTurnRate: Mathf.Max(ap._terminalVerticalTurnRate, 0f),
-                    trackDiag: trackDiag,
-                    turnRate: turnRate,
-                    toBearingTurnRate: toBearingTurnRate,
-                    turnRateBase: turnRateBase,
-                    turnDerateThresholdKn: turnDerateThresholdKn,
-                    altLatchPhase: altLatchPhase,
-                    altLatched: altLatched,
-                    att: att,
-                    launchHeading: launchHeading,
-                    nextSample: nextSample,
-                    pos: pos,
-                    prevAltErr: prevAltErr,
-                    prevFlat: prevFlat,
-                    prevPitch: prevPitch,
-                    t: t,
-                    tlGliding: tlGliding,
-                    kappaEndFlat: kappaEndFlat,
-                    kappaProgress: 0f,
-                    velKnots: velKnots,
-                    legs: legs,
-                    groupLeader: groupLeader);
+                input = new SolveInput
+                {
+                    AltNodes = altNodes,
+                    AmmoLabel = ammoLabel,
+                    BoostClimbDeg = boostClimbDeg,
+                    DecelRate = decelRate,
+                    DescentDeg = descentDeg,
+                    DescentOnsetDeg = descentOnsetDeg,
+                    DragFactor = dragFactor,
+                    CruiseAlt = cruiseAlt,
+                    FinalFlightAlt = finalFlightAlt,
+                    FinalFlightDist = finalFlightDist,
+                    FinalDist = finalDist,
+                    FlatDistTotal = flatDistTotal,
+                    InitialPhaseDur = initialPhaseDur,
+                    PerformsSlightBallisticInitialFlight = ap._performsSlightBallisticInitialFlight,
+                    IsAir = isAir,
+                    IsHighBallisticLofter = isHighBallisticLofter,
+                    IsTerminalLoft = isTerminalLoft,
+                    LaunchPitch = launchPitch,
+                    ConfiguredLoftAlt = configuredLoftAlt,
+                    LoftAlt = loftAlt,
+                    LoftEntryDist = loftEntryDist,
+                    LoftSpeedHoldDist = loftSpeedHoldDist,
+                    LoftVelKn = loftVelKn,
+                    BallisticLoft = ap._ballisticLoft,
+                    LoftClimbTan = loftClimbTan,
+                    LoftDescentTan = loftDescentTan,
+                    LaunchAltU = launchPos.y,
+                    Lofting = lofting,
+                    SeekerBrakeRangeU = ResolveSeekerBrakeRange(ap),
+                    MaxFlight = maxFlight,
+                    MaxVelKn = maxVelKn,
+                    NonKin = nonKin,
+                    TargetAlt0 = targetAlt0,
+                    TargetPos = targetPos,
+                    TargetVel = targetVel,
+                    TargetVelReported = target._velocityVecInUnity,
+                    TargetMoveStep = targetMoveStep,
+                    TerminalLinear = stage.TerminalLinear,
+                    TermAlt = termAlt,
+                    TermDist = termDist,
+                    TermVelKn = termVelKn,
+                    TerminalPopUpEnabled = popUpEnabled,
+                    TerminalPopUpDist = popUpDist,
+                    TerminalPopUpHeight = Mathf.Max(ap._terminalPopUpHeight, 0f),
+                    TerminalPopUpAngle = Mathf.Clamp(ap._terminalPopUpAngle, 0.01f, 89f),
+                    TerminalVerticalTurnRate = Mathf.Max(ap._terminalVerticalTurnRate, 0f),
+                    TrackDiag = trackDiag,
+                    TurnRate = turnRate,
+                    ToBearingTurnRate = toBearingTurnRate,
+                    TurnRateBase = turnRateBase,
+                    TurnDerateThresholdKn = turnDerateThresholdKn,
+                    AltLatchPhase = altLatchPhase,
+                    AltLatched = altLatched,
+                    Att = att,
+                    LaunchHeading = launchHeading,
+                    NextSample = nextSample,
+                    Pos = pos,
+                    PrevAltErr = prevAltErr,
+                    PrevFlat = prevFlat,
+                    PrevPitch = prevPitch,
+                    T = t,
+                    TlGliding = tlGliding,
+                    KappaEndFlat = kappaEndFlat,
+                    KappaProgress = 0f,
+                    VelKnots = velKnots,
+                    Legs = legs,
+                    GroupLeader = groupLeader
+                };
 
                 return true;
             }

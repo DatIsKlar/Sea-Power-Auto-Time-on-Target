@@ -34,6 +34,13 @@ Score the whole corpus against what the rounds actually flew:
 
     dotnet run -- score <corpus-dir> [step ...]
 
+`AUTOTOT_SCORE_CSV=<file>` writes one keyed row per round beside the table:
+`key,label,actualFlight,offlineEst,offGap,motor,grouped,schema,flownRail,scored,formation`, where
+`flownRail` is 1 for a round replayed on the rail it flew (see "launch rail" below). The table prints a row per round but no
+key, so a round cannot be joined back to its capture and correlated against what it flew. That join
+is what a question like "why do this family's rounds disagree with each other" needs, as opposed to
+"how far is this family from the game", which the table already answers.
+
 Merge freshly captured rounds into the stored corpus, and write its index:
 
     dotnet run -- import <capture-dir> [corpus-dir]
@@ -43,6 +50,15 @@ Replay one round with the full step trace, which is how a disagreement gets loca
 Its first line is the waypoint route the replay flies, or `none` when the capture predates it:
 
     dotnet run -- trace <solveinput-file> [step]
+
+Measure how much the model's answer moves with the per-round thrust roll, for one round:
+
+    dotnet run -- motor <solveinput-file> [scale ...]
+
+`trace` takes `--motor <value>` to replay at a multiplier of your choosing rather than the one the
+round flew. Two traces of one input at two multipliers isolate the model's response to thrust from
+every other difference between two rounds, which a live salvo cannot do: its rounds differ in
+geometry as well as in motor.
 
 Put the round's recorded altitude beside the model's, sample for sample:
 
@@ -87,6 +103,43 @@ result). The field order is written into the same file as `GuardTrackFields`. Ve
 in Unity units, and the last field of each line is `cadence`, `change` or `before`. It is also
 diagnostic only.
 
+`StepChanges` on the result is `t:step` for every physics step the round flew under, starting with
+the step it launched on. `MinFlownStep` and `MaxFlownStep` say only that a step change happened
+somewhere; this says when. That matters because a step change is the largest single reason the
+corpus discards a round, 59 of 94 exclusions, and a change at t+0.3 while the frame rate is still
+settling after a mission load is a different fact about the round from one at apex under load.
+The scoring replay flies it. A round whose step moved is no longer excluded: `offGap@step` for such
+a round is a replay at the recorded timeline rather than at one averaged step, and its reported
+flown step is the time-weighted mean. A capture from before this field existed has no timeline and
+is still excluded, because for it no single step describes the flight.
+
+### motor
+
+The scorer replays each round with the motor multiplier it flew, on the grounds that this removes
+the per-round thrust roll. That only holds while the model's response to thrust matches the game's.
+`motor` sweeps one captured input across a set of multipliers and reports
+`d(estimate)/d(motor)` in seconds per unit and as a multiple of the round's flight time, which is
+the form the live measurement comes in. The game's figure sits near 1.15 times the flight on every
+family measured so far; a model figure far from that for the same weapon is a defect in that
+weapon's thrust or drag handling, not in the motor term. See
+`docs/plans/open/yj-20-motor-sensitivity.md`.
+
+### launch rail
+
+The scorer also replays a round that left a different fixed launcher from the one its capture
+modelled on the rail it actually flew, on the same footing as the motor multiplier: which canister a
+round leaves from is decided by the game after the solve. A ship with two opposed launchers for one
+ammunition can hand a round the other canister, and captures made before `e90c13f` recorded the
+canister the solve named, 180 degrees out on a Spruance Harpoon and worth 5 to 6 s of false gap.
+
+The flown heading is the first sample of the round's own `FlightTrack`, and the opening attitude is
+rebuilt from it with the mod's `FlightTime.YawOf`, which is what the mod now records at capture;
+`selftest` checks that rebuild against every recorded attitude. It applies only above a 90 degree
+disagreement. Over the corpus the two headings either agree to 0.05 degrees, differ by a steady 2.5
+degrees on `wp_ss-n-3`, or differ by 180, so the threshold selects the different-launcher rounds and
+nothing else. `score` lists every round it replayed this way, `AUTOTOT_NO_FLOWN_HEADING=1` turns it
+off, and `parity` never substitutes, because it checks the input as it was solved.
+
 `rich-flight-v3` inputs add the last raw fields the waypoint route needs (`Ammo.TerminalDiveDistance`,
 `Ammo.MaxLoftAltUnity`, `Ammo.GroupLeaderAltUnity`), the route the mod built (`WaypointLegs`) and
 `GroupLeader`. The replay rebuilds the route from the raw fields and prints a `route mismatch` warning
@@ -122,9 +175,10 @@ and reports any round that differs by more than 0.0005 s.
 
 Only captures made by a build compiled from the lab's current source can match; a capture from an
 older build is replaying different code. `--launch-estimate` falls back to `EstAtLaunch` for
-captures without `InGameEstimate`. That value reaches the tracker through the estimate cache, so it
-can belong to an earlier solve from a slightly different position: a difference of one or two
-0.1 s steps against it says nothing about the lab.
+captures without `InGameEstimate`. On the builds that made those captures the value reached the
+tracker through the estimate cache, so it can belong to an earlier solve from a slightly different
+position: a difference of one or two 0.1 s steps against it says nothing about the lab. Current
+builds solve it from the round's own launch state with no cache between.
 
 ### climb
 
@@ -133,7 +187,9 @@ to hold. If the recorded climb is still rising when the round turns over, it ran
 the climb is rate-limited by something the model does not apply. If it flattens early and holds, it
 was commanded lower than the model thinks. Those are different defects with different fixes, and
 `climb` is what tells them apart. It needs the `Track` series, so a round captured before that was
-recorded has to be re-flown.
+recorded has to be re-flown. It prints model speed beside recorded speed as well as altitude,
+because a timing difference is either a path difference or a speed difference and the altitude
+columns alone cannot say which.
 
 With no steps given both sweep 0.1 (production), 0.05, 0.0333333 and 0.0166667 (the game's own 30 Hz
 and 60 Hz physics steps) and 0.005.
@@ -170,9 +226,11 @@ Four kinds of round are excluded, because each is unfair to score rather than me
   another;
 - **shared input** - several rounds of one ammunition were solved from a single input, so which
   round it belonged to is ambiguous;
-- **physics step changed during flight** - no single offline step can reproduce a flight that
-  switched, for example, from 60 Hz to 30 Hz. A steady enlarged step remains scoreable because the
-  lab replays that exact recorded step.
+- **physics step changed during flight AND the capture predates `StepChanges`** - without the
+  timeline no single offline step reproduces a flight that switched, for example, from 60 Hz to
+  30 Hz. A steady enlarged step has always been scoreable because the lab replays that exact step,
+  and since the timeline exists a round that changed step is scoreable too: the replay flies the
+  changes at the times they happened.
 
 A round whose target manoeuvred hard after launch is worth excluding by hand too. `SolveInput`
 freezes the target's velocity at launch, so no launch-time estimate could have predicted it.

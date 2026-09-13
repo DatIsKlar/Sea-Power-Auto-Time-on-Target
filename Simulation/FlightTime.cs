@@ -19,6 +19,102 @@ namespace AutoTOT
         // declares no _maxFlightTime.
         internal const float EvasiveBoostFraction = 0.8f;
         internal const float MaxFlightTimeFallback = 600f;
+        /// Hard ceiling on the integration loop, for ammunition that declares MaxFlightTime as
+        /// float.MaxValue (most of them). The loop's other exit is the closest-approach test, and a
+        /// round that never closes and never recedes would otherwise spin: past t = 2^24 * dt a
+        /// float t stops advancing at all. Four hours is well clear of anything physical. The
+        /// longest-ranged ammunition on disk, plan_cj-20, needs 11,077 s to fly its 1600 nm at its
+        /// own cruise speed, and the longest flight ever recorded in the corpus is 1,239 s.
+        internal const float SolveLoopCeilingSim = 4f * 3600f;
+
+        /// <summary>
+        /// The target velocity every estimator reads: the game's <c>_velocityVecInUnity</c>, with a
+        /// surface ship's float32 rounding applied (<see cref="GameMath.TranslateRoundedVelocity"/>).
+        ///
+        /// <c>_velocityVecInUnity</c> is what <c>Vessel.applyMainThrust</c> hands <c>Translate</c>
+        /// each tick, not what the transform does with it. A slow ship away from the map origin
+        /// realises a different rate, roughly 0.87 to 1.15 of its speed at a few thousand units, and
+        /// over a 500 s flight that moves the true aim point by more than 200 m. Only a
+        /// <c>Vessel</c> is rounded: its per-tick move is exactly
+        /// <c>_velocityVecInUnity * fixedDeltaTime</c>. A submarine's ordinary thrust path does not
+        /// Translate, and an aircraft's per-tick move is large enough that rounding changes it by well
+        /// under one percent.
+        ///
+        /// <paramref name="step"/> is the physics step the rounding used, from
+        /// <see cref="PredictedPhysicsStep"/>, and 0 when none was applied.
+        /// Main thread only: reads the target's transform and the game's step.
+        /// </summary>
+        internal static Vector3 TargetMapVelocity(ObjectBase target, out float step)
+        {
+            Vector3 reported = target._velocityVecInUnity;
+            step = 0f;
+            if (!(target is Vessel)) return reported;
+            step = PredictedPhysicsStep();
+            return GameMath.TranslateRoundedVelocity(target.transform.position, reported, step);
+        }
+
+        /// <inheritdoc cref="TargetMapVelocity(ObjectBase, out float)"/>
+        internal static Vector3 TargetMapVelocity(ObjectBase target) => TargetMapVelocity(target, out _);
+
+        /// <summary>The two values <c>GameTime.SetAdaptiveFixedDeltaTime</c> gives
+        /// <c>Time.fixedDeltaTime</c>: 1/30 s while the frame rate is under 30, 1/60 s once it is
+        /// over 40.</summary>
+        internal const float BaseStep60Hz = 0.0166667f, BaseStep30Hz = 0.0333333f;
+
+        /// <summary>Time constant of the step history, and the history needed before it is trusted
+        /// over the 1/60 s default. See <see cref="PredictedPhysicsStep"/>.</summary>
+        private const float StepHistoryTauSim = 60f, StepHistoryMinSim = 20f;
+
+        private static float _stepSim30, _stepSim60, _stepHistorySim, _stepLastSim = -1f;
+
+        /// <summary>
+        /// Feeds <see cref="PredictedPhysicsStep"/>: sim seconds spent at each base step, decayed with a
+        /// one minute time constant. Called once per coordinator tick, whether or not a strike is
+        /// pending. Main thread only.
+        /// </summary>
+        internal static void ObservePhysicsStep(float simNow)
+        {
+            if (_stepLastSim < 0f || simNow < _stepLastSim) { _stepLastSim = simNow; return; }
+            float dt = simNow - _stepLastSim;
+            _stepLastSim = simNow;
+            if (dt <= 0f) return;
+            float decay = Mathf.Exp(-dt / StepHistoryTauSim);
+            _stepSim30 *= decay;
+            _stepSim60 *= decay;
+            if (Time.fixedDeltaTime > (BaseStep60Hz + BaseStep30Hz) * 0.5f) _stepSim30 += dt;
+            else _stepSim60 += dt;
+            _stepHistorySim += dt;
+        }
+
+        /// <summary>Forget the step history, on leaving a mission.</summary>
+        internal static void ResetPhysicsStep()
+        {
+            _stepSim30 = _stepSim60 = _stepHistorySim = 0f;
+            _stepLastSim = -1f;
+        }
+
+        /// <summary>
+        /// The physics step a ship will move at over a flight, for
+        /// <see cref="TargetMapVelocity(ObjectBase, out float)"/>.
+        ///
+        /// Not the live step. The game drops to 1/30 s whenever the frame rate dips under 30 and
+        /// returns to 1/60 s once it recovers, which every mission load and any busy moment does for a
+        /// few seconds, and the rounding differs completely between the two: the same ship moves at
+        /// 0.870 of its speed at one and 1.014 at the other. A solve made inside such a stretch would
+        /// carry the wrong rate for the whole flight. So the base step is the one the game has held for
+        /// most of the last minute of sim time, and 1/60 s until 20 s have been seen, which covers the
+        /// load. The compression scaling GameTime applies above its physics cap
+        /// (<c>Time.fixedDeltaTime * TimeCompression / cap</c>) is taken from the live values, since
+        /// compression is a setting rather than a transient.
+        /// </summary>
+        internal static float PredictedPhysicsStep()
+        {
+            float baseStep = _stepHistorySim >= StepHistoryMinSim && _stepSim30 > _stepSim60
+                           ? BaseStep30Hz : BaseStep60Hz;
+            float live = Time.fixedDeltaTime;
+            float scale = live > 0f ? GameTime.fixedDeltaTime / live : 1f;
+            return baseStep * Mathf.Max(scale, 1f);
+        }
 
         /// <summary>
         /// The evasive-target speed boost the game applies before simulating a shot: push the
@@ -345,7 +441,7 @@ namespace AutoTOT
                 var traj = new List<Vector3>();
                 Vector3 launchPos = unit.transform.position;
                 Vector3 targetPos = target.transform.position;
-                Vector3 targetVel = target._velocityVecInUnity;
+                Vector3 targetVel = TargetMapVelocity(target);
                 bool evasive = ap.AssumeEvasiveTarget(target);
                 object[] args = _simIsBeta
                     ? new object[]
@@ -469,7 +565,7 @@ namespace AutoTOT
             try
             {
                 Vector3 targetPos = target.transform.position;
-                Vector3 targetVel = target._velocityVecInUnity;
+                Vector3 targetVel = TargetMapVelocity(target);
                 bool evasive = ap.AssumeEvasiveTarget(target);
                 if (!_maxRangeLookedUp)
                 {

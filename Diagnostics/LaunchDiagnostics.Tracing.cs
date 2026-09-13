@@ -189,7 +189,7 @@ namespace AutoTOT
 
         // One-time per-missile line at first sighting: nominal speeds + our kinematic estimate, so a
         // late group can be read against what the game's own solo sim predicted. Flight-model trace.
-        private static void LogTrackInit(WeaponBase w, float est)
+        private static void LogTrackInit(WeaponBase w, float est, in FlightTime.LaunchState launch)
         {
             if (!Coordinator.TraceFlightModel) return;
             AmmunitionParameters ap = w?._ap;
@@ -213,7 +213,7 @@ namespace AutoTOT
             {
                 CoordinatorProfiler.Begin(CoordinatorProfiler.Stage.FlightEstimate);
                 phaseDiagOk = FlightTime.TryIntegratedPhaseDiag(w._launchPlatform, ap._ammunitionFileName,
-                    w.CurrentIntendedTargetObject, out intT, out ph);
+                    w.CurrentIntendedTargetObject, launch, out intT, out ph);
                 CoordinatorProfiler.End(CoordinatorProfiler.Stage.FlightEstimate);
                 CoordinatorProfiler.CountEstimate(cacheHit: false);   // always a fresh sim, never cached
             }
@@ -314,8 +314,17 @@ namespace AutoTOT
         /// <summary>
         /// Persist the live trajectory and the target state that produced it. Fields are
         /// t:px:py:pz:speed:pitch:heading:stage:flatM:slantM:tx:ty:tz:targetCourse:
-        /// targetSpeed:groupActive:groupLeader:groupSpeed. Positions and altitude are Unity units;
-        /// distances are metres. The cadence is intentionally shared with sim-track/track.
+        /// targetSpeed:groupActive:groupLeader:groupSpeed:dragTargetAltU. Positions and altitude
+        /// are Unity units; distances are metres. The cadence is intentionally shared with
+        /// sim-track/track.
+        ///
+        /// dragTargetAltU is the game's own `y3` (Missile.cs:3170-3175), the altitude it hands
+        /// CalculateDrag as targetAltitude: the CurrentTarget's when there is one and the round's
+        /// own when there is not. Its air density sits in a denominator floored at 0.001, so that
+        /// one choice swings the lift-induced term by up to 800 times and it is what the model's
+        /// vacuum brake is trying to predict. Recording it turns "should the brake be firing here"
+        /// into a direct read. CurrentTarget returns null in exactly one case (WeaponBase.cs:362):
+        /// the seeker is on, it holds no echo, and the ammunition declares no TargetMemory.
         /// </summary>
         private static void MaybeRecordFlightTrack(WeaponBase w, ObjectBase tgt, FlightSample s,
                                                    float simNow)
@@ -337,6 +346,10 @@ namespace AutoTOT
             float slantU = slantM / GameUnits.MetersPerUnity;
             float flatU = GameMath.FlatFromSlant(slantU, pos.y - targetPos.y);
             float flatM = flatU * GameUnits.MetersPerUnity;
+            // The game's y3, read the same way the live mover reads it.
+            ObjectBase dragTgt = w.CurrentTarget;
+            float dragTargetAltU = dragTgt != null && dragTgt.transform != null
+                                 ? dragTgt.transform.position.y : pos.y;
             Missile m = w as Missile;
             bool groupActive = m != null && m._inMissileGroup;
             bool groupLeader = m != null && m.GroupLeader;
@@ -347,7 +360,42 @@ namespace AutoTOT
                 $"{w._velocityInKnots:0.000}:{pitch:0.000}:{heading:0.000}:{w._flightStage}:" +
                 $"{flatM:0.000}:{slantM:0.000}:{targetPos.x:0.000}:{targetPos.y:0.000}:" +
                 $"{targetPos.z:0.000}:{tgt.getHeading():0.000}:{tgt._velocityInKnots:0.000}:" +
-                $"{(groupActive ? 1 : 0)}:{(groupLeader ? 1 : 0)}:{groupSpeed:0.000}");
+                $"{(groupActive ? 1 : 0)}:{(groupLeader ? 1 : 0)}:{groupSpeed:0.000}:" +
+                $"{dragTargetAltU:0.000}");
+        }
+
+        /// <summary>
+        /// Record the exact moment the game's drag target altitude changes hands. Written into
+        /// StageEvents, whose six fields it shares, with the transition token naming the two seeker
+        /// bits instead of a flight stage: `seekOn,echo>seekOn,echo`.
+        ///
+        /// CurrentTarget is null in one case only (WeaponBase.cs:362): the seeker is on, it holds
+        /// no echo, and the ammunition declares no TargetMemory. In that window the live mover
+        /// hands CalculateDrag the round's OWN altitude instead of the target's, and since that
+        /// altitude's air density sits in a denominator floored at 0.001 the lift-induced term
+        /// grows by up to 800 times. A sampled series cannot pin the transition: at 7000 kn the
+        /// adaptive cadence is 7 s apart, which is 375 u of travel. This is exact.
+        /// </summary>
+        private static void MaybeRecordSeekerEvent(WeaponBase w, ObjectBase tgt, FlightSample s,
+                                                   float simNow)
+        {
+            if (w.transform == null || tgt == null || tgt.transform == null) return;
+            bool seekerOn = w._seeker != null && w._seeker.isActive();
+            bool echo = w.CurrentStrongestTargetEcho?._objectBase != null;
+            int state = (seekerOn ? 1 : 0) | (echo ? 2 : 0);
+            if (state == s.LastSeekerState) return;
+            int prev = s.LastSeekerState;
+            s.LastSeekerState = state;
+            if (prev < 0 || s.StageEvents.Count >= 32) return;
+
+            Vector3 pos = w.transform.position;
+            float slantM = GameUnits.MetersBetween(w, tgt);
+            float slantU = slantM / GameUnits.MetersPerUnity;
+            float flatU = GameMath.FlatFromSlant(slantU, pos.y - tgt.transform.position.y);
+            string Name(int v) => $"seek{(v & 1)},echo{((v & 2) >> 1)}";
+            s.StageEvents.Add(
+                $"{simNow - s.LaunchTime:0.000}:{Name(prev)}>{Name(state)}:{flatU:0.000}:" +
+                $"{slantM:0.000}:{pos.y:0.000}:{w._velocityInKnots:0.000}");
         }
 
         /// <summary>Record discrete formation-state changes; group velocity itself is sampled in
@@ -371,7 +419,8 @@ namespace AutoTOT
             "t:stage:dt:wpCount:wpType:pitchMode:done:allowExceed:climbAngle:descentAngle:" +
             "endAlt:endHeightType:boundary:pctDone:totalDist:ctxFlatV:launchArcDone:" +
             "pos:vy:pitch:desired:future:lastWp:intercept:" +
-            "rate:num2:num3:num4:num6:num7:num8:x:desiredNeFuture:fired:tgtType:inGroup:why";
+            "rate:num2:num3:num4:num6:num7:num8:x:desiredNeFuture:fired:tgtType:inGroup:" +
+            "knownTgt:knownVel:trueTgt:travel:speedU:insDrift:leadOn:why";
 
         // Dense through the climb, the apex and the first step-down of every round in the corpus
         // (SS-N-19's apex is near t+80), sparse after. Transitions are written at any age.
@@ -422,6 +471,16 @@ namespace AutoTOT
             if (f.HasTarget) f.TgtType = m.CurrentTarget._type;
             f.InGroup = m._inMissileGroup;
             f.Intercept = m._targetInterceptPosition.ToUnity();
+            // D-L of max-solo-error-below-1s: what the game builds the intercept point from, beside
+            // where the target really is. Written on every frame, whatever the waypoint count.
+            f.KnownTgt = m._currentKnownTargetPosition;
+            f.KnownVel = m._lastKnownTargetVelocity;
+            ObjectBase intended = m.CurrentIntendedTargetObject;
+            f.TrueTgt = intended != null && intended.transform != null ? intended.transform.position : Vector3.zero;
+            f.Travel = m._traveledDistance;
+            f.SpeedU = m._velocityInUnity;
+            f.InsDrift = GuidanceStateProbe.InsDrift(m);
+            f.LeadOn = m._leadTarget;
             f.WpCount = m.Waypoints != null ? m.Waypoints.Count : 0;
 
             if (f.WpCount > 0)
@@ -528,6 +587,10 @@ namespace AutoTOT
             internal float ClimbAngle, DescentAngle, EndAlt, Boundary, Pct, Total, CtxV;
             internal Vector3 Goal, Future, LastWp;
             internal float Rate, Num2, Num3, Num4, Num6, Num7, Num8, X;
+            // D-L: the missile's guidance state (see RecordGuardTrack).
+            internal Vector3 KnownTgt, KnownVel, TrueTgt;
+            internal float Travel, SpeedU, InsDrift;
+            internal bool LeadOn;
 
             /// <summary>
             /// The discrete state a change is detected on, which is exactly what the key string
@@ -543,6 +606,10 @@ namespace AutoTOT
                        Distinct == o.Distinct && Fired == o.Fired;
             }
 
+            private string GuidanceTail() =>
+                $":{V(KnownTgt)}:{V5(KnownVel)}:{V(TrueTgt)}:{Travel:0.00}:{SpeedU:0.00000}:" +
+                $"{InsDrift:0.0000}:{(LeadOn ? 1 : 0)}";
+
             internal string Format()
             {
                 string tgtType = HasTarget ? TgtType.ToString() : "none";
@@ -550,7 +617,7 @@ namespace AutoTOT
                 if (WpCount == 0)
                     return head + $"::::::::::::::{V(Pos)}:{Vy:0.000}:{Pitch:0.000}::::" +
                            $"{V(Intercept)}:::::::::::{tgtType}:" +
-                           $"{(InGroup ? 1 : 0)}";
+                           $"{(InGroup ? 1 : 0)}" + GuidanceTail();
                 return head +
                     $"{WpType}:{PitchMode}:{(Done ? 1 : 0)}:" +
                     $"{(AllowExceed ? 1 : 0)}:{ClimbAngle:0.###}:" +
@@ -561,10 +628,13 @@ namespace AutoTOT
                     $"{V(Intercept)}:{Rate:0.###}:{Num2:0.000}:" +
                     $"{Num3:0.000}:{Num4:0.000}:{Num6:0.0000}:{Num7:0.000}:{Num8:0.000}:" +
                     $"{X:0.000}:{(Distinct ? 1 : 0)}:{(Fired ? 1 : 0)}:{tgtType}:" +
-                    $"{(InGroup ? 1 : 0)}";
+                    $"{(InGroup ? 1 : 0)}" + GuidanceTail();
             }
         }
 
         private static string V(Vector3 v) => $"{v.x:0.000},{v.y:0.000},{v.z:0.000}";
+
+        // A ship's velocity is a few hundredths of a unit per second; three decimals would round it away.
+        private static string V5(Vector3 v) => $"{v.x:0.00000},{v.y:0.00000},{v.z:0.00000}";
     }
 }

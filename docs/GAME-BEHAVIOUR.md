@@ -1,10 +1,12 @@
-# Game-side launch behaviour
+# Game-side behaviour
 
-Three behaviours in Sea Power itself decide whether an ordered salvo actually leaves the rails, and
-in what pattern. None of them originate in AutoTOT, and all three were reproduced with the mod out
-of the loop by ordering fire manually. They are documented here because the mod warns about two of
-them in the planner panel, because they are the first thing to check when a salvo arrives spread out
-or short, and because the second one looks like an engine bug worth reporting upstream.
+Four behaviours in Sea Power itself decide what an ordered salvo does: whether it leaves the rails,
+in what pattern, and where its target actually goes. None of them originate in AutoTOT. The first three
+were reproduced with the mod out of the loop by ordering fire manually; the fourth is arithmetic in
+the game's movement code and shows in any recorded ship track. They are documented here because the
+mod warns about two of them in the planner panel, because they are the first thing to check when a
+salvo arrives spread out, short or off time, and because the second one looks like an engine bug
+worth reporting upstream.
 
 All line references are to the decompiled 2026-09 beta branch.
 
@@ -157,3 +159,76 @@ anchoring, which re-predicts the impact from launches actually seen. The `commit
 `compression` and, when dilation exceeds 1, marks the order `PHYSICS APPROXIMATED`, so a report of a
 spread-out arrival can be told apart from a flight-time estimator error.
 `Diagnostics/VerticalProfiler.cs` applies the same marker to its own runs.
+
+## 4. A slow ship's map speed depends on where it is
+
+`Vessel.applyMainThrust` (`Vessel.cs:438-443`) moves a surface ship once per physics tick:
+
+```csharp
+_velocityInUnity = _velocityInKnots * 0.0076554087f;
+Vector3 direction = Vector3.forward * _velocityInUnity;
+Vector3 vector = base.transform.TransformDirection(direction);
+vector.y = 0f;
+_velocityVecInUnity = vector;
+base.transform.Translate(vector * GameTime.fixedDeltaTime, Space.World);
+```
+
+A transform position is float32, measured from the current centre tile. Adding the same small
+increment every tick rounds each sum to the nearest representable value, and within one power of two
+those values are evenly spaced. Per component:
+
+```
+ulp(p)          = 2^(floor(log2 |p|) - 23)
+moved per tick  = round(v * dt / ulp(p)) * ulp(p)
+realised speed  = moved per tick / dt
+```
+
+The rounding comes out the same on every tick, so it is a steady bias rather than noise. At 6.6 kn
+and a 1/60 s step one tick is 8.42e-4 u. For a ship heading along one axis:
+
+| distance from the centre tile | spacing | spacings per tick | realised speed |
+|---|---|---|---|
+| 1,024 to 2,048 u | 1.22e-4 u | 6.90, rounds to 7 | 1.015 of reported |
+| 2,048 to 4,096 u | 2.44e-4 u | 3.45, rounds to 3 | 0.870 of reported |
+| 4,096 to 8,192 u | 4.88e-4 u | 1.72, rounds to 2 | 1.160 of reported |
+| 16,384 to 32,768 u | 1.95e-3 u | 0.43, rounds to 0 | the ship does not move |
+
+A ship on a diagonal course rounds its x and z moves separately, so the factor depends on heading too.
+It also changes with the physics step, which `GameTime.SetAdaptiveFixedDeltaTime` switches between
+1/60 and 1/30 s with frame rate, and with the centre tile, whose change re-derives every position from
+its geographic coordinates (`ObjectBase.cs:2224-2228`). Every speed the game reports, including
+`_velocityInKnots` and `_velocityVecInUnity`, is the commanded value; only the transform shows the
+realised one. Missiles are not affected in practice: at 540 kn one tick is about 280 spacings at the
+same distances, and the rounding changes as the round moves.
+
+AutoTOT predicts a surface target with the realised velocity (`FlightTime.TargetMapVelocity`), taken at
+the solve's position and at the base step the game has held over the preceding minute of sim time, so
+that the short 1/30 s stretch of a mission load or a frame-rate dip does not set the rate for a whole
+flight. A ship whose position crosses a power of two during the flight, and a lasting step change or
+a recentre after launch, still move the true intercept away from the prediction.
+
+## 5. A ship's round leaves from its launcher cell, not from the ship's centre
+
+`WeaponContainer.createAmmunitionObjectInstance` creates each round as a child of its container's gun
+object and hands it that container's attachment offset:
+
+```csharp
+GameObject gameObject = instance.getWeapon(ammo._ap._ammunitionFileName, ammo._ap._type, _gunObject.transform);
+WeaponBase component = gameObject.GetComponent<WeaponBase>();
+component.init(_baseObject, _attachmentPositions[attachmentId], ammo._ap);
+```
+
+`WeaponBase.init` makes that offset the round's local position, so the round starts at
+`_gunObject.transform.TransformPoint(_attachmentPositions[attachmentId])`. On a warship the cells sit well
+away from the ship's own origin: a Type 055's YJ-18A cells are 42 to 44 m from it, a Spruance's Harpoon
+canisters 16 m from it and 15 m above the waterline. In every launch recorded, the round's first position
+matched a cell computed this way. An aircraft round leaves its hardpoint about 3.5 m from the airframe's
+origin.
+
+The start point changes the flight time by the distance it adds or removes along the line to the target:
+40 m is about 0.15 s at 530 kn, earlier or later depending on where the target lies relative to the
+launcher. AutoTOT starts its flight estimate at the mean position of the cells of the launcher the engage
+task will take, the same firing-arc pick the game makes, which lies within about 2 m of the cell that
+fires. A unit whose launcher has no cells keeps its own position, and the fallback estimators used on the
+public branch still start at the unit's position.
+

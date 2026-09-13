@@ -20,9 +20,9 @@ namespace AutoTOT
         private const float InterlockNormSpeed = 0.1f;
         private const float InterlockPitchDeg = 5f;
 
-        // No-progress bail. A boat parked at a depth it will not leave (the launcher raises it only
-        // to the weapon's own ceiling, which can still be above the depth a guidance radar mast
-        // needs) never arrives, and the honest answer is "never", not a large number.
+        // No-progress bail. A boat that cannot make its ordered depth (too slow to hold a bow-up
+        // angle, or held down by the interlock) never arrives, and the honest answer is "never",
+        // not a large number.
         private const float MinProgressUnity = 1e-5f;
         private const int NoProgressSteps = 50;         // 5s of sim making no headway
 

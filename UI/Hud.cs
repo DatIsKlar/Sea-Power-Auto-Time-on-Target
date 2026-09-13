@@ -37,6 +37,57 @@ namespace AutoTOT
         // frame from a hint line.
         private bool _showHelp;
 
+        /// <summary>The live panel, so an automated run can stage it. Set in OnEnable.</summary>
+        private static Hud _instance;
+
+        /// <summary>Set by StagePanelFor: hold the staged selection against TrackSelection, which
+        /// otherwise reassigns both fields from the game's own selection every frame.</summary>
+        private bool _stagedLock;
+
+        /// <summary>
+        /// Put the panel into the state a player would reach by clicking, so an automated run can
+        /// photograph a label instead of asking someone to set it up. Picks the friendly shooter and
+        /// the enemy target the panel would have taken from the game's selection, ticks one weapon
+        /// row and sets its salvo. False if the panel is not up.
+        ///
+        /// <para>This exists because the live test runner drives the game through method calls and
+        /// never touches the screen, so every warning the panel draws had to be verified by a person
+        /// (docs/plans/open/submarine-and-aircraft-launch-envelope.md). Synthetic clicks into the
+        /// Wine window were rejected for the reason the runner avoids them everywhere else: they
+        /// depend on window focus, cursor position and compositor timing, none of which an
+        /// unattended batch can rely on. The panel's state is code in this assembly, so setting it
+        /// is both simpler and deterministic.</para>
+        ///
+        /// <para>It writes the same two fields <see cref="TrackSelection"/> writes, rather than the
+        /// game's selection, because MainGameViewModel.SelectedObject is a
+        /// ReadOnlyReactiveProperty. TrackSelection leaves both alone while nothing is selected,
+        /// which is the state an automated run is in, so the staging holds.</para>
+        /// </summary>
+        internal static bool StagePanelFor(ObjectBase shooter, ObjectBase target, string ammoId, int salvo)
+        {
+            Hud h = _instance;
+            if (h == null || shooter == null || target == null) return false;
+            try
+            {
+                // The panel defaults to the collapsed tab, which draws a header and nothing else, so
+                // a staged row would be photographed as an empty strip. Open it.
+                h._open = true;
+                h._stagedLock = true;
+                h._anchor = shooter;
+                h._target = target;
+                h._targetVehicle = Globals._playerTaskforce?.PlottingTable?.VehicleForObject(target);
+                string key = Key(shooter, ammoId);
+                h._checked[key] = true;
+                h._salvo[key] = Mathf.Max(1, salvo);
+                return true;
+            }
+            catch (System.Exception e)
+            {
+                Bootstrap.Log.LogWarning("[AutoTOT] StagePanelFor failed: " + e.Message);
+                return false;
+            }
+        }
+
         private readonly Dictionary<string, bool> _checked = new Dictionary<string, bool>();
         private readonly Dictionary<string, int> _salvo = new Dictionary<string, int>();
         private readonly List<EngagementBoard.SalvoLine> _salvos = new List<EngagementBoard.SalvoLine>();
@@ -224,6 +275,7 @@ namespace AutoTOT
 
         private void OnEnable()
         {
+            _instance = this;
             // The coordinator needs the panel's staged picks to police its own intake, and only the
             // panel knows them. Cleared in OnDisable so a torn-down HUD cannot be called into.
             Coordinator.StagedRoundsProvider = StagedRoundsFor;
@@ -231,6 +283,7 @@ namespace AutoTOT
 
         private void OnDisable()
         {
+            if (ReferenceEquals(_instance, this)) _instance = null;
             Coordinator.StagedRoundsProvider = null;
             // On mission end Unity disables us while the game HUD is already tearing down, so the
             // over-UI release can hit half-null game state. Reset our own flag unconditionally and
@@ -253,6 +306,10 @@ namespace AutoTOT
 
         private void TrackSelection()
         {
+            // An automated run has staged the panel deliberately; the game's own selection would
+            // overwrite it on the very next frame and photograph the wrong ship.
+            if (_stagedLock) return;
+
             // MainGameViewModel.SelectedObject is an ISelectableObject that is either an
             // ObjectBase (your ships) or a Vehicle contact (enemy) whose .Object is the ObjectBase.
             ISelectableObject sel = Globals._mainGameViewModel?.SelectedObject?.Value;

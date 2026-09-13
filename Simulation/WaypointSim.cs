@@ -378,7 +378,7 @@ namespace AutoTOT
             {
                 Vector3 launchPosition = unit.transform.position;
                 Vector3 targetPosition = target.transform.position;
-                Vector3 targetVelocityVector = target._velocityVecInUnity;
+                Vector3 targetVelocityVector = FlightTime.TargetMapVelocity(target);
                 bool isAirUnit = unit.IsAirUnit;
                 float startVelocityKnots = Mathf.Max(unit._velocityInKnots, 0f);
 

@@ -137,6 +137,12 @@ namespace AutoTOT
                                       // TOT); grouped salvos use the FULL span, because the group's
                                       // convergent impact lands at the ripple's trailing edge.
                                       // See PrepareIntent.
+            public bool Pooled;       // shares its ship's launch clock with other orders in its commit,
+                                      // so ReleaseLead is the POOL'S centring lead rather than this
+                                      // order's own. See PoolSharedLaunchClock.
+            public string PoolClock;  // SystemName of that clock; null when not pooled
+            public float PoolDelta;   // the pool's longest commit flight minus this order's: how much
+                                      // sooner its rounds arrive from the same launch slot
             public bool EnvelopeTracked; // this platform had to reach its launch envelope at commit,
                                          // so EnvelopeLead is refreshed while the order is held
             public float EnvelopeLead;  // the launch-envelope part of StartupLead (a submarine's
@@ -700,6 +706,7 @@ namespace AutoTOT
             _channelCappedShooters.Clear();
             _channelTrimmedShooters.Clear();
             FlightTime.ClearCache();
+            FlightTime.ResetPhysicsStep();
             LauncherFactsSource.ClearCache();
             LaunchDiagnostics.Reset();
             EngagementBoard.Clear();
@@ -716,6 +723,10 @@ namespace AutoTOT
         internal static void Tick()
         {
             float simNow = GameClock.SimNow();
+
+            // Every frame, strike or not, so the step a target ship will move at is known before
+            // the first order arrives. See FlightTime.PredictedPhysicsStep.
+            FlightTime.ObservePhysicsStep(simNow);
 
             // Before the profiler's Tick stage, so the census is not charged to a stage it did not
             // spend.
@@ -1045,6 +1056,7 @@ namespace AutoTOT
         {
             it.ReleaseLead = 0f; it.StartupLead = 0f; it.EnvelopeLead = 0f;
             it.Grouped = false; it.Waves = 1; it.WaveGap = 0f;
+            it.Pooled = false; it.PoolClock = null; it.PoolDelta = 0f;
 
             int n = Mathf.Max(1, it.Shots);
             it.AnchorShots = n;
@@ -1142,6 +1154,168 @@ namespace AutoTOT
                 it.Waves = Mathf.CeilToInt((float)n / f.ReadyRounds);
                 it.WaveGap = f.ReadyRounds * f.ShotInterval + f.ReloadGap;
             }
+        }
+
+        /// <summary>
+        /// One order that fires on a ship-level shared launch clock, for
+        /// <see cref="PoolSharedLaunchClock"/>. Sorted so each ship and clock is one contiguous run,
+        /// longest flight first.
+        /// </summary>
+        private struct ClockEntry
+        {
+            public Intent It;
+            public int UnitId;
+            public string Clock;
+        }
+
+        private static readonly List<ClockEntry> _clockScratch = new List<ClockEntry>();
+
+        private static readonly Comparison<ClockEntry> ClockOrder = (x, y) =>
+        {
+            int c = x.UnitId.CompareTo(y.UnitId);
+            if (c == 0) c = string.CompareOrdinal(x.Clock, y.Clock);
+            if (c == 0) c = y.It.CommitFlightEst.CompareTo(x.It.CommitFlightEst);
+            return c;
+        };
+
+        /// <summary>
+        /// Centre each ship's POOLED ripple on the time on target, instead of each order's own.
+        /// Item 4 of docs/plans/open/launcher-startup-delay.md.
+        ///
+        /// A ship fires every round of one SystemName on one clock, SharedLaunchInterval apart,
+        /// across all of its launchers and all of its orders: one timer per ship per name, reset by
+        /// every launch (WeaponSystemLauncher.cs:730-751). D12 measured two 2-round Spruance orders
+        /// as one 4-round ripple, exactly 5 s apart, with the orders interleaving. PrepareIntent
+        /// centres each order on its own ripple, so the order served first straddled the time on
+        /// target and the one served second landed entirely late: +1.0 s and +9.1 s.
+        ///
+        /// For a pool of N rounds, where order j fires n_j of them and its commit flight is Delta_j
+        /// shorter than the pool's longest:
+        ///
+        ///   lead = (N - 1) / 2 * interval  -  sum(n_j * Delta_j) / N
+        ///
+        /// The first term is PrepareIntent's half span taken over the ship's rounds. The second is
+        /// there because a shorter flight arrives sooner from the same launch slot. For one order it
+        /// reduces to PrepareIntent's value exactly.
+        ///
+        /// Orders pool only while they would share the clock. Taken longest flight first, an order
+        /// joins while its first round falls due before the rounds already pooled have drained. Two
+        /// orders further apart than that are two ripples (D12 section B) and keep their own leads.
+        ///
+        /// Runs once per commit, after the flight estimates and before anchor election, so the
+        /// pooled lead reaches PickAnchor, the release gate and the board through ReleaseLead.
+        /// Grouped salvos are left alone: a group lands on the trailing edge of its own ripple, and
+        /// how interleaving moves that edge has not been measured.
+        /// </summary>
+        private static void PoolSharedLaunchClock(List<Intent> items)
+        {
+            _clockScratch.Clear();
+            for (int i = 0; i < items.Count; i++)
+            {
+                Intent it = items[i];
+                if (it?.Unit == null || it.CommitFlightEst <= FlightTime.MinValidSeconds) continue;
+                string clock = LauncherProbe.SharedClockName(it.Unit, it.AmmoId);
+                if (clock == null) continue;
+                _clockScratch.Add(new ClockEntry { It = it, UnitId = it.Unit.GetInstanceID(), Clock = clock });
+            }
+            if (_clockScratch.Count >= 2)
+            {
+                _clockScratch.Sort(ClockOrder);
+                for (int runStart = 0; runStart < _clockScratch.Count; )
+                {
+                    int runEnd = runStart + 1;
+                    while (runEnd < _clockScratch.Count &&
+                           _clockScratch[runEnd].UnitId == _clockScratch[runStart].UnitId &&
+                           _clockScratch[runEnd].Clock == _clockScratch[runStart].Clock)
+                        runEnd++;
+                    if (runEnd - runStart >= 2) PoolClockRun(runStart, runEnd);
+                    runStart = runEnd;
+                }
+            }
+            _clockScratch.Clear();   // it holds intents, which must not outlive the commit
+        }
+
+        /// <summary>
+        /// Split one ship's orders on one clock into the pools that will actually share it, and give
+        /// each pool its lead. The range indexes <see cref="_clockScratch"/>, longest flight first.
+        /// </summary>
+        private static void PoolClockRun(int runStart, int runEnd)
+        {
+            ClockEntry head = _clockScratch[runStart];
+            string where = $"shared-clock {head.Clock} on {UnitNaming.SafeName(head.It.Unit)}";
+            for (int j = runStart; j < runEnd; j++)
+            {
+                if (!_clockScratch[j].It.Grouped) continue;
+                if (VerboseLog)
+                    Bootstrap.Log.LogInfo(
+                        $"[AutoTOT] {where}: {runEnd - runStart} orders, not pooled because " +
+                        $"{_clockScratch[j].It.AmmoId} is a grouped salvo, whose arrival under " +
+                        $"interleaving is not modelled. Each order keeps its own lead.");
+                return;
+            }
+
+            float interval = LauncherFactsSource.Get(head.It.Unit, head.It.AmmoId).ShotInterval;
+            if (interval <= 0f)
+            {
+                if (VerboseLog)
+                    Bootstrap.Log.LogInfo(
+                        $"[AutoTOT] {where}: {runEnd - runStart} orders, not pooled: no shot interval.");
+                return;
+            }
+
+            for (int start = runStart; start < runEnd; )
+            {
+                float longest = _clockScratch[start].It.CommitFlightEst;
+                int rounds = _clockScratch[start].It.AnchorShots;
+                int end = start + 1;
+                while (end < runEnd && longest - _clockScratch[end].It.CommitFlightEst < rounds * interval)
+                {
+                    rounds += _clockScratch[end].It.AnchorShots;
+                    end++;
+                }
+                if (end - start >= 2) ApplyClockPool(where, head.Clock, start, end, rounds, interval, longest);
+                // Said out loud: an order left on its own lead prints nothing otherwise, and that
+                // looks exactly like a pass that never ran.
+                if (VerboseLog && end < runEnd)
+                {
+                    Intent next = _clockScratch[end].It;
+                    Bootstrap.Log.LogInfo(
+                        $"[AutoTOT] {where}: {next.AmmoId} -> {UnitNaming.SafeName(next.Target)} not pooled " +
+                        $"with the {end - start} order(s) before it: its flight is " +
+                        $"{longest - next.CommitFlightEst:0.0}s shorter, and their {rounds} round(s) at " +
+                        $"{interval:0.00}s have drained by then.");
+                }
+                start = end;
+            }
+        }
+
+        private static void ApplyClockPool(string where, string clock, int start, int end, int rounds,
+                                           float interval, float longest)
+        {
+            float weighted = 0f;
+            for (int j = start; j < end; j++)
+            {
+                Intent it = _clockScratch[j].It;
+                weighted += it.AnchorShots * (longest - it.CommitFlightEst);
+            }
+            float offset = weighted / rounds;
+            float lead = Mathf.Max(0f, (rounds - 1) * 0.5f * interval - offset);
+
+            System.Text.StringBuilder own = VerboseLog ? new System.Text.StringBuilder() : null;
+            for (int j = start; j < end; j++)
+            {
+                Intent it = _clockScratch[j].It;
+                own?.Append(own.Length > 0 ? ", " : "")
+                    .Append($"{it.AnchorShots} -> {UnitNaming.SafeName(it.Target)} at {it.ReleaseLead:0.0}s");
+                it.Pooled = true;
+                it.PoolClock = clock;
+                it.PoolDelta = longest - it.CommitFlightEst;
+                it.ReleaseLead = lead;
+            }
+            if (own != null)
+                Bootstrap.Log.LogInfo(
+                    $"[AutoTOT] {where}: pooled {end - start} orders, {rounds} rounds {interval:0.00}s apart, " +
+                    $"mean flight offset {offset:0.0}s, lead {lead:0.0}s (own leads {own}).");
         }
 
         private static int _nextStrikeId = 1;

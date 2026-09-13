@@ -279,7 +279,7 @@ Three records in a `rich-flight-v3` capture exist to keep that replay honest:
 
 | field | what it pins down |
 |---|---|
-| `InGameEstimate`, `InGameStep` | the value the mod's step loop returned for this exact input, and the step it used. `autotot-lab parity` replays the input and must reproduce it to 0.0005 s. `EstAtLaunch` cannot serve: it comes through the estimate cache and may belong to an earlier solve |
+| `InGameEstimate`, `InGameStep` | the value the mod's step loop returned for this exact input, and the step it used. `autotot-lab parity` replays the input and must reproduce it to 0.0005 s. `EstAtLaunch` is solved from the same launch state with no cache between and agrees wherever the integrator ran, but it falls back to the lower tiers where the integrator declines, so parity is always read against this field |
 | `WaypointLegs` | the non-kinematic route the mod built (§3.4). The lab rebuilds it from the raw ammunition fields in the same file and warns on any difference |
 | `GuardTrack` (in the `.result`) | every term of the game's pre-apex guard from launch on: the waypoint, its desired and future points, its progress, the three tests and the result, sampled every 0.5 s through t+120, every 5 s after, and on both sides of any change. The field order is in `GuardTrackFields` |
 

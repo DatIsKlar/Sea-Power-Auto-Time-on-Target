@@ -118,6 +118,11 @@ namespace AutoTOT
                 b.AppendLine(F("Ammo.RequiresTargetToProceed", ap._requiresTargetToProceed));
                 b.AppendLine(F("Ammo.SeekerActiveRange", ap._seekerActiveRange));
                 b.AppendLine(F("Ammo.SeekerPassiveRange", ap._seekerPassiveRange));
+                // Decides whether CurrentTarget can ever be null (WeaponBase.cs:362), and so
+                // whether the game ever hands CalculateDrag the round's own altitude instead of the
+                // target's. A TargetMemory=True round falls through to its intended target and
+                // never enters that window; a False one enters it when its seeker switches on.
+                b.AppendLine(F("Ammo.TargetMemory", ap._targetMemory));
                 b.AppendLine(F("Ammo.NavigationGain", ap._navigationGain));
                 b.AppendLine(F("Ammo.TerrainFollowFlight", ap._terrainFollowFlight));
                 b.AppendLine(F("Ammo.TerminalPopUpDist", ap._terminalPopUpDist));
@@ -153,6 +158,10 @@ namespace AutoTOT
                 b.AppendLine(F("LoftAlt", i.LoftAlt));
                 b.AppendLine(F("LoftEntryDist", i.LoftEntryDist));
                 b.AppendLine(F("LoftSpeedHoldDist", i.LoftSpeedHoldDist));
+                // Resolved once at setup, the way LoftSpeedHoldDist is: 0 means no drag-brake
+                // window can exist for this ammunition, and a positive value is the range that
+                // opens the window on flat distance and closes it on slant.
+                b.AppendLine(F("SeekerBrakeRange", i.SeekerBrakeRangeU));
                 b.AppendLine(F("LoftVelKn", i.LoftVelKn));
                 b.AppendLine(F("BallisticLoft", i.BallisticLoft));
                 b.AppendLine(F("LoftClimbTan", i.LoftClimbTan));
@@ -165,6 +174,10 @@ namespace AutoTOT
                 b.AppendLine(F("TargetAlt0", i.TargetAlt0));
                 b.AppendLine(F("TargetPos", i.TargetPos));
                 b.AppendLine(F("TargetVel", i.TargetVel));
+                // A capture that carries these was solved on the rounded target velocity (see
+                // FlightTime.TargetMapVelocity). tools/lab score rounds older captures that do not.
+                b.AppendLine(F("TargetVelReported", i.TargetVelReported));
+                b.AppendLine(F("TargetMoveStep", i.TargetMoveStep));
                 b.AppendLine(F("TerminalLinear", i.TerminalLinear));
                 b.AppendLine(F("TerminalEndAlt", i.TermAlt));
                 b.AppendLine(F("TermAlt", i.TermAlt));
@@ -231,9 +244,17 @@ namespace AutoTOT
                                          float wpEst, float legacyEst,
                                          List<string> stageChanges, List<string> stageEvents,
                                          List<string> groupChanges,
+                                         List<string> stepChanges,
+                                         float registeredSim, float startupLead, float envelopeLead,
+                                         float releaseLead, float impactAtSim, bool wasAnchor,
+                                         float targetLengthM, Vector3 targetBoundsM,
                                          float targetCourse0, float targetSpeed0,
                                          float targetCourse1, float targetSpeed1,
-                                         float targetMovedU)
+                                         float targetMovedU,
+                                         bool hasSpeedCommand,
+                                         TargetMotionProbe.SpeedCommand speedCommand,
+                                         List<string> speedCommandChanges,
+                                         string launchCellBlock)
         {
             // A round that finished with no input to pair against is a hole in the corpus, and the
             // only way to notice is to say so. Silence here cost six of seven rounds once.
@@ -310,6 +331,32 @@ namespace AutoTOT
                                               ? "" : string.Join(";", stageEvents)));
                 b.AppendLine(F("GroupChanges", groupChanges == null || groupChanges.Count == 0
                                                ? "" : string.Join(";", groupChanges)));
+                // "t:step" each time the game's physics step changed under this round, starting
+                // with the step it launched on. MinFlownStep and MaxFlownStep say only that a
+                // change happened; this says when, which separates a frame rate still settling
+                // after a mission load from real load at apex.
+                b.AppendLine(F("StepChanges", stepChanges == null || stepChanges.Count == 0
+                                              ? "" : string.Join(";", stepChanges)));
+                // Chain audit B1: what the coordinator predicted this round's order would cost
+                // before its first round left, and the impact it was released against. The delay
+                // residual is LaunchTime minus RegisteredSim, against StartupLead. Until now those
+                // lived only in a log overwritten every launch, so no delay residual survived a
+                // session. -1 on every field means the round matched no expectation, which is
+                // normal for a round this mod did not order.
+                b.AppendLine(F("RegisteredSim", registeredSim));
+                b.AppendLine(F("StartupLead", startupLead));
+                b.AppendLine(F("EnvelopeLead", envelopeLead));
+                b.AppendLine(F("ReleaseLead", releaseLead));
+                b.AppendLine(F("ImpactAtSim", impactAtSim));
+                b.AppendLine(F("WasAnchor", wasAnchor));
+                // The hull the round actually had to reach. The model stops at a fixed radius from
+                // the target's centre; the game's arrival is the collider. Recorded so a hull-entry
+                // arrival can be tested offline against FinalRangeM instead of re-flown for it.
+                // The bounds are world-axis aligned, so they are a hull box only when read with
+                // TargetCourseAtEnd above.
+                b.AppendLine(F("TargetLengthM", targetLengthM));
+                b.AppendLine(F("TargetBoundsM",
+                               $"{targetBoundsM.x:0.##},{targetBoundsM.y:0.##},{targetBoundsM.z:0.##}"));
                 // Target motion. A target that turned after launch was never predictable from a
                 // launch-time snapshot, so the lab can now exclude it rather than counting it as
                 // model error.
@@ -318,6 +365,24 @@ namespace AutoTOT
                 b.AppendLine(F("TargetCourseAtEnd", targetCourse1));
                 b.AppendLine(F("TargetSpeedAtEnd", targetSpeed1));
                 b.AppendLine(F("TargetMovedU", targetMovedU));
+                // D3 of max-solo-error-below-1s: the speed a surface target was converging on when
+                // the capture was solved, after applyMainThrust's caps, and each change after it as
+                // "t:wanted:converge:speed". A solve rounds the speed the ship has at that instant,
+                // which holds for the flight only if the ship keeps it. Written for a Vessel only.
+                if (hasSpeedCommand)
+                {
+                    b.AppendLine(F("TargetWantedAtLaunch", speedCommand.Wanted));
+                    b.AppendLine(F("TargetConvergeAtLaunch", speedCommand.Converge));
+                    b.AppendLine(F("TargetRudderAtLaunch", speedCommand.Rudder));
+                    b.AppendLine(F("TargetDampingPerTick", speedCommand.DampingPerTick));
+                    b.AppendLine(F("SeaState", speedCommand.SeaState));
+                    b.AppendLine(F("TargetSpeedCommandChanges",
+                                   speedCommandChanges == null || speedCommandChanges.Count == 0
+                                   ? "" : string.Join(";", speedCommandChanges)));
+                }
+                // D-L of max-solo-error-below-1s: the launcher cell the round spawned in, against every
+                // cell the mod can resolve before launch. Preformatted lines, GuidanceStateProbe.
+                if (!string.IsNullOrEmpty(launchCellBlock)) b.Append(launchCellBlock);
                 b.AppendLine(F("InGroup", inGroup));
                 b.AppendLine(F("GroupLeader", groupLeader));
                 b.AppendLine(F("MaxGroupSize", maxGroupSize));

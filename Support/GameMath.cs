@@ -94,6 +94,42 @@ namespace AutoTOT
             => Mathf.Sqrt(Mathf.Max(slant * slant - altDelta * altDelta, 0f));
 
         /// <summary>
+        /// The velocity a transform actually crosses the map at when the game moves it with
+        /// <c>transform.Translate(vel * step, Space.World)</c> once per physics tick, as
+        /// <c>Vessel.applyMainThrust</c> does (decompiled-beta-new Vessel.cs:438-443).
+        ///
+        /// A Unity position is float32. Every tick adds the same increment, and the add rounds the
+        /// sum to the nearest representable value. Within one power of two those values are evenly
+        /// spaced, <c>ulp(p) = 2^(floor(log2 |p|) - 23)</c>, so each tick moves the coordinate by the
+        /// same whole number of spacings, <c>round(v * step / ulp(p))</c>, and the realised rate is
+        /// that number times <c>ulp(p) / step</c>. A 6.6 kn ship 2,285 u from the origin at a 1/60 s
+        /// step adds 3.45 spacings a tick, which rounds to 3: it moves at 0.870 of its speed. Far
+        /// enough out a slow ship's increment rounds to zero and it does not move at all.
+        ///
+        /// Computed the way the game computes it, one float32 add with the difference taken back, so
+        /// the result carries the game's rounding rather than an approximation of it. It holds while
+        /// the coordinate stays inside one power of two; one that crosses a boundary mid-flight
+        /// changes spacing there. Returns <paramref name="vel"/> unchanged for a non-positive step.
+        /// </summary>
+        internal static Vector3 TranslateRoundedVelocity(Vector3 pos, Vector3 vel, float step)
+        {
+            if (!(step > 0f)) return vel;
+            return new Vector3(TranslateRoundedRate(pos.x, vel.x, step),
+                               TranslateRoundedRate(pos.y, vel.y, step),
+                               TranslateRoundedRate(pos.z, vel.z, step));
+        }
+
+        private static float TranslateRoundedRate(float p, float v, float step)
+        {
+            // The casts pin each intermediate to float32, which the C# specification otherwise lets
+            // a runtime hold at higher precision. The subtraction is exact: both operands are within
+            // a factor of two of each other.
+            float inc = (float)(v * step);
+            float moved = (float)(p + inc);
+            return (float)(moved - p) / step;
+        }
+
+        /// <summary>
         /// Pitch read off a transform's local euler angles, normalized from Unity's 0..360 range
         /// into -180..180 so a nose-down attitude reads negative.
         ///

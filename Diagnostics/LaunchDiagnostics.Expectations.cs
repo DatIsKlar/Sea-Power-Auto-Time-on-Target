@@ -36,6 +36,16 @@ namespace AutoTOT
                                               // envelope (submarine ascent, aircraft descent); 0 = none
             public float StartupLead;         // full predicted order-to-first-round offset, launcher
                                               // startup plus EnvelopeLead
+            // Chain audit B1, and why these are copied rather than read through Linked: Linked is
+            // held only for an ANCHOR, and the release lead is most worth recording for a FOLLOWER,
+            // whose arrival is predicted rather than measured. Copying the two scalars at
+            // registration gets them for every order without holding a reference to a scheduled
+            // entry the coordinator may retire. ImpactAtRegister is the shared impact the order was
+            // RELEASED against, handed down from the release loop, which is the only place a
+            // follower's scheduled entry is still in hand: Fire is passed null for a follower on
+            // purpose, because by then its caller has already dropped it from the schedule.
+            public float ReleaseLeadAtRegister = -1f;
+            public float ImpactAtRegister = -1f;
             public float LastEngageSampleSim = float.NegativeInfinity;
 
             // D0: one trace per LAUNCHER OBJECT, not one merged string per ship and ammo.
@@ -136,7 +146,8 @@ namespace AutoTOT
         // Record what one coordinated order asked for, so Tick can tally how many of its missiles
         // actually launch. Called from Coordinator.Fire after the order is issued. Anchors are
         // registered even as single shots ; their observed launches finalize the batch impact.
-        internal static void RegisterExpectation(Coordinator.Intent it, Coordinator.Scheduled sched)
+        internal static void RegisterExpectation(Coordinator.Intent it, Coordinator.Scheduled sched,
+                                                 float impactAtRelease = -1f)
         {
             if (it.Unit == null || it.Target == null) return;
             int shots = Mathf.Max(1, it.Shots);
@@ -179,6 +190,8 @@ namespace AutoTOT
                 WaveTailSim = waveTail,
                 EnvelopeLead = it.EnvelopeLead,
                 StartupLead = it.StartupLead,
+                ReleaseLeadAtRegister = it.ReleaseLead,
+                ImpactAtRegister = impactAtRelease,
             });
 
             LogDispatchState(_launchExpectations[_launchExpectations.Count - 1], it);
@@ -291,8 +304,11 @@ namespace AutoTOT
                         e.Linked.LaunchObs.Add(new Coordinator.LaunchObservation
                         {
                             Sim = launchStamp,
-                            ShooterPosU = platform.transform != null
-                                ? platform.transform.position : Vector3.zero,
+                            // The round's own position, its launcher cell: the anchor's impact
+                            // prediction integrates from here (Coordinator.LaunchStateEstimate).
+                            ShooterPosU = w.transform != null ? w.transform.position
+                                        : platform.transform != null ? platform.transform.position
+                                        : Vector3.zero,
                             ShooterVelKn = platform._velocityInKnots,
                             // The round's own heading on the rail IS the launch bearing, and it is
                             // the geometry the off-boresight defect turns on. Read from the round
@@ -420,7 +436,9 @@ namespace AutoTOT
             a.LaunchObs.Add(new Coordinator.LaunchObservation
             {
                 Sim = launchStamp,
-                ShooterPosU = platform.transform != null ? platform.transform.position : Vector3.zero,
+                // The round's own position, its launcher cell; see the other LaunchObservation above.
+                ShooterPosU = w.transform != null ? w.transform.position
+                            : platform.transform != null ? platform.transform.position : Vector3.zero,
                 ShooterVelKn = platform._velocityInKnots,
                 RailHeadingU = railHeading,
                 Round = w,
@@ -466,6 +484,45 @@ namespace AutoTOT
         /// matters most: an anchor's real launch rewrites the shared impact, a follower's does not,
         /// so a follower's envelope error lands directly on the arrival time.
         /// </summary>
+        /// <summary>
+        /// The delay terms an order was released on, for the corpus writer. Chain audit B1: every
+        /// one of these lives only in <see cref="LaunchExpectation"/>, which is in memory, and the
+        /// residuals computed from them go to a log BepInEx overwrites on every launch. Once they
+        /// are in the `.result` the delay model can be scored offline across sessions, the way the
+        /// flight model already is.
+        ///
+        /// Matched the same way <see cref="NoteLaunch"/> matches, on unit, target and ammunition
+        /// file, and taking the first open order. A ship holding two orders for one ammunition at
+        /// one target cannot tell its rounds apart here either, and the launch counter has the same
+        /// limit. Returns false when nothing matches, which is the normal case for an uncoordinated
+        /// round: an expectation only exists for an order this mod placed.
+        /// </summary>
+        internal static bool TryGetDelayTerms(ObjectBase unit, string ammoFile, ObjectBase target,
+                                              out float registeredSim, out float startupLead,
+                                              out float envelopeLead, out float releaseLead,
+                                              out float impactAtSim, out bool isAnchor)
+        {
+            registeredSim = -1f; startupLead = -1f; envelopeLead = -1f;
+            releaseLead = -1f; impactAtSim = -1f; isAnchor = false;
+            if (unit == null || ammoFile == null) return false;
+            for (int i = 0; i < _launchExpectations.Count; i++)
+            {
+                LaunchExpectation e = _launchExpectations[i];
+                if (e.Unit != unit || e.Target != target || e.AmmoFile != ammoFile) continue;
+                registeredSim = e.RegisteredSim;
+                startupLead = e.StartupLead;
+                envelopeLead = e.EnvelopeLead;
+                releaseLead = e.ReleaseLeadAtRegister;
+                impactAtSim = e.ImpactAtRegister;
+                isAnchor = e.Linked != null && e.Linked.IsAnchor;
+                // An anchor still has its scheduled entry, and by launch time its impact is the
+                // live prediction rather than the one it was scheduled against. Prefer that.
+                if (e.Linked != null) impactAtSim = e.Linked.ImpactAtSim;
+                return true;
+            }
+            return false;
+        }
+
         private static void ScoreEnvelopeLead(LaunchExpectation e, float launchStamp)
         {
             if (!Coordinator.VerboseLog) return;

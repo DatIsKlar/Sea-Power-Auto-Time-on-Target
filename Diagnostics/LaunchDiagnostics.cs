@@ -52,6 +52,10 @@ namespace AutoTOT
             // of the round leaving the rail. Zero position = not captured.
             public Vector3 LaunchPosU;
             public float LaunchVelKn;
+            // The round's own flat heading at first sighting, which is the rail it left on; zero =
+            // not resolvable. The solve-time pick can name the other canister of a pair of fixed
+            // launchers, so this, not the pick, is what every per-round estimate is taken from.
+            public Vector3 LaunchHeadingU;
             public ObjectBase Shooter;     // needed to re-run the estimate; always guard, it can die
             public string ShooterAmmoId;
             public bool Coordinated;       // captured at first sighting: is this a missile AutoTOT
@@ -77,6 +81,34 @@ namespace AutoTOT
             // is not.
             public float MinFlownStep = float.MaxValue;
             public float MaxFlownStep;
+            // WHEN the step moved, not merely that it did. A step change is the largest single
+            // reason the corpus discards a round (59 of 94 exclusions on 2026-09-12), and the
+            // range alone cannot tell a change that landed in the first second of flight, while
+            // the frame rate was still settling after a mission load, from one that landed at
+            // apex under real load. Those are a different fact about the round. "t:step" per
+            // change, capped because a frame rate hunting across the 30/40 fps hysteresis band
+            // could otherwise write a line per sample.
+            public readonly List<string> StepChanges = new List<string>();
+            public float LastStepSeen;
+            // Chain audit B1: the delay terms the order was released on. Every one of them lived
+            // only in LaunchExpectation and in log text that BepInEx overwrites per launch, so no
+            // delay residual survived a session and none could be scored across the corpus the way
+            // a flight time can. -1 means the round matched no expectation, which is normal for an
+            // uncoordinated round.
+            // E5A, the arrival radius. The model stops at CloseEnoughDistU, 3u from the target's
+            // CENTRE, while the game's arrival is its trigger collider, so a bow-on sea-skimmer
+            // ends 165 to 315 m out against a 349 m tanker and a diver that reaches the deck ends
+            // 36 m out. Testing a hull-entry arrival needs the hull, and nothing recorded it.
+            // Length is the ini's own figure; the bounds are the collider's world box, which with
+            // the target's heading gives beam and height too. Read once at first sighting.
+            public float TargetLengthM = -1f;
+            public Vector3 TargetBoundsM;
+            public float RegisteredSim = -1f;
+            public float StartupLead = -1f;
+            public float EnvelopeLead = -1f;
+            public float ReleaseLead = -1f;
+            public float ImpactAtSim = -1f;
+            public bool WasAnchor;
             // Grouped flight is NOT in the integrator. MissileGroup.cs:135 cuts the leader's speed
             // by up to 40% while the formation forms and holds followers around it, and a leader
             // cruises at _groupLeaderAltUnity. Our only handling is GroupFormingDelay, which shifts
@@ -111,6 +143,9 @@ namespace AutoTOT
             // Detailed counterparts to the compact, backwards-compatible StageChanges field, plus
             // the group state transitions that otherwise existed only in the rotating log.
             public readonly List<string> StageEvents = new List<string>();
+            // -1 until the first sighting. Packs seeker-active and echo-present, the two bits that
+            // decide CurrentTarget and therefore which altitude the game's drag function is given.
+            public int LastSeekerState = -1;
             public readonly List<string> GroupChanges = new List<string>();
             public bool LastGroupActive;
             public bool LastGroupLeader;
@@ -124,6 +159,15 @@ namespace AutoTOT
             public Vector3 TargetPosAtEnd;
             public float TargetCourseAtEnd;
             public float TargetSpeedAtEnd;
+            // D3 of max-solo-error-below-1s: the speed a Vessel target was converging on at the
+            // instant the capture was solved, and every change after it. The solve rounds the speed
+            // the ship has NOW, which is right for the flight only if the ship keeps it.
+            public bool HasSpeedCommand;
+            public TargetMotionProbe.SpeedCommand SpeedCommandAtLaunch;
+            public float LastWantedSeen, LastConvergeSeen;
+            public readonly List<string> SpeedCommandChanges = new List<string>();
+            // D-L: preformatted launch-cell lines for the .result, read at first sighting.
+            public string LaunchCellBlock;
             public bool InGroup;
             public bool GroupLeader;
             public int MaxGroupSize;
@@ -137,7 +181,7 @@ namespace AutoTOT
         private static readonly List<WeaponBase> _trackerScratch = new List<WeaponBase>();
 
         /// <summary>The tracker fields only the corpus writer reads, refreshed each tick for a dumped round.</summary>
-        private static void UpdateCorpusTail(WeaponBase w, ObjectBase tgt, FlightSample s)
+        private static void UpdateCorpusTail(WeaponBase w, ObjectBase tgt, FlightSample s, float simNow)
         {
             // Group membership is assigned by Missile.JoinOrCreateMissileGroup a few frames after
             // the round leaves the rail, so the first sighting often sees a valid grouped round as
@@ -154,10 +198,20 @@ namespace AutoTOT
             {
                 if (step < s.MinFlownStep) s.MinFlownStep = step;
                 if (step > s.MaxFlownStep) s.MaxFlownStep = step;
+                // Compared relatively, on the same tolerance the lab uses to call a step steady,
+                // so float noise in the game's own 0.0166667 cannot register as a change.
+                if (s.LastStepSeen <= 0f ||
+                    Mathf.Abs(step - s.LastStepSeen) > StepChangeRelativeTolerance * step)
+                {
+                    if (s.StepChanges.Count < StepChangeCap)
+                        s.StepChanges.Add($"{simNow - s.LaunchTime:0.000}:{step:0.0000}");
+                    s.LastStepSeen = step;
+                }
             }
             s.TargetPosAtEnd = tgt.transform != null ? tgt.transform.position : s.TargetPosAtEnd;
             s.TargetCourseAtEnd = tgt.getHeading();
             s.TargetSpeedAtEnd = tgt._velocityInKnots;
+            NoteSpeedCommand(tgt, s, simNow);
         }
 
         /// <summary>
@@ -224,6 +278,7 @@ namespace AutoTOT
             _retiredExpectations.Clear();
             _noArrivalWarned.Clear();
             UncreditedLaunches = 0;
+            TargetMotionProbe.Reset();
         }
 
         // Ammunition already reported as having ended a flight without arriving, so the warning is
@@ -239,6 +294,8 @@ namespace AutoTOT
         internal static void Tick(float simNow)
         {
             if (!Singleton<ObjectsManager>.InstanceExists()) return;
+
+            TargetMotionProbe.Tick(simNow);
 
             if (Coordinator.ProfilingEnabled) _subSw.Restart();
             ScanTrackedMissiles(simNow);
@@ -299,7 +356,7 @@ namespace AutoTOT
                     // only for a round dumped at first sighting. They used to be updated for every
                     // friendly round on every tick, a game heading read included, with both
                     // diagnostic gates off.
-                    if (existing.DumpKey != null) UpdateCorpusTail(w, tgt, existing);
+                    if (existing.DumpKey != null) UpdateCorpusTail(w, tgt, existing, simNow);
                     // Every 5s of flight, capped: enough to see the shape of a climb without
                     // turning a 700s flight into a wall of text.
                     if (verbose && simNow >= existing.NextTrackSample && existing.Track.Count < 150)
@@ -311,7 +368,9 @@ namespace AutoTOT
                     }
                     if (verbose && existing.Coordinated)
                     {
+                        TargetMotionProbe.Watch(tgt, simNow);
                         MaybeRecordFlightTrack(w, tgt, existing, simNow);
+                        MaybeRecordSeekerEvent(w, tgt, existing, simNow);
                         MaybeRecordGroupChange(w, existing, simNow);
                         RecordGuardTrack(w, existing, simNow);
                     }
@@ -345,8 +404,26 @@ namespace AutoTOT
                     // per-missile diagnostics ; defensive SAMs the escorts auto-fire target incoming
                     // threats, which never get a row, so we skip their sim work and logging entirely.
                     bool coordinated = EngagementBoard.IsCoordinated(tgt);
-                    // Game's own single-shot sim InterceptTime for this shot, stamped so the impact
-                    // line can print the sim-vs-actual gap. Cached (0.5s TTL) ; LogTrackInit reuses it.
+                    // The state this round left the rail in: the ROUND'S own position, which is the
+                    // launcher cell it spawned in (not the ship's centre, 37 to 48 m away on a VLS ship),
+                    // and its own heading, which is the rail it actually used. A ship with two fixed
+                    // launchers for one ammunition can hand a round the other canister after the
+                    // solve, and the live pick then names a rail the round never flew: 180 deg out on
+                    // a Spruance Harpoon, worth +5.3 s of false gap. This differs from the live
+                    // solve's input in that heading alone, and only for a fixed rail
+                    // (TryBuildSolveInput). See docs/plans/done/2026-09-13-launcher-pick-by-arc.md.
+                    Vector3 roundHeading;
+                    if (w.transform == null || !GameMath.TryFlatDirection(w.transform.forward, out roundHeading))
+                        roundHeading = Vector3.zero;
+                    FlightTime.LaunchState launchState = w._launchPlatform != null
+                        ? new FlightTime.LaunchState(w.transform != null ? w.transform.position
+                                                                         : w._launchPlatform.transform.position,
+                                                     w._launchPlatform._velocityInKnots, roundHeading)
+                        : default;
+                    // The model's flight time for this shot as it left, stamped so the impact line can
+                    // print the sim-vs-actual gap. Uncached: it is a constant of this launch, and the
+                    // TTL cache is keyed on the live shooter. Falls back to the live estimate where
+                    // the integrator declines, which is always the case on the public branch.
                     // Verbose-only: it feeds the verbose `gap` line, and a kinematic sim per new missile
                     // would be wasted work (and a spike under big salvos) in normal play.
                     float est = -1f;
@@ -354,9 +431,16 @@ namespace AutoTOT
                     if (verbose && coordinated && w._launchPlatform != null && w._ap != null)
                     {
                         CoordinatorProfiler.Begin(CoordinatorProfiler.Stage.FlightEstimate);
-                        est = FlightTime.Estimate(w._launchPlatform, w._ap._ammunitionFileName, tgt);
+                        est = FlightTime.EstimateFromLaunch(w._launchPlatform, w._ap._ammunitionFileName, tgt,
+                                                            launchState);
+                        bool cacheHit = false;
+                        if (est <= FlightTime.MinValidSeconds)
+                        {
+                            est = FlightTime.Estimate(w._launchPlatform, w._ap._ammunitionFileName, tgt);
+                            cacheHit = FlightTime.WasLastCallCacheHit;
+                        }
                         CoordinatorProfiler.End(CoordinatorProfiler.Stage.FlightEstimate);
-                        CoordinatorProfiler.CountEstimate(FlightTime.WasLastCallCacheHit);
+                        CoordinatorProfiler.CountEstimate(cacheHit);
                         // The game's own EstimateShot InterceptTime, for side-by-side accuracy
                         // comparison against the (now primary) grounded integrator. See gap line.
                         legacyEst = FlightTime.MaxRangePreciseEndTime(w._launchPlatform, w._ap, tgt);
@@ -369,7 +453,7 @@ namespace AutoTOT
                         wpEst = WaypointSim.EndTime(w._launchPlatform, w._ap, tgt, emitDiag: true);
                     string dumpKey = (Coordinator.TraceFlightModel && coordinated && w._ap != null &&
                                       w._launchPlatform != null)
-                        ? FlightTime.DumpInputFor(w._launchPlatform, w._ap._ammunitionFileName, tgt)
+                        ? FlightTime.DumpInputFor(w._launchPlatform, w._ap._ammunitionFileName, tgt, launchState)
                         : null;
                     var fresh = new FlightSample
                     {
@@ -389,9 +473,11 @@ namespace AutoTOT
                         PeakAltU = verbose && w.transform != null ? w.transform.position.y : 0f,
                         LastSpeedKn = verbose ? w._velocityInKnots : 0f,
                         PeakSpeedKn = verbose ? w._velocityInKnots : 0f,
-                        LaunchPosU = w._launchPlatform != null ? w._launchPlatform.transform.position
-                                                              : Vector3.zero,
+                        LaunchPosU = w.transform != null ? w.transform.position
+                                   : w._launchPlatform != null ? w._launchPlatform.transform.position
+                                   : Vector3.zero,
                         LaunchVelKn = w._launchPlatform != null ? w._launchPlatform._velocityInKnots : 0f,
+                        LaunchHeadingU = roundHeading,
                         Shooter = w._launchPlatform,
                         ShooterAmmoId = (w._ap != null ? w._ap._ammunitionFileName : null),
                         Coordinated = coordinated,
@@ -401,6 +487,8 @@ namespace AutoTOT
                         AmmoFingerprint = dumpKey != null && w._ap != null
                             ? SolveInputDump.AmmunitionFingerprint(w._ap) : string.Empty,
                         MotorPerformance = MotorPerformanceOf(w),
+                        TargetLengthM = TargetLengthOf(tgt),
+                        TargetBoundsM = TargetBoundsOf(tgt),
                         TargetPosAtLaunch = tgt.transform != null ? tgt.transform.position : Vector3.zero,
                         TargetCourseAtLaunch = tgt.getHeading(),
                         TargetSpeedAtLaunch = tgt._velocityInKnots,
@@ -432,16 +520,107 @@ namespace AutoTOT
                     CreditLaunch(w, tgt);
                     if (coordinated)
                     {
-                        LogTrackInit(w, est);
+                        LogTrackInit(w, est, launchState);
                         MaybeLogTelemetry(w, tgt, fresh, distM, simNow);
                     }
+                    // Chain audit B1. Read here rather than in the initializer because the
+                    // expectation lookup is a scan and this is the one place per round it runs.
+                    if (dumpKey != null && w._ap != null &&
+                        TryGetDelayTerms(w._launchPlatform, w._ap._ammunitionFileName, tgt,
+                                         out float regSim, out float startLead, out float envLead,
+                                         out float relLead, out float impactAt, out bool wasAnchor))
+                    {
+                        fresh.RegisteredSim = regSim;
+                        fresh.StartupLead = startLead;
+                        fresh.EnvelopeLead = envLead;
+                        fresh.ReleaseLead = relLead;
+                        fresh.ImpactAtSim = impactAt;
+                        fresh.WasAnchor = wasAnchor;
+                    }
+                    // D3: read at the instant DumpInputFor solved the capture above.
+                    if (dumpKey != null) NoteSpeedCommand(tgt, fresh, simNow);
+                    if (dumpKey != null) fresh.LaunchCellBlock = GuidanceStateProbe.DescribeLaunchCell(w, tgt);
                     _flightTracker[w] = fresh;
                 }
             }
         }
 
+        /// <summary>
+        /// The target's declared hull length in metres, or -1 when the game does not give one. Read
+        /// through the parameters object rather than a collider so it is the ini's own figure.
+        /// </summary>
+        private static float TargetLengthOf(ObjectBase tgt)
+        {
+            try { return tgt != null && tgt._obp != null ? tgt._obp._length : -1f; }
+            catch { return -1f; }
+        }
+
+        /// <summary>
+        /// The target's collider box in metres, which is what the game's arrival actually tests
+        /// against (<c>Vessel.OnTriggerEnter</c>). World-axis aligned, so it is only a hull box when
+        /// read together with the target's heading, which the outcome already records. Zero when
+        /// the target carries no collider we can see.
+        /// </summary>
+        private static Vector3 TargetBoundsOf(ObjectBase tgt)
+        {
+            try
+            {
+                if (tgt == null) return Vector3.zero;
+                Collider c = tgt.GetComponentInChildren<Collider>();
+                return c != null ? c.bounds.size * GameUnits.MetersPerUnity : Vector3.zero;
+            }
+            catch { return Vector3.zero; }
+        }
+
         /// <summary>Flight-time seconds between samples of the recorded altitude/speed track.</summary>
         private const float TrackSampleIntervalSim = 5f;
+
+        /// <summary>
+        /// A physics step counts as changed beyond this fraction of itself. The same tolerance the
+        /// offline lab uses to call a step steady, so the two agree on what a change is.
+        /// </summary>
+        private const float StepChangeRelativeTolerance = 0.01f;
+
+        /// <summary>Most step changes one round records. The frame rate can hunt across the game's
+        /// 30/40 fps hysteresis band, which would otherwise write a line per sample.</summary>
+        private const int StepChangeCap = 24;
+
+        /// <summary>D3: a wanted or capped speed counts as changed beyond this many knots. Neither
+        /// moves while a ship holds one telegraph on a straight course; only its own speed does.</summary>
+        private const float SpeedCommandChangeKn = 0.01f;
+
+        /// <summary>Most speed-command entries, and log lines, one round records.</summary>
+        private const int SpeedCommandChangeCap = 16;
+
+        /// <summary>
+        /// D3 of docs/plans/open/max-solo-error-below-1s.md: record a Vessel target's speed command
+        /// the first time it is read, which is the instant <see cref="FlightTime.DumpInputFor"/>
+        /// solved the capture, then each change of more than <see cref="SpeedCommandChangeKn"/>.
+        /// Each entry is "t:wanted:converge:speed", t from launch.
+        /// </summary>
+        private static void NoteSpeedCommand(ObjectBase tgt, FlightSample s, float simNow)
+        {
+            if (!TargetMotionProbe.TryReadSpeedCommand(tgt, out TargetMotionProbe.SpeedCommand c)) return;
+            bool first = !s.HasSpeedCommand;
+            if (!first && Mathf.Abs(c.Wanted - s.LastWantedSeen) <= SpeedCommandChangeKn &&
+                Mathf.Abs(c.Converge - s.LastConvergeSeen) <= SpeedCommandChangeKn)
+                return;
+            if (first)
+            {
+                s.HasSpeedCommand = true;
+                s.SpeedCommandAtLaunch = c;
+            }
+            s.LastWantedSeen = c.Wanted;
+            s.LastConvergeSeen = c.Converge;
+            if (s.SpeedCommandChanges.Count >= SpeedCommandChangeCap) return;
+            float t = simNow - s.LaunchTime;
+            s.SpeedCommandChanges.Add($"{t:0.000}:{c.Wanted:0.000}:{c.Converge:0.000}:{c.Speed:0.000}");
+            Bootstrap.Log.LogInfo(
+                $"[AutoTOT] tgt-speed-command {UnitNaming.SafeName(tgt)} {(first ? "at launch" : "CHANGED")} " +
+                $"of {s.AmmoName} t+{t:0.0}s: speed {c.Speed:0.000}kn wanted {c.Wanted:0.000}kn " +
+                $"converge {c.Converge:0.000}kn rudder {c.Rudder:0.00}deg sea {c.SeaState} " +
+                $"damping/tick {c.DampingPerTick:0.000000} step {GameTime.fixedDeltaTime:0.0000}");
+        }
 
         /// <summary>
         /// The per-round thrust multiplier the game rolled at spawn (Missile.cs:62), or 1 when the
@@ -588,7 +767,7 @@ namespace AutoTOT
                 }
 
                 var launch = new FlightTime.LaunchState(s.LaunchPosU, s.LaunchVelKn,
-                                                        Vector3.zero, subAtLaunch);
+                                                        s.LaunchHeadingU, subAtLaunch);
                 float est = FlightTime.EstimateFromLaunch(s.Shooter, s.ShooterAmmoId, sub, launch);
                 if (est <= FlightTime.MinValidSeconds)
                 {
@@ -715,10 +894,14 @@ namespace AutoTOT
                                 s.PeakSpeedKn, s.PeakAltU, s.LastSpeedKn, s.Track,
                                 s.FlightTrack, s.GuardTrack,
                                 s.WpEstAtLaunch, s.LegacyEstAtLaunch,
-                                s.StageChanges, s.StageEvents, s.GroupChanges,
+                                s.StageChanges, s.StageEvents, s.GroupChanges, s.StepChanges,
+                                s.RegisteredSim, s.StartupLead, s.EnvelopeLead, s.ReleaseLead,
+                                s.ImpactAtSim, s.WasAnchor, s.TargetLengthM, s.TargetBoundsM,
                                 s.TargetCourseAtLaunch, s.TargetSpeedAtLaunch,
                                 s.TargetCourseAtEnd, s.TargetSpeedAtEnd,
-                                (s.TargetPosAtEnd - s.TargetPosAtLaunch).magnitude);
+                                (s.TargetPosAtEnd - s.TargetPosAtLaunch).magnitude,
+                                s.HasSpeedCommand, s.SpeedCommandAtLaunch, s.SpeedCommandChanges,
+                                s.LaunchCellBlock);
 
                         // gap = actual flown time − the sim estimate captured at launch (positive =>
                         // the sim UNDER-predicts). Peak altitude and terminal speed say WHERE the gap

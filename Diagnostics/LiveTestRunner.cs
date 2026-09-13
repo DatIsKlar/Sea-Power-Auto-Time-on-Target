@@ -24,6 +24,10 @@ namespace AutoTOT
     {
         private enum State { Idle, Menu, Load, Start, Arm, Fire, Watch, Settle, Finish, Done }
 
+        // Panel mode: whether the panel has been staged, and when the hold started.
+        private bool _panelStaged;
+        private float _panelHeldFrom;
+
         private State _state = State.Idle;
         private float _stateEntered;          // Time.realtimeSinceStartup at entry
         private float _menuSeenAt = -1f;      // main menu first observed (settle timer)
@@ -180,6 +184,26 @@ namespace AutoTOT
                         return;
                     }
                     if (!HoldSatisfied()) return;
+                    // Panel mode: stage the first shot on screen and hold, instead of firing. The
+                    // warnings this photographs are drawn per weapon row and in the strike section,
+                    // so they need a shooter picked, a target picked and a row ticked, which is
+                    // exactly what StagePanelFor sets. Nothing is fired and nothing is captured.
+                    if (_plan.PanelHoldSec > 0f)
+                    {
+                        if (!_panelStaged)
+                        {
+                            Coordinator.Shot s0 = _shots[0];
+                            _panelStaged = Hud.StagePanelFor(s0.Unit, s0.Target, s0.AmmoId, s0.Salvo);
+                            Bootstrap.Log.LogInfo(_panelStaged
+                                ? $"[AutoTOT] livetest: panel staged, holding {_plan.PanelHoldSec:0}s for a screenshot"
+                                : "[AutoTOT] livetest: panel staging FAILED, the panel is not up");
+                            _panelHeldFrom = Time.realtimeSinceStartup;
+                        }
+                        if (Time.realtimeSinceStartup - _panelHeldFrom < _plan.PanelHoldSec) return;
+                        _notes.Add(_panelStaged ? "panel held for screenshot" : "panel staging failed");
+                        Enter(State.Finish);
+                        return;
+                    }
                     Enter(State.Fire);
                     return;
                 }

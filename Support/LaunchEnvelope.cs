@@ -11,18 +11,17 @@ namespace AutoTOT
     /// needs one number for all three, because that delay belongs in the enroute estimate that
     /// decides both anchor selection and follower release.
     ///
-    /// Named for the question rather than the platform so the aircraft case has an obvious home.
-    /// Submarines are the only implementation today: see
-    /// <see cref="SubmarineFacts.EstimateLaunchDelay"/> and <see cref="SubmarineAscent"/>.
+    /// Named for the question rather than the platform. Both platforms are implemented: a
+    /// submarine's ascent through <see cref="SubmarineFacts.EstimateLaunchDelay"/> and
+    /// <see cref="SubmarineAscent"/>, an aircraft's descent through <see cref="AircraftDelay"/>
+    /// and <see cref="AircraftDescent"/>.
     ///
-    /// The aircraft path is NOT written yet, deliberately. What is already known is that the game
-    /// gates aircraft through the same engage-state machinery, setting
-    /// <c>EngageState.LauncherTooHigh</c> from <c>_ap._minDepthUnity</c>
-    /// (WeaponSystemLauncher.cs:425-431) beside the <c>LauncherTooLow</c> path submarines take, and
-    /// that <c>AmmunitionParameters._launchAltitudesInUnity</c> carries MinLaunchAltitude and
-    /// MaxLaunchAltitude. So the gate has the same shape and this seam is the right one. The
-    /// descent dynamics still need their own read of the Aircraft motion code before anything is
-    /// written here, exactly as the submarine model needed applyDepth read first.
+    /// The two share a gate shape as well as a seam. The game runs aircraft through the same
+    /// engage-state machinery, setting <c>EngageState.LauncherTooHigh</c> from
+    /// <c>_ap._minDepthUnity</c> beside the <c>LauncherTooLow</c> path submarines take, and
+    /// <c>AmmunitionParameters._launchAltitudesInUnity</c> carries the launch altitude band that
+    /// <c>WeaponSystemHardpoint</c> tests. Only the descent DYNAMICS differ, and an aircraft that
+    /// is too LOW is deliberately not modelled: see <see cref="AircraftDelay"/>.
     /// </summary>
     internal static class LaunchEnvelope
     {

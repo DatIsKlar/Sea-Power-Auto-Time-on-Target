@@ -270,6 +270,27 @@ The loft speed applies only when the stage is `MaintainLoftAlt`. During Launch a
 the commanded speed is `_maxVelocityInKnots` (`Missile.cs:3142-3145`), so the model overrides the
 stage target for that window. Inert for ammunition whose loft speed equals its maximum speed.
 
+### Which descent angle the profile commands
+
+`_finalFlightPhaseMaxAngle` constrains one waypoint, the final-flight leg, and
+`Missile.CreateWaypointConfigs` builds that leg only when `_finalFlightPhaseDistToTarget` is
+positive. Where it is not, the descent to cruise altitude rides the sea-skimming leg instead, so the
+profile commands `_seaSkimmingMaxDescentAngle`:
+
+```
+descentDeg = finalFlightDist > 0 and _finalFlightPhaseMaxAngle > 0
+             ? _finalFlightPhaseMaxAngle
+             : _seaSkimmingMaxDescentAngle           # 30 deg if that is unset too
+```
+
+63 of 853 shipped and workshop ammunition declare the two angles differently with no final-flight
+leg, so for those the choice decides the descent. `usn_agm-84d` is one: it declares 30 and 45, and
+the game's recorded track holds a flat -45.00 degrees from 20,000 ft to the sea. Taking the 30
+unconditionally put that family 2.7 s early on every long shot.
+
+`descentOnsetDeg`, which sets the terminal geometry below, stays the maximum of both angles either
+way.
+
 ### Terminal onset
 
 The dive begins at whichever comes first: the declared terminal distance, or the geometric distance
@@ -339,8 +360,12 @@ the boundary, using that leg's own settings. The pre-apex guard (`Missile.cs:255
 the pitch change needed between the 1.5 s and 8 s points with the raw `_maxTurnRate` times pitch's
 share of the steering error, and commands level flight when the round cannot make it.
 
-Captures without the raw route fields, air-launched rounds and terminal-loft ammunition keep the law
-below.
+Air-launched rounds fly this route as well. They were held out of it until 2026-09-13, when the
+closest-approach test in [§5.3](05-loop.md) learned to require slant range to recede: without that,
+a round released inside `_terminalApproachDist` ended its own solve part way down the terminal dive,
+and the route looked far worse than the law below rather than far better.
+
+Captures without the raw route fields, and terminal-loft ammunition, keep the law below.
 
 ### Bang-bang while transiting, proportional while holding
 

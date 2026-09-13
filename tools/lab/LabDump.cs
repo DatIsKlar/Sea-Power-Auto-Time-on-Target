@@ -213,6 +213,47 @@ namespace AutoTOT.Lab
                 n.x.ToString("R", Inv) + "," + n.y.ToString("R", Inv)));
         }
 
+        /// <summary>
+        /// Recomputes the descent angle the way ResolveStageProfile now does, for a capture that
+        /// carries the raw ammunition angle. Older captures recorded only the derived value and
+        /// keep it, the same rule the raw terminal-altitude fields follow: read a raw field where
+        /// the capture has one, never backfill a default where it does not.
+        /// </summary>
+        private static float CandidateDescentDeg(Dictionary<string, string> kv)
+        {
+            float recorded = F(kv, "DescentDeg");
+            if (!kv.ContainsKey("Ammo.SeaSkimmingMaxDescentAngle")) return recorded;
+            if (F(kv, "FinalFlightDist") > 0f) return recorded;
+            float seaSkim = F(kv, "Ammo.SeaSkimmingMaxDescentAngle");
+            return seaSkim > FlightTime.SetAngleEpsilonDeg ? seaSkim : recorded;
+        }
+
+        /// <summary>
+        /// The seeker range that opens and closes the drag brake, mirroring
+        /// FlightTime.Integrator.ResolveSeekerBrakeRange. A capture that recorded the resolved
+        /// value is believed; one that carries the raw ammunition fields is recomputed from them,
+        /// which is what lets the stored corpus be scored against this rule at all; anything older
+        /// returns -1 and replays the altitude gate it was flown with.
+        /// </summary>
+        private static float SeekerBrakeRange(Dictionary<string, string> kv)
+        {
+            // A capture from earlier on 2026-09-13 recorded 0 for "no window", which now reads as
+            // "not known". Both fall back to the older altitude gate, so the reinterpretation is in
+            // the safe direction and no stored round changes behaviour.
+            if (kv.ContainsKey("SeekerBrakeRange")) return F(kv, "SeekerBrakeRange");
+            if (!kv.ContainsKey("Ammo.TargetMemory") ||
+                !kv.ContainsKey("Ammo.MidCourseCorrection") ||
+                !kv.ContainsKey("Ammo.GuidanceType") ||
+                !kv.ContainsKey("Ammo.SeekerActiveRange")) return 0f;
+            if (B(kv, "Ammo.TargetMemory")) return FlightTime.NoSeekerBrakeWindow;
+            // AmmunitionParameters: only RadioCommand and Datalink set AllowsLauncherGuidance.
+            string mcc = kv.GetValueOrDefault("Ammo.MidCourseCorrection", "");
+            if (mcc != "RadioCommand" && mcc != "Datalink") return FlightTime.NoSeekerBrakeWindow;
+            if (kv.GetValueOrDefault("Ammo.GuidanceType", "") == "None") return FlightTime.NoSeekerBrakeWindow;
+            float range = Mathf.Max(F(kv, "Ammo.SeekerActiveRange"), F(kv, "Ammo.SeekerPassiveRange"));
+            return range > 0f ? range : FlightTime.NoSeekerBrakeWindow;
+        }
+
         private static FlightTime.SolveInput BuildInput(Dictionary<string, string> kv,
                                                         AmmunitionParameters ap,
                                                         bool trackDiag = false)
@@ -229,6 +270,7 @@ namespace AutoTOT.Lab
                 ? B(kv, "TerminalLinear")
                 : !B(kv, "NonKin") && !B(kv, "IsTerminalLoft") && !B(kv, "IsAir") &&
                   F(kv, "TermDist") > 0f && (hasRawTerminal || legacyRawTerminalUnset);
+            float descentDeg = CandidateDescentDeg(kv);
             float termAlt = kv.ContainsKey("TerminalEndAlt")
                 ? F(kv, "TerminalEndAlt")
                 : hasRawTerminal && terminalLinear
@@ -236,75 +278,78 @@ namespace AutoTOT.Lab
                     : terminalLinear && legacyRawTerminalUnset
                         ? F(kv, "TargetAlt0")
                         : F(kv, "TermAlt");
-            return new FlightTime.SolveInput(
-                altNodes: Nodes(kv, "AltNodes"),
-                ammoLabel: kv.GetValueOrDefault("AmmoLabel", ""),
-                boostClimbDeg: F(kv, "BoostClimbDeg"),
-                decelRate: F(kv, "DecelRate"),
-                descentDeg: F(kv, "DescentDeg"),
-                descentOnsetDeg: F(kv, "DescentOnsetDeg"),
-                dragFactor: F(kv, "DragFactor"),
-                cruiseAlt: F(kv, "CruiseAlt"),
-                finalFlightAlt: F(kv, "FinalFlightAlt"),
-                finalFlightDist: F(kv, "FinalFlightDist"),
-                finalDist: F(kv, "FinalDist"),
-                flatDistTotal: F(kv, "FlatDistTotal"),
-                initialPhaseDur: F(kv, "InitialPhaseDur"),
-                performsSlightBallisticInitialFlight: kv.ContainsKey("PerformsSlightBallisticInitialFlight")
+            return new FlightTime.SolveInput
+            {
+                AltNodes = Nodes(kv, "AltNodes"),
+                AmmoLabel = kv.GetValueOrDefault("AmmoLabel", ""),
+                BoostClimbDeg = F(kv, "BoostClimbDeg"),
+                DecelRate = F(kv, "DecelRate"),
+                DescentDeg = descentDeg,
+                DescentOnsetDeg = F(kv, "DescentOnsetDeg"),
+                DragFactor = F(kv, "DragFactor"),
+                CruiseAlt = F(kv, "CruiseAlt"),
+                FinalFlightAlt = F(kv, "FinalFlightAlt"),
+                FinalFlightDist = F(kv, "FinalFlightDist"),
+                FinalDist = F(kv, "FinalDist"),
+                FlatDistTotal = F(kv, "FlatDistTotal"),
+                InitialPhaseDur = F(kv, "InitialPhaseDur"),
+                PerformsSlightBallisticInitialFlight = kv.ContainsKey("PerformsSlightBallisticInitialFlight")
                     ? B(kv, "PerformsSlightBallisticInitialFlight") : false,
-                isAir: B(kv, "IsAir"),
-                isHighBallisticLofter: B(kv, "IsHighBallisticLofter"),
-                isTerminalLoft: B(kv, "IsTerminalLoft"),
-                launchPitch: F(kv, "LaunchPitch"),
-                configuredLoftAlt: kv.ContainsKey("ConfiguredLoftAlt")
+                IsAir = B(kv, "IsAir"),
+                IsHighBallisticLofter = B(kv, "IsHighBallisticLofter"),
+                IsTerminalLoft = B(kv, "IsTerminalLoft"),
+                LaunchPitch = F(kv, "LaunchPitch"),
+                ConfiguredLoftAlt = kv.ContainsKey("ConfiguredLoftAlt")
                     ? F(kv, "ConfiguredLoftAlt") : F(kv, "LoftAlt"),
-                loftAlt: F(kv, "LoftAlt"),
-                loftEntryDist: F(kv, "LoftEntryDist"),
-                loftSpeedHoldDist: F(kv, "LoftSpeedHoldDist"),
-                loftVelKn: F(kv, "LoftVelKn"),
-                ballisticLoft: B(kv, "BallisticLoft"),
-                loftClimbTan: F(kv, "LoftClimbTan"),
-                loftDescentTan: F(kv, "LoftDescentTan"),
-                launchAltU: F(kv, "LaunchAltU"),
-                lofting: B(kv, "Lofting"),
-                maxFlight: F(kv, "MaxFlight"),
-                maxVelKn: F(kv, "MaxVelKn"),
-                nonKin: B(kv, "NonKin"),
-                targetAlt0: F(kv, "TargetAlt0"),
-                targetPos: V3(kv, "TargetPos"),
-                targetVel: V3(kv, "TargetVel"),
-                terminalLinear: terminalLinear,
-                termAlt: termAlt,
-                termDist: F(kv, "TermDist"),
-                termVelKn: F(kv, "TermVelKn"),
-                terminalPopUpEnabled: kv.ContainsKey("TerminalPopUpEnabled") && B(kv, "TerminalPopUpEnabled"),
-                terminalPopUpDist: kv.ContainsKey("TerminalPopUpDist") ? F(kv, "TerminalPopUpDist") : 0f,
-                terminalPopUpHeight: kv.ContainsKey("TerminalPopUpHeight") ? F(kv, "TerminalPopUpHeight") : 0f,
-                terminalPopUpAngle: kv.ContainsKey("TerminalPopUpAngle") ? F(kv, "TerminalPopUpAngle") : 60f,
-                terminalVerticalTurnRate: kv.ContainsKey("TerminalVerticalTurnRate")
+                LoftAlt = F(kv, "LoftAlt"),
+                LoftEntryDist = F(kv, "LoftEntryDist"),
+                LoftSpeedHoldDist = F(kv, "LoftSpeedHoldDist"),
+                SeekerBrakeRangeU = SeekerBrakeRange(kv),
+                LoftVelKn = F(kv, "LoftVelKn"),
+                BallisticLoft = B(kv, "BallisticLoft"),
+                LoftClimbTan = F(kv, "LoftClimbTan"),
+                LoftDescentTan = F(kv, "LoftDescentTan"),
+                LaunchAltU = F(kv, "LaunchAltU"),
+                Lofting = B(kv, "Lofting"),
+                MaxFlight = F(kv, "MaxFlight"),
+                MaxVelKn = F(kv, "MaxVelKn"),
+                NonKin = B(kv, "NonKin"),
+                TargetAlt0 = F(kv, "TargetAlt0"),
+                TargetPos = V3(kv, "TargetPos"),
+                TargetVel = V3(kv, "TargetVel"),
+                TerminalLinear = terminalLinear,
+                TermAlt = termAlt,
+                TermDist = F(kv, "TermDist"),
+                TermVelKn = F(kv, "TermVelKn"),
+                TerminalPopUpEnabled = kv.ContainsKey("TerminalPopUpEnabled") && B(kv, "TerminalPopUpEnabled"),
+                TerminalPopUpDist = kv.ContainsKey("TerminalPopUpDist") ? F(kv, "TerminalPopUpDist") : 0f,
+                TerminalPopUpHeight = kv.ContainsKey("TerminalPopUpHeight") ? F(kv, "TerminalPopUpHeight") : 0f,
+                TerminalPopUpAngle = kv.ContainsKey("TerminalPopUpAngle") ? F(kv, "TerminalPopUpAngle") : 60f,
+                TerminalVerticalTurnRate = kv.ContainsKey("TerminalVerticalTurnRate")
                     ? F(kv, "TerminalVerticalTurnRate") : F(kv, "TurnRateBase"),
-                trackDiag: trackDiag,   // off unless the trace command asked
-                turnRate: F(kv, "TurnRate"),
-                toBearingTurnRate: F(kv, "ToBearingTurnRate"),
-                turnRateBase: F(kv, "TurnRateBase"),
-                turnDerateThresholdKn: F(kv, "TurnDerateThresholdKn"),
-                altLatchPhase: I(kv, "AltLatchPhase"),
-                altLatched: B(kv, "AltLatched"),
-                att: Q(kv, "Att"),
-                launchHeading: V3(kv, "LaunchHeading"),
-                nextSample: F(kv, "NextSample"),
-                pos: V3(kv, "Pos"),
-                prevAltErr: F(kv, "PrevAltErr"),
-                prevFlat: F(kv, "PrevFlat"),
-                prevPitch: F(kv, "PrevPitch"),
-                t: F(kv, "T"),
-                tlGliding: B(kv, "TlGliding"),
-                kappaEndFlat: F(kv, "KappaEndFlat"),
-                kappaProgress: F(kv, "KappaProgress"),
-                velKnots: F(kv, "VelKnots"),
-                legs: Legs(kv),
+                TrackDiag = trackDiag,   // off unless the trace command asked
+                TurnRate = F(kv, "TurnRate"),
+                ToBearingTurnRate = F(kv, "ToBearingTurnRate"),
+                TurnRateBase = F(kv, "TurnRateBase"),
+                TurnDerateThresholdKn = F(kv, "TurnDerateThresholdKn"),
+                AltLatchPhase = I(kv, "AltLatchPhase"),
+                AltLatched = B(kv, "AltLatched"),
+                Att = Q(kv, "Att"),
+                LaunchHeading = V3(kv, "LaunchHeading"),
+                NextSample = F(kv, "NextSample"),
+                Pos = V3(kv, "Pos"),
+                PrevAltErr = F(kv, "PrevAltErr"),
+                PrevFlat = F(kv, "PrevFlat"),
+                PrevPitch = F(kv, "PrevPitch"),
+                T = F(kv, "T"),
+                TlGliding = B(kv, "TlGliding"),
+                KappaEndFlat = F(kv, "KappaEndFlat"),
+                KappaProgress = F(kv, "KappaProgress"),
+                VelKnots = F(kv, "VelKnots"),
+                Legs = Legs(kv),
                 // Every recorded target is a ship, so GroupSize alone decides leadership.
-                groupLeader: F(kv, "Ammo.MaxGroupSize") > 1f);
+                GroupLeader = F(kv, "Ammo.MaxGroupSize") > 1f
+            };
         }
 
         /// <summary>Raw fields Missile.CreateWaypointConfigs reads. A capture that lacks any of

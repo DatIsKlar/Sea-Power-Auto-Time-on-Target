@@ -206,15 +206,27 @@ namespace AutoTOT
         /// </summary>
         internal static float DeclaredSharedInterval(ObjectBase ship, string ammoId)
         {
+            string clock = SharedClockName(ship, ammoId);
+            return clock != null && ship._sharedLaunchIntervals.TryGetValue(clock, out float v) ? v : -1f;
+        }
+
+        /// <summary>
+        /// The ship-level launch clock this ammo fires on: its launcher's system name when the ship
+        /// declares a shared launch interval for that name, else null. Every launch of the name
+        /// resets one timer on the ship (WeaponSystemLauncher.cs:748, ObjectBaseLoader.cs:2423), so
+        /// two orders on one clock share one cadence even when they fire from different launchers.
+        /// </summary>
+        internal static string SharedClockName(ObjectBase ship, string ammoId)
+        {
             try
             {
                 List<WeaponSystem> launchers = ship?.GetWeaponSystemsForAmmunition(ammoId);
-                if (launchers == null || launchers.Count == 0) return -1f;
+                if (launchers == null || launchers.Count == 0) return null;
                 string sysName = launchers[0]._vwp?._systemName;
-                if (string.IsNullOrEmpty(sysName) || ship._sharedLaunchIntervals == null) return -1f;
-                return ship._sharedLaunchIntervals.TryGetValue(sysName, out float v) ? v : -1f;
+                if (string.IsNullOrEmpty(sysName) || ship._sharedLaunchIntervals == null) return null;
+                return ship._sharedLaunchIntervals.ContainsKey(sysName) ? sysName : null;
             }
-            catch { return -1f; }
+            catch { return null; }
         }
 
         /// <summary>

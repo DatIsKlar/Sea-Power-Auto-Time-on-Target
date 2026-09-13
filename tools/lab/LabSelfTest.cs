@@ -88,7 +88,14 @@ namespace AutoTOT.Lab
 
                 VerifyLegacyReconstruction(corpus);
                 Pass("legacy capture compatibility");
-                Console.WriteLine("selftest: 5 passed, 0 failed");
+
+                VerifyStepSchedule(corpus);
+                Pass("recorded step schedule replay");
+
+                VerifyLaunchAttitude(corpus);
+                Pass("launch attitude rebuild");
+
+                Console.WriteLine("selftest: 7 passed, 0 failed");
                 return 0;
             }
             catch (Exception e)
@@ -96,6 +103,57 @@ namespace AutoTOT.Lab
                 Console.Error.WriteLine("selftest FAILED: " + e.Message);
                 return 1;
             }
+        }
+
+        /// <summary>
+        /// The recorded step timeline has to be a faithful generalisation of a constant step, not a
+        /// second integration path that happens to give similar answers. Two invariants say so.
+        ///
+        /// A schedule of one entry must give bit-for-bit what that constant step gives. If it does
+        /// not, the schedule branch has changed the loop rather than only its step, and every
+        /// recovered round would be scored by different code from the rest of the corpus.
+        ///
+        /// A schedule whose entries are all the same step must equal that step too, whatever times
+        /// the entries carry. That is what proves the cursor advances without disturbing anything.
+        /// </summary>
+        private static void VerifyStepSchedule(string corpus)
+        {
+            string file = Directory.GetFiles(corpus, "*.solveinput").OrderBy(f => f)
+                .FirstOrDefault(f => ReadDump(f).ContainsKey("Ammo.TerminalAltRaw"));
+            AssertTrue("a current-schema capture exists to replay", file != null);
+
+            Dictionary<string, string> kv = ReadDump(file);
+            AmmunitionParameters ap = BuildAmmo(kv);
+            FlightTime.SolveInput input = BuildInput(kv, ap);
+
+            const float dt = 0.0166667f;
+            float constant = FlightTime.SolveOffline(in input, ap, dt, out _);
+            AssertTrue("the reference replay produced an estimate", constant > 0f);
+
+            FlightTime.OfflineSteps =
+                new FlightTime.OfflineStepSchedule(new[] { 0f }, new[] { dt });
+            float single = FlightTime.SolveOffline(in input, ap, dt, out _);
+            FlightTime.OfflineSteps = null;
+            AssertTrue("one-entry schedule equals the constant step", single.Equals(constant));
+
+            FlightTime.OfflineSteps = new FlightTime.OfflineStepSchedule(
+                new[] { 0f, 5f, 20f, 60f }, new[] { dt, dt, dt, dt });
+            float repeated = FlightTime.SolveOffline(in input, ap, dt, out _);
+            FlightTime.OfflineSteps = null;
+            AssertTrue("repeated-entry schedule equals the constant step", repeated.Equals(constant));
+
+            // A schedule that really does change the step must change the answer, or the branch is
+            // being skipped and every recovered round is silently replayed at its seed step.
+            FlightTime.OfflineSteps = new FlightTime.OfflineStepSchedule(
+                new[] { 0f, 1f }, new[] { dt, 0.1f });
+            float varied = FlightTime.SolveOffline(in input, ap, dt, out _);
+            FlightTime.OfflineSteps = null;
+            AssertTrue("a schedule that changes the step changes the answer",
+                       !varied.Equals(constant));
+
+            // Time weighting, which is what the reported step column prints.
+            var half = new FlightTime.OfflineStepSchedule(new[] { 0f, 50f }, new[] { 0.02f, 0.04f });
+            AssertNear("mean step is time weighted", half.MeanStep(100f), 0.03f);
         }
 
         private static void VerifyLegacyReconstruction(string corpus)
@@ -132,6 +190,38 @@ namespace AutoTOT.Lab
             AssertNear("legacy cruise terminal altitude passes through",
                        passthroughInput.TermAlt, F(passthrough, "TermAlt"));
         }
+
+        /// <summary>
+        /// The scorer's flown-rail substitution rebuilds the opening attitude as
+        /// QEuler(-PrevPitch, YawOf(LaunchHeading), 0), which is the mod's own construction. Every
+        /// capture with a rail heading carries both fields from the mod, so the rebuild has to
+        /// reproduce the recorded Att on all of them, or a substituted round replays from an attitude
+        /// no capture could contain. A quaternion and its negation are one rotation, hence |dot|.
+        /// </summary>
+        private static void VerifyLaunchAttitude(string corpus)
+        {
+            int checkedCount = 0;
+            foreach (string file in Directory.GetFiles(corpus, "*.solveinput").OrderBy(f => f))
+            {
+                Dictionary<string, string> kv = ReadDump(file);
+                if (!kv.ContainsKey("Att") || !kv.ContainsKey("LaunchHeading") || !kv.ContainsKey("PrevPitch"))
+                    continue;
+                Vector3 h = V3(kv, "LaunchHeading");
+                if (h.x * h.x + h.z * h.z < 1e-8f) continue;
+                Quaternion recorded = Q(kv, "Att");
+                Quaternion rebuilt = GameMath.QEuler(-F(kv, "PrevPitch"), FlightTime.YawOf(h), 0f);
+                float dot = Math.Abs(recorded.x * rebuilt.x + recorded.y * rebuilt.y +
+                                     recorded.z * rebuilt.z + recorded.w * rebuilt.w);
+                AssertTrue($"launch attitude rebuild matches {Path.GetFileName(file)} (|dot| {dot:R})",
+                           dot > 1f - AttitudeDotTolerance);
+                checkedCount++;
+            }
+            AssertTrue("captures with a rail heading exist to check the attitude rebuild", checkedCount > 0);
+            Console.WriteLine($"      attitude rebuilt and matched on {checkedCount} capture(s)");
+        }
+
+        /// <summary>Serialised quaternion components, written at full round-trip precision.</summary>
+        private const float AttitudeDotTolerance = 1e-5f;
 
         private static void AssertNear(string name, float actual, float expected)
         {

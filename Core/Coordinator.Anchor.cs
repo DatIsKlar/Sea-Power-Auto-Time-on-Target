@@ -92,8 +92,19 @@ namespace AutoTOT
             // actually spanned. Measured on 2026-09-09 before this existed: an order of 4 that
             // launched 3 subtracted 22.5s where the launches spanned 10.0s, so the shared impact
             // was set 17.5s early and every follower released against it.
+            //
+            // A POOLED anchor shares its ship's launch clock with other orders in the batch, so its
+            // own rounds are not one contiguous ripple and its last round does not locate the pool's
+            // centre: A4 put the anchor's four rounds in slots 1, 2, 3 and 5 of eight. The pool's
+            // first round is the anchor's (a pooled follower on its clock holds until that round is
+            // up), so the centre is measured from there:
+            //   impact = first launch + pooled lead + PoolDelta + flight.
+            // Written as a centering so lastRoundLaunch + est - centering still adds up in the
+            // anchor-slide line. See PoolSharedLaunchClock.
+            float lead = centeringOverride >= 0f ? centeringOverride : it.ReleaseLead;
             float centering = it.Grouped ? 0f
-                            : (centeringOverride >= 0f ? centeringOverride : it.ReleaseLead);
+                            : it.Pooled ? span - lead - it.PoolDelta
+                            : lead;
 
             terms = new AnchorPredictTerms
             {
@@ -512,13 +523,16 @@ namespace AutoTOT
             // definition. See docs/plans/done/2026-09-07-aircraft-anchor-impact-slide.md.
             if (stalled && !complete && k > 0)
             {
-                // D6 of the beta-release audit, before the re-prediction so the terms
-                // reported are the ones it is about to use.
-                LogStallCentering(a, it, n, k, span, interval);
                 // Centering from what flew, not from what was ordered. k == 1 spans nothing,
                 // so it centers on the single arrival, which is the same answer a one-round
-                // order would have produced at commit.
-                float observedCentering = (k > 1) ? span * 0.5f : 0f;
+                // order would have produced at commit. A pooled anchor keeps the pool's centre,
+                // less half an interval for every one of its rounds that never left.
+                float observedCentering = it.Pooled
+                    ? Mathf.Max(0f, it.ReleaseLead - (n - k) * 0.5f * a.IniInterval)
+                    : (k > 1) ? span * 0.5f : 0f;
+                // D6 of the beta-release audit, before the re-prediction so the terms
+                // reported are the ones it is about to use.
+                LogStallCentering(a, it, n, k, span, interval, observedCentering);
                 float onObserved = PredictAnchorImpact(a, it, k, k, interval, simNow,
                                                        out AnchorPredictTerms stallTerms,
                                                        observedCentering);

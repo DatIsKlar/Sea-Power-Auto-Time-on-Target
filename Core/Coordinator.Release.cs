@@ -57,14 +57,26 @@ namespace AutoTOT
             if (due && budgeted)
             {
                 // Three ways to answer, cheapest first.
-                if (FlightTime.TryCached(it.Unit, it.AmmoId, it.Target, out float cached))
+                if (FlightTime.TryCached(it.Unit, it.AmmoId, it.Target, out float cached,
+                                         out float cacheAgeReal))
                 {
                     // Already computed, possibly by a worker that finished since the last tick.
                     // No Begin/End here: nothing ran, so there is no duration to attribute.
                     CoordinatorProfiler.CountCachedHit();
                     flightNow = cached;
                     s.LastFlightEst = flightNow;
-                    s.LastFlightEstSim = simNow;
+                    // Back-date the staleness stamp by the entry's own age. The cache is SHARED and
+                    // its TTL is 0.5 s of REAL time, so a hit can be a value another caller stored
+                    // half a second ago; stamping it `simNow` recorded geometry of arbitrary age as
+                    // computed this instant, and at the game's 20x compression clamp that is up to
+                    // 10 sim seconds of movement, with the 2 s far-item cadence on top. The item is
+                    // then due again sooner, which is the whole effect: one extra refresh rather
+                    // than a release decided on a stale number. Chain audit A3.
+                    //
+                    // Real age is converted with the current compression rather than tracked in sim
+                    // time. Over a 0.5 s window the two differ only if the player changed
+                    // compression inside it, and the cost of being wrong there is one refresh.
+                    s.LastFlightEstSim = simNow - cacheAgeReal * Mathf.Max(GameTime.TimeCompression, 1f);
                 }
                 else if (s.LastFlightEst >= 0f &&
                          FlightTime.RequestRefresh(it.Unit, it.AmmoId, it.Target))
@@ -155,7 +167,15 @@ namespace AutoTOT
                 // own release); it earns its keep when the anchor is a submarine whose ascent ran
                 // longer than the estimate folded into StartupLead. Bounded by RippleDone: when the
                 // anchor completes, or is abandoned at NoLaunchMaxHoldSim, followers free next tick.
-                if (!s.IsAnchor && s.Anchor != null && s.Anchor.Fired &&
+                //
+                // A pooled follower on the anchor's own launch clock holds even before the anchor has
+                // fired. The pooled prediction measures the pool's centre from the anchor's first
+                // round, so that round has to be the clock's first, and a follower whose flight is
+                // within a release tick of the anchor's could otherwise take the slot. The follower's
+                // own slot comes after that round either way. See PoolSharedLaunchClock.
+                bool onAnchorClock = it.Pooled && s.Anchor?.Item != null && s.Anchor.Item.Pooled &&
+                                     it.PoolClock == s.Anchor.Item.PoolClock && it.Unit == s.Anchor.Item.Unit;
+                if (!s.IsAnchor && s.Anchor != null && (s.Anchor.Fired || onAnchorClock) &&
                     !s.Anchor.RippleDone && s.Anchor.LaunchTimes.Count == 0)
                 {
                     // D1: the hold is bounded by RippleDone, which only UpdateAnchorTracking sets,
@@ -235,7 +255,7 @@ namespace AutoTOT
                     // Age of the estimate this release used: what the per-frame sim cap costs in
                     // freshness. 0 = recomputed this frame, -1 = no estimate was ever taken.
                     CoordinatorProfiler.ReleaseStaleness(s.LastFlightEst >= 0f ? simNow - s.LastFlightEstSim : -1f);
-                    if (!Fire(it, s.IsAnchor ? s : null))
+                    if (!Fire(it, s.IsAnchor ? s : null, s.ImpactAtSim))
                     {
                         // The game refused it. An anchor that cannot fire must hand the strike over
                         // rather than leave its followers waiting for a ripple that will never
@@ -404,7 +424,7 @@ namespace AutoTOT
         /// retry would then order the salvo twice; the honest move is to report the order as failed
         /// and let the player reissue it.
         /// </summary>
-        private static bool Fire(Intent it, Scheduled sched)
+        private static bool Fire(Intent it, Scheduled sched, float impactAtRelease)
         {
             ObjectBase unit = it.Unit;
             ObjectBase target = it.Target;
@@ -440,7 +460,7 @@ namespace AutoTOT
             }
 
             EngagementBoard.MarkFired(target);
-            LaunchDiagnostics.RegisterExpectation(it, sched);
+            LaunchDiagnostics.RegisterExpectation(it, sched, impactAtRelease);
             // Hold this order's channels until its rounds actually appear.
             ReserveDispatched(it, GameClock.SimNow());
 

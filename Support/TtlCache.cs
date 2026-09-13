@@ -50,6 +50,31 @@ namespace AutoTOT
             return false;
         }
 
+        /// <summary>
+        /// Live value, plus how long ago it was stored, in the same real seconds the TTL uses. A
+        /// caller that records staleness of its own needs the age: adopting a shared cache entry
+        /// says nothing about when the value was computed, and treating it as fresh understates
+        /// the geometry's age by up to the whole TTL.
+        /// </summary>
+        public bool TryGet(TKey key, out TValue value, out float ageSeconds)
+        {
+            if (_map.TryGetValue(key, out Entry entry))
+            {
+                float age = Time.unscaledTime - entry.StampUnscaled;
+                if (age < _ttlSeconds)
+                {
+                    value = entry.Value;
+                    ageSeconds = age;
+                    _hits++;
+                    return true;
+                }
+            }
+            value = default;
+            ageSeconds = 0f;
+            _misses++;
+            return false;
+        }
+
         /// <summary>Insert/overwrite. Inserting a new key into a full cache evicts first.</summary>
         public void Set(TKey key, TValue value)
         {

@@ -260,11 +260,16 @@ Terms:
   every tick (TTL-cached 0.5 s real time per shooter/ammo/target).
 - **`it.ReleaseLead`**: ripple-centering lead (half-span for independent, full-span for
   grouped).
-- **`it.StartupLead`**: fixed offset paid once before round 1, computed as
-  `PreLaunchDelay + ½·MaxReactiontime` (LauncherFacts.cs). `PreLaunchDelay` is
-  the fixed wait after hatch opens (INI field, default 0). `MaxReactiontime` is the
-  random reaction delay re-rolled per engage as uniform `[0, MaxReactiontime]`; only its
-  expected value (half) can be taken.
+- **`it.StartupLead`**: fixed offset paid once before round 1. `LauncherFacts.StartupDelay`
+  sums four terms: `PreLaunchDelay + ½·MaxReactiontime + acquisition + LauncherCycle`,
+  plus `ColdStart` where a launcher that has never fired still owes the game's warm-up
+  reload. `PreLaunchDelay` is the fixed wait after the hatch opens (INI field, default 0).
+  `MaxReactiontime` is the random reaction delay re-rolled per engage as uniform
+  `[0, MaxReactiontime]`, so only its expected value (half) can be taken. `LauncherCycle`
+  is the declared OnRailWarmup plus the hatch animation, paid before round 1 and again
+  before every later round because the launcher clears `_onRail` after each launch.
+  `it.StartupLead` then gains `it.EnvelopeLead` for a submarine that must rise or an
+  aircraft that must descend (`Coordinator.cs`, `PrepareIntent`).
 - **`groupDelay`**: the group-drag term above (0 for independent salvos).
 - **`lookahead`**: `0.5 * simStep`, where `simStep = simNow - _lastReleaseSimNow`
   (Coordinator.Release.cs). `simStep` is measured in sim time, so pause adds no lookahead.

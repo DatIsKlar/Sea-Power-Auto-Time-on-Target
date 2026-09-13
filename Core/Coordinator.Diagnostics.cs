@@ -105,7 +105,8 @@ namespace AutoTOT
                 $" | lastRoundLaunch {terms.LastRoundLaunch:0.0}s + est {terms.Est:0.0}s" +
                 $" ({terms.Source}, " +
                 $"ready {ReadyRoundsText(it)})" +
-                $" - centering {terms.Centering:0.0}s + groupDelay {terms.GroupDelay:0.0}s" +
+                $" - centering {terms.Centering:0.0}s{(it.Pooled ? " (pooled)" : "")}" +
+                $" + groupDelay {terms.GroupDelay:0.0}s" +
                 $" | {ShooterDisplacement(a, it, simNow)}{LiveRoundFlight(a, it)}");
         }
 
@@ -500,18 +501,18 @@ namespace AutoTOT
         /// `correction` is what the observed span changed the centering by. It was the error this
         /// finding measured before the fix landed; it is now the size of the fix's effect on each
         /// stalled salvo, which is the number a regression run reads. Grouped salvos are excluded:
-        /// their centering is 0 either way.
+        /// their centering is 0 either way. For a pooled anchor both numbers are the pool's lead.
         /// </summary>
         private static void LogStallCentering(Scheduled a, Intent it, int requested, int observed,
-                                              float span, float interval)
+                                              float span, float interval, float onObserved)
         {
             if (!VerboseLog || it.Grouped) return;
             float used = it.ReleaseLead;
-            float onObserved = observed > 1 ? span * 0.5f : 0f;
             Bootstrap.Log.LogInfo(
                 $"[AutoTOT] stall-centering {it.AmmoId} from {UnitNaming.SafeName(it.Unit)}: " +
                 $"requested {requested}, observed {observed}, interval {interval:0.00}s, " +
-                $"observedSpan {span:0.0}s, centering {onObserved:0.0}s (commit value was " +
+                $"observedSpan {span:0.0}s, {(it.Pooled ? "pooled lead" : "centering")} " +
+                $"{onObserved:0.0}s (commit value was " +
                 $"{used:0.0}s, correction {onObserved - used:+0.0;-0.0}s). D6 of the beta-release audit.");
         }
 

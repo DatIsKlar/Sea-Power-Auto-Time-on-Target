@@ -18,9 +18,11 @@ EnsureSimLookup()                                   # resolve reflection handles
 if !_simIsBeta or thrust handle missing: return −1   # → next tier
 
 nonKin      = ap.Kinematics == None                  # speed branch selector
-launchPos   = unit.transform.position                # Unity units
 targetPos   = target.transform.position
-targetVel   = target._velocityVecInUnity             # + evasive boost, mirroring the game's estimator
+launcher    = ResolveLauncher(unit, ap, targetPos)   # the firing-arc pick the engage task takes
+launchPos   = mean of launcher's cells               # Unity units; unit.transform.position when it
+                                                     # has none (GAME-BEHAVIOUR.md section 5)
+targetVel   = TargetMapVelocity(target)              # rate a surface ship realises (§6.3), + evasive boost
 dragFactor  = ap.GetDragFactor(isAir)
 targetAlt0  = max(targetPos.y, 0)                    # surface-target floor
 maxFlight   = ap._maxFlightTime > 0 ? ap._maxFlightTime : 600
@@ -68,9 +70,11 @@ while t < maxFlight:
     flatDist = horizontal distance |predTgt − pos|
 
     # --- intercept: closest approach, or inside the radius ---
-    if (flatDist > prevFlat and t > dt) or flatDist < 3:
+    slantDist = |predTgt − pos|                           # 3-D, not flattened
+    if (flatDist > prevFlat and slantDist > prevSlant and t > dt and hasClosed) \
+       or flatDist < 3:
         return velKnots < ap.MinVelocity · 1.1 ? −1 : t   # reject a too-slow arrival
-    prevFlat = flatDist
+    prevFlat = flatDist;  prevSlant = slantDist
 
     # --- heading (§3.1) ---
     horizDir = unit vector toward predTgt, flattened
@@ -137,7 +141,18 @@ return −1                                                            # out of 
 
 ## 5.3 The closest-approach intercept test
 
-The loop does not test for a distance threshold alone. It returns at the step where horizontal
-distance **stops decreasing**, or when it falls inside 3 u. A pure threshold test would miss any
-flight whose closest approach is wider than the threshold, and would then run to `maxFlight` and
+The loop does not test for a distance threshold alone. It returns at the step where distance
+**stops decreasing**, or when horizontal distance falls inside 3 u. A pure threshold test would miss
+any flight whose closest approach is wider than the threshold, and would then run to `maxFlight` and
 decline a shot that in fact intercepts.
+
+**Both horizontal and slant distance have to be receding.** Horizontal distance alone is the wrong
+measure for a round that is diving. A terminal waypoint leaves `AllowExceedingAngleLimits` at its
+default `true` and uses `Immediate` pitch, so a round that launches inside `_terminalApproachDist`
+from altitude is commanded straight down: `usn_agm-84d` fired 10.8 km out from 20,000 ft holds -90
+degrees for eleven seconds with its x and z frozen. Horizontal distance then stops shrinking, and a
+target under way pushes it back up, so the test fired at 7.1 s of a 56.8 s flight.
+
+Adding the slant term cannot strand the loop. The test is deferred only while the round is trading
+altitude for no ground progress, and there is a finite amount of altitude to trade; once the round
+levels out the vertical separation goes to zero and slant recedes exactly when horizontal does.

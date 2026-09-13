@@ -69,6 +69,17 @@ namespace AutoTOT
         internal static long WorkerAborts;
         private static readonly Dictionary<TofKey, float> _inFlightSince = new Dictionary<TofKey, float>();
 
+        /// <summary>
+        /// Real seconds a key may sit in flight before <see cref="EvictIfStranded"/> takes it back.
+        /// A solve is worst-case tens of milliseconds and the pool has never shown a backlog
+        /// (`oldestInFlight 0.00s` across 26 runs), so this is three orders of magnitude above
+        /// normal: it can only fire on a worker that is gone, never on one that is merely slow.
+        /// </summary>
+        private const float StrandedKeyTimeoutReal = 10f;
+
+        /// <summary>Keys taken back from a worker that never returned. Reported by the census.</summary>
+        internal static int AsyncStranded;
+
         // Sim time of the last SYNCHRONOUS cache write for a key that was in flight at the time. A
         // worker result captured at an EARLIER sim time describes older geometry than the value
         // already cached, and publishing it would overwrite the newer answer (chain-audit A1).
@@ -176,7 +187,14 @@ namespace AutoTOT
         {
             if (_workers == null) return false;
             if (!TryKey(unit, ammoId, target, out AmmunitionParameters ap, out TofKey key)) return false;
-            if (_inFlight.Contains(key)) return true;   // already queued; not a failure
+            // A stranded key is taken back and reported as a FAILED refresh, so the caller runs
+            // its synchronous fallback this tick and recovers immediately rather than waiting for
+            // the re-queued solve. Later ticks go back to the pool as usual.
+            if (_inFlight.Contains(key))
+            {
+                if (!EvictIfStranded(key)) return true;   // already queued; not a failure
+                return false;                            // evicted: solve it here, now
+            }
 
             if (!TryBuildSolveInput(unit, ap, target, out SolveInput input, out _, emitDiag: false))
                 return false;                            // integrator declines; caller goes synchronous
@@ -196,6 +214,40 @@ namespace AutoTOT
         }
 
         /// <summary>
+        /// A key whose worker never came back would otherwise stay in flight forever, and every
+        /// later <see cref="RequestRefresh"/> for it returns "already queued" without queueing
+        /// anything. The caller then reads its last estimate until the 0.5 s cache expires and has
+        /// no way to recover, because its synchronous fallback runs only when the request FAILED.
+        ///
+        /// The way in is a worker exception thrown mid-dequeue: the catch in
+        /// <see cref="WorkerLoop"/> is per batch, so requests already taken off the queue are never
+        /// enqueued to `_done` and their keys are never removed. Chain audit A2, 2026-09-10.
+        /// Latent so far: 26 unattended runs on 2026-09-12 reported `workerFaults 0` in every one.
+        ///
+        /// Evicting the key is enough on its own. The stranded request is not cancelled, and if its
+        /// worker does eventually finish, <see cref="DrainCompleted"/> discards the result because
+        /// the key is no longer in flight, which is the same path a mission reset already takes.
+        ///
+        /// Real time, not sim time: this is watching for a thread that stopped, and a paused or
+        /// compressed game must not change how long that takes to notice. Main thread only.
+        /// </summary>
+        private static bool EvictIfStranded(TofKey key)
+        {
+            if (!_inFlightSince.TryGetValue(key, out float since)) return false;
+            float age = Time.realtimeSinceStartup - since;
+            if (age < StrandedKeyTimeoutReal) return false;
+
+            _inFlight.Remove(key);
+            _inFlightSince.Remove(key);
+            AsyncStranded++;
+            Bootstrap.Log.LogWarning(
+                $"[AutoTOT] estimator: a solve key had been in flight {age:0.0}s with no result, " +
+                $"so it was evicted and will be re-queued. Chain audit A2. " +
+                $"workerFaults {WorkerFaults}, aborts {WorkerAborts}, stranded so far {AsyncStranded}.");
+            return true;
+        }
+
+        /// <summary>
         /// True while a worker is already solving this key. A caller that must not block uses it to
         /// decide between waiting one more tick and solving the key itself: without it, a deferred
         /// commit would solve on the main thread every order whose worker had not finished
@@ -205,7 +257,11 @@ namespace AutoTOT
         {
             if (_workers == null) return false;
             if (!TryKey(unit, ammoId, target, out _, out TofKey key)) return false;
-            return _inFlight.Contains(key);
+            if (!_inFlight.Contains(key)) return false;
+            // Same eviction as RequestRefresh, for the same reason. Without it a deferred commit
+            // waiting on a stranded key would wait for the whole mission, and this is the only
+            // reader that can be asked about a key the release path has stopped refreshing.
+            return !EvictIfStranded(key);
         }
 
         /// <summary>
@@ -282,6 +338,7 @@ namespace AutoTOT
             _inFlightSince.Clear();
             _syncWrittenAt.Clear();
             AsyncSuperseded = 0;
+            AsyncStranded = 0;
             LastPublishAgeReal = 0f;
             MaxPublishAgeReal = 0f;
             AsyncCompleted = 0;
@@ -320,6 +377,7 @@ namespace AutoTOT
             Bootstrap.Log.LogInfo(
                 $"[AutoTOT] estimator-census: inFlight {_inFlight.Count}, queued {_pending.Count}, " +
                 $"completed {AsyncCompleted}, declined {AsyncDeclined}, superseded {AsyncSuperseded}, " +
+                $"stranded {AsyncStranded}, " +
                 $"oldestInFlight {oldest:0.00}s, " +
                 $"publishAge last {LastPublishAgeReal:0.00}s max {MaxPublishAgeReal:0.00}s, " +
                 $"aborts {WorkerAborts}{faults}. D5 and D6 of the beta-release audit.");
@@ -361,11 +419,24 @@ namespace AutoTOT
         /// reusing the bad value.</para>
         /// </summary>
         internal static bool TryCached(ObjectBase unit, string ammoId, ObjectBase target, out float value)
+            => TryCached(unit, ammoId, target, out value, out _);
+
+        /// <summary>
+        /// As above, and also how old the value is in REAL seconds. Chain audit A3: the cache is
+        /// shared, so a hit can be an entry another caller stored up to the whole 0.5 s TTL ago,
+        /// and a caller that stamps its own staleness bookkeeping from the hit records geometry of
+        /// arbitrary age as computed this instant. At the game's 20x compression clamp that is up
+        /// to 10 sim seconds of movement recorded as none.
+        /// </summary>
+        internal static bool TryCached(ObjectBase unit, string ammoId, ObjectBase target,
+                                       out float value, out float ageReal)
         {
-            value = 0f;
+            value = 0f; ageReal = 0f;
             if (!TryKey(unit, ammoId, target, out _, out TofKey key)) return false;
-            if (!_cache.TryGet(key, out float cached) || cached <= MinValidSeconds) return false;
+            if (!_cache.TryGet(key, out float cached, out float age) || cached <= MinValidSeconds)
+                return false;
             value = cached;
+            ageReal = age;
             return true;
         }
     }

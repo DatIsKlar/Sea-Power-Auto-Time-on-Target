@@ -1,3 +1,4 @@
+using System;
 ﻿using UnityEngine;
 using SeaPower;
 
@@ -18,244 +19,126 @@ namespace AutoTOT
         /// </summary>
         internal readonly struct SolveInput
         {
-            internal readonly Vector2[]   AltNodes;
-            internal readonly string      AmmoLabel;
-            internal readonly float       BoostClimbDeg;
+            internal Vector2[] AltNodes { get; init; }
+            internal string AmmoLabel { get; init; }
+            internal float BoostClimbDeg { get; init; }
             /// <summary>Deceleration in knots per SECOND. Held as a rate rather than a
             /// per-step amount so the step size stays a parameter of the loop.</summary>
-            internal readonly float       DecelRate;
-            internal readonly float       DescentDeg;
-            internal readonly float       DescentOnsetDeg;
-            internal readonly float       DragFactor;
+            internal float DecelRate { get; init; }
+            /// <summary>Seeker range that opens and closes the drag brake window, in Unity units.
+            /// Positive is that range; NEGATIVE means no window can exist for this ammunition; and
+            /// ZERO means it is not known, which is what an object initializer that omits it gives
+            /// and what a capture predating the field gives, and it falls back to the older
+            /// altitude gate. The unknown case is the struct default deliberately, so the safe
+            /// reading is the one you get by forgetting.</summary>
+            internal float SeekerBrakeRangeU { get; init; }
+            internal float DescentDeg { get; init; }
+            internal float DescentOnsetDeg { get; init; }
+            internal float DragFactor { get; init; }
             /// <summary>Altitude of the outer cruise leg, outside <see cref="FinalFlightDist"/>.</summary>
-            internal readonly float       CruiseAlt;
+            internal float CruiseAlt { get; init; }
             /// <summary>Where the final-flight leg begins, and the altitude it commands. 0 dist = no
             /// such leg, and the switch is inert. See FlightTime.Integrator.ResolveStageProfile.</summary>
-            internal readonly float       FinalFlightAlt;
-            internal readonly float       FinalFlightDist;
-            internal readonly float       FinalDist;
-            internal readonly float       FlatDistTotal;
-            internal readonly float       InitialPhaseDur;
+            internal float FinalFlightAlt { get; init; }
+            internal float FinalFlightDist { get; init; }
+            internal float FinalDist { get; init; }
+            internal float FlatDistTotal { get; init; }
+            internal float InitialPhaseDur { get; init; }
             /// <summary>The launch-state controller lowers a sufficiently nose-high launch at
             /// exactly six degrees per second while the initial phase is active.</summary>
-            internal readonly bool        PerformsSlightBallisticInitialFlight;
-            internal readonly bool        IsAir;
-            internal readonly bool        IsHighBallisticLofter;
-            internal readonly bool        IsTerminalLoft;
-            internal readonly float       LaunchPitch;
+            internal bool PerformsSlightBallisticInitialFlight { get; init; }
+            internal bool IsAir { get; init; }
+            internal bool IsHighBallisticLofter { get; init; }
+            internal bool IsTerminalLoft { get; init; }
+            internal float LaunchPitch { get; init; }
             /// <summary>The ammunition's declared loft ceiling before the live missile's
             /// range-dependent waypoint tuning.</summary>
-            internal readonly float       ConfiguredLoftAlt;
+            internal float ConfiguredLoftAlt { get; init; }
             /// <summary>The altitude selected by MissileSimulator.SearchOptimalLoftAltitude.
             /// This is the LoftHeight the live Kappa waypoint actually receives.</summary>
-            internal readonly float       LoftAlt;
+            internal float LoftAlt { get; init; }
             /// <summary>Launch range outside which the round enters the loft at all. 0 = no
             /// sea-skimming boundary, so it always lofts.</summary>
-            internal readonly float       LoftEntryDist;
+            internal float LoftEntryDist { get; init; }
             /// <summary>Flat distance inside which loft speed ends, when the ordinary stage boundary
             /// does not apply. 0 = no hold. See FlightTime.Integrator.ResolveLoftSpeedHoldDist.</summary>
-            internal readonly float       LoftSpeedHoldDist;
-            internal readonly float       LoftVelKn;
+            internal float LoftSpeedHoldDist { get; init; }
+            internal float LoftVelKn { get; init; }
             /// <summary>Loft-profile inputs for a NON-cruise round: the two slopes that form the
             /// tent, whether the ammunition uses the ballistic variant, and the launch altitude the
             /// climb is measured from. Unused when <see cref="NonKin"/> is true, which is the game's
             /// own CruiseMissile test. See FlightTime.LoftProfileAltU.</summary>
-            internal readonly bool        BallisticLoft;
-            internal readonly float       LoftClimbTan;
-            internal readonly float       LoftDescentTan;
-            internal readonly float       LaunchAltU;
-            internal readonly bool        Lofting;
-            internal readonly float       MaxFlight;
-            internal readonly float       MaxVelKn;
-            internal readonly bool        NonKin;
-            internal readonly float       TargetAlt0;
-            internal readonly Vector3     TargetPos;
-            internal readonly Vector3     TargetVel;
+            internal bool BallisticLoft { get; init; }
+            internal float LoftClimbTan { get; init; }
+            internal float LoftDescentTan { get; init; }
+            internal float LaunchAltU { get; init; }
+            internal bool Lofting { get; init; }
+            internal float MaxFlight { get; init; }
+            internal float MaxVelKn { get; init; }
+            internal bool NonKin { get; init; }
+            internal float TargetAlt0 { get; init; }
+            internal Vector3 TargetPos { get; init; }
+            internal Vector3 TargetVel { get; init; }
+            /// <summary>The target's own <c>_velocityVecInUnity</c>, before
+            /// <see cref="FlightTime.TargetMapVelocity(SeaPower.ObjectBase, out float)"/> rounded it and
+            /// before the evasive boost. Written to the capture only; the step loop never reads it.</summary>
+            internal Vector3 TargetVelReported { get; init; }
+            /// <summary>The physics step <see cref="TargetVel"/> was rounded at, 0 when the target is
+            /// not a surface ship and nothing was rounded. Written to the capture only.</summary>
+            internal float TargetMoveStep { get; init; }
             /// <summary>True when the live kinematic terminal waypoint uses Linear pitch mode.
             /// Its endpoint is <see cref="TermAlt"/>.</summary>
-            internal readonly bool        TerminalLinear;
-            internal readonly float       TermAlt;
-            internal readonly float       TermDist;
-            internal readonly float       TermVelKn;
+            internal bool TerminalLinear { get; init; }
+            internal float TermAlt { get; init; }
+            internal float TermDist { get; init; }
+            internal float TermVelKn { get; init; }
             /// <summary>Resolved at setup, including SelectivePopUp's target-type check.</summary>
-            internal readonly bool        TerminalPopUpEnabled;
-            internal readonly float       TerminalPopUpDist;
-            internal readonly float       TerminalPopUpHeight;
-            internal readonly float       TerminalPopUpAngle;
-            internal readonly float       TerminalVerticalTurnRate;
-            internal readonly bool        TrackDiag;
+            internal bool TerminalPopUpEnabled { get; init; }
+            internal float TerminalPopUpDist { get; init; }
+            internal float TerminalPopUpHeight { get; init; }
+            internal float TerminalPopUpAngle { get; init; }
+            internal float TerminalVerticalTurnRate { get; init; }
+            internal bool TrackDiag { get; init; }
             /// <summary>The rate every ordinary turn is budgeted at: the ammunition's
             /// <c>MaxTurnRate</c>, plus the banking roll addend where that applies.</summary>
-            internal readonly float       TurnRate;
+            internal float TurnRate { get; init; }
             /// <summary>Turn-rate FLOOR for the ToBearing window only, from the ammunition's
             /// <c>LaunchTurnRate</c>, unclamped. 0 when the ini leaves it at the default, which is
             /// all but three shipped ammunition, and 0 means the step loop applies no floor. See
             /// FlightTime.Integrator.ResolveToBearingTurnRate.</summary>
-            internal readonly float       ToBearingTurnRate;
+            internal float ToBearingTurnRate { get; init; }
             /// <summary>The <c>MaxTurnRate</c> part of <see cref="TurnRate"/>, without the banking
             /// roll addend. The G-derate applies to this part alone, because the mover derates
             /// before it spends the separate hardcoded roll budget.</summary>
-            internal readonly float       TurnRateBase;
+            internal float TurnRateBase { get; init; }
             /// <summary>Speed above which the G-limit starts cutting the turn rate, precomputed so
             /// the step loop pays one compare. 0 = the ammunition can never reach its own limit, so
             /// the derate is off. See FlightTime.Integrator.ResolveTurnDerateThreshold.</summary>
-            internal readonly float       TurnDerateThresholdKn;
-            internal readonly int         AltLatchPhase;
-            internal readonly bool        AltLatched;
-            internal readonly Quaternion  Att;
-            internal readonly Vector3     LaunchHeading;
-            internal readonly float       NextSample;
-            internal readonly Vector3     Pos;
-            internal readonly float       PrevAltErr;
-            internal readonly float       PrevFlat;
-            internal readonly float       PrevPitch;
-            internal readonly float       T;
-            internal readonly bool        TlGliding;
+            internal float TurnDerateThresholdKn { get; init; }
+            internal int AltLatchPhase { get; init; }
+            internal bool AltLatched { get; init; }
+            internal Quaternion Att { get; init; }
+            internal Vector3 LaunchHeading { get; init; }
+            internal float NextSample { get; init; }
+            internal Vector3 Pos { get; init; }
+            internal float PrevAltErr { get; init; }
+            internal float PrevFlat { get; init; }
+            internal float PrevPitch { get; init; }
+            internal float T { get; init; }
+            internal bool TlGliding { get; init; }
             /// <summary>Flat distance from launch to the end of the Kappa waypoint. This can be
             /// shorter than the shot when a non-terminal-loft round has a terminal waypoint.</summary>
-            internal readonly float       KappaEndFlat;
+            internal float KappaEndFlat { get; init; }
             /// <summary>Waypoint.KappaLoft's monotonic internal progress. It catches up toward
             /// geometric progress at no more than 2.5x flat motion; see Waypoint.UpdateWaypoint.</summary>
-            internal readonly float       KappaProgress;
-            internal readonly float       VelKnots;
+            internal float KappaProgress { get; init; }
+            internal float VelKnots { get; init; }
             /// <summary>The non-kinematic waypoint route, or null to fly the older altitude-command
             /// law. See FlightTime.Waypoints.cs.</summary>
-            internal readonly WaypointLeg[] Legs;
+            internal WaypointLeg[] Legs { get; init; }
             /// <summary>The round will lead its missile group, and cash the group in on entering
             /// TerminalApproach. See the route handling in Solve.</summary>
-            internal readonly bool        GroupLeader;
-
-            internal SolveInput(
-                Vector2[] altNodes,
-                string ammoLabel,
-                float boostClimbDeg,
-                float decelRate,
-                float descentDeg,
-                float descentOnsetDeg,
-                float dragFactor,
-                float cruiseAlt,
-                float finalFlightAlt,
-                float finalFlightDist,
-                float finalDist,
-                float flatDistTotal,
-                float initialPhaseDur,
-                bool performsSlightBallisticInitialFlight,
-                bool isAir,
-                bool isHighBallisticLofter,
-                bool isTerminalLoft,
-                float launchPitch,
-                float configuredLoftAlt,
-                float loftAlt,
-                float loftEntryDist,
-                float loftSpeedHoldDist,
-                float loftVelKn,
-                bool ballisticLoft,
-                float loftClimbTan,
-                float loftDescentTan,
-                float launchAltU,
-                bool lofting,
-                float maxFlight,
-                float maxVelKn,
-                bool nonKin,
-                float targetAlt0,
-                Vector3 targetPos,
-                Vector3 targetVel,
-                bool terminalLinear,
-                float termAlt,
-                float termDist,
-                float termVelKn,
-                bool terminalPopUpEnabled,
-                float terminalPopUpDist,
-                float terminalPopUpHeight,
-                float terminalPopUpAngle,
-                float terminalVerticalTurnRate,
-                bool trackDiag,
-                float turnRate,
-                float toBearingTurnRate,
-                float turnRateBase,
-                float turnDerateThresholdKn,
-                int altLatchPhase,
-                bool altLatched,
-                Quaternion att,
-                Vector3 launchHeading,
-                float nextSample,
-                Vector3 pos,
-                float prevAltErr,
-                float prevFlat,
-                float prevPitch,
-                float t,
-                bool tlGliding,
-                float kappaEndFlat,
-                float kappaProgress,
-                float velKnots,
-                WaypointLeg[] legs = null,
-                bool groupLeader = false)
-            {
-                AltNodes = altNodes;
-                AmmoLabel = ammoLabel;
-                BoostClimbDeg = boostClimbDeg;
-                DecelRate = decelRate;
-                DescentDeg = descentDeg;
-                DescentOnsetDeg = descentOnsetDeg;
-                DragFactor = dragFactor;
-                CruiseAlt = cruiseAlt;
-                FinalFlightAlt = finalFlightAlt;
-                FinalFlightDist = finalFlightDist;
-                FinalDist = finalDist;
-                FlatDistTotal = flatDistTotal;
-                InitialPhaseDur = initialPhaseDur;
-                PerformsSlightBallisticInitialFlight = performsSlightBallisticInitialFlight;
-                IsAir = isAir;
-                IsHighBallisticLofter = isHighBallisticLofter;
-                IsTerminalLoft = isTerminalLoft;
-                LaunchPitch = launchPitch;
-                ConfiguredLoftAlt = configuredLoftAlt;
-                LoftAlt = loftAlt;
-                LoftEntryDist = loftEntryDist;
-                LoftSpeedHoldDist = loftSpeedHoldDist;
-                LoftVelKn = loftVelKn;
-                BallisticLoft = ballisticLoft;
-                LoftClimbTan = loftClimbTan;
-                LoftDescentTan = loftDescentTan;
-                LaunchAltU = launchAltU;
-                Lofting = lofting;
-                MaxFlight = maxFlight;
-                MaxVelKn = maxVelKn;
-                NonKin = nonKin;
-                TargetAlt0 = targetAlt0;
-                TargetPos = targetPos;
-                TargetVel = targetVel;
-                TerminalLinear = terminalLinear;
-                TermAlt = termAlt;
-                TermDist = termDist;
-                TermVelKn = termVelKn;
-                TerminalPopUpEnabled = terminalPopUpEnabled;
-                TerminalPopUpDist = terminalPopUpDist;
-                TerminalPopUpHeight = terminalPopUpHeight;
-                TerminalPopUpAngle = terminalPopUpAngle;
-                TerminalVerticalTurnRate = terminalVerticalTurnRate;
-                TrackDiag = trackDiag;
-                TurnRate = turnRate;
-                ToBearingTurnRate = toBearingTurnRate;
-                TurnRateBase = turnRateBase;
-                TurnDerateThresholdKn = turnDerateThresholdKn;
-                AltLatchPhase = altLatchPhase;
-                AltLatched = altLatched;
-                Att = att;
-                LaunchHeading = launchHeading;
-                NextSample = nextSample;
-                Pos = pos;
-                PrevAltErr = prevAltErr;
-                PrevFlat = prevFlat;
-                PrevPitch = prevPitch;
-                T = t;
-                TlGliding = tlGliding;
-                KappaEndFlat = kappaEndFlat;
-                KappaProgress = kappaProgress;
-                VelKnots = velKnots;
-                Legs = legs;
-                GroupLeader = groupLeader;
-            }
+            internal bool GroupLeader { get; init; }
         }
 
 #if AUTOTOT_OFFLINE
@@ -267,6 +150,56 @@ namespace AutoTOT
         /// single kinematic round. Offline only: the shipped mod has no such field.
         /// </summary>
         internal static float OfflineMotorScale = 1f;
+
+        /// <summary>
+        /// A round's recorded physics-step timeline, so a replay can fly the steps the round
+        /// actually flew instead of one average of them.
+        ///
+        /// The game adapts its step between 60 Hz and 30 Hz on frame rate, and a round whose step
+        /// moved mid-flight used to be unscoreable: no single step describes it. That is the single
+        /// largest reason the corpus discards a round. The outcome writer records every change as
+        /// "t:step", and this replays them.
+        ///
+        /// Times are flight seconds since launch, ascending, and each entry's step holds until the
+        /// next one. The first recorded entry is the step at the first sighting a few tenths of a
+        /// second after launch, and it is treated as holding from t = 0, which is the best estimate
+        /// available for the frames before the tracker opened.
+        /// </summary>
+        internal sealed class OfflineStepSchedule
+        {
+            internal readonly float[] At;
+            internal readonly float[] Dt;
+
+            internal OfflineStepSchedule(float[] at, float[] dt)
+            {
+                if (at == null || dt == null || at.Length == 0 || at.Length != dt.Length)
+                    throw new ArgumentException("step schedule needs equal, non-empty arrays");
+                At = at; Dt = dt;
+            }
+
+            /// <summary>Time-weighted mean step over a flight of the given length, for reporting.
+            /// A round that spent most of its flight at 30 Hz should not read as a 60 Hz round.
+            /// </summary>
+            internal float MeanStep(float flightSeconds)
+            {
+                if (flightSeconds <= 0f) return Dt[0];
+                float acc = 0f;
+                for (int k = 0; k < At.Length; k++)
+                {
+                    float from = k == 0 ? 0f : At[k];
+                    float to = k + 1 < At.Length ? At[k + 1] : flightSeconds;
+                    if (to > flightSeconds) to = flightSeconds;
+                    if (to > from) acc += (to - from) * Dt[k];
+                }
+                return acc / flightSeconds;
+            }
+        }
+
+        /// <summary>
+        /// Set for one replay and cleared afterwards, exactly as <see cref="OfflineMotorScale"/> is.
+        /// Null means fly a constant step, which is every shipped solve and most replays.
+        /// </summary>
+        internal static OfflineStepSchedule OfflineSteps;
 
         /// <summary>
         /// Offline entry point to the step loop, for the replay lab in tools/lab. Exists only in
@@ -448,12 +381,17 @@ namespace AutoTOT
             bool        launchRecoveryDone     = false;
             // The waypoint route. legEff is the active leg with any skip-copied settings applied;
             // legStartFlat and legStartAlt are the game's _lastWaypointPosition, which follows the
-            // missile until the initial phase ends (Missile.cs:2469-2480). Not yet for an
-            // air-launched round (isAir is the SHOOTER here): its drop phase moves where the first
-            // leg starts, and no air-launched round has been flown with the route to check it.
+            // missile until the initial phase ends (Missile.cs:2469-2480).
+            //
+            // 2026-09-13: air-launched rounds fly the route too. The gate that held them out was
+            // written when none had been flown with it; twenty have now, across four ranges, and
+            // the route is worth +0.07 to +1.16 s against the older altitude law's 2.98 s mean. It
+            // could not be lifted before the closest-approach guard above learned about diving
+            // rounds, which is what made it look four times worse. The drop phase that gate's
+            // comment worried about is 1.0 s for usn_agm-84d and does not show above this noise.
             // `nonKin` and `!isTerminalLoft` are defensive: setup, and the lab's rebuild, only make
-            // a route for such a round. `!isAir` is live, since setup tests the target instead.
-            WaypointLeg[] legs                 = WaypointLegSteering && nonKin && !isAir &&
+            // a route for such a round.
+            WaypointLeg[] legs                 = WaypointLegSteering && nonKin &&
                                                  !isTerminalLoft ? i.Legs : null;
             int         legIdx                 = 0;
             WaypointLeg legEff                 = legs != null ? legs[0] : default;
@@ -507,12 +445,35 @@ namespace AutoTOT
             // the honest outcome; before, it returned a fabricated 2 seconds.
             // See finding 14 of docs/plans/open/BETA-RELEASE-AUDIT-PLAN.md.
             bool hasClosed = false;
+            float prevSlant = float.MaxValue;
             bool havePrev = false;
             float startFlat = -1f;
             float closeMargin = 0f;
+            // Counted rather than derived from t/dt, which is only the step count while the step is
+            // constant. See the offline step schedule below.
+            int steps = 0;
+#if AUTOTOT_OFFLINE
+            OfflineStepSchedule sched = OfflineSteps;
+            int schedIdx = 0;
+#endif
 
             while (t < maxFlight)
             {
+#if AUTOTOT_OFFLINE
+                // Fly the steps this round actually flew. Guarded rather than branch-free because
+                // the shipped mod always integrates at a constant step and must not pay for a test
+                // it can never take; the motor multiplier above is offline-only for the same reason.
+                if (sched != null)
+                {
+                    while (schedIdx + 1 < sched.At.Length && t >= sched.At[schedIdx + 1]) schedIdx++;
+                    if (dt != sched.Dt[schedIdx])
+                    {
+                        dt = sched.Dt[schedIdx];
+                        decelPerStep = decelRate * dt;   // the one precomputed term that scales with dt
+                    }
+                }
+#endif
+                steps++;
                 Vector3 predTgt = targetPos + targetVel * t;
                 float dx = predTgt.x - pos.x, dz = predTgt.z - pos.z;
                 float flatDist = Mathf.Sqrt(dx * dx + dz * dz);
@@ -526,15 +487,29 @@ namespace AutoTOT
                     closeMargin = Mathf.Max(CloseEnoughDistU, startFlat * RecedeCloseFraction);
                 }
 
-                if ((flatDist > prevFlat && t > dt && hasClosed) || flatDist < CloseEnoughDistU)
+                // 2026-09-13: flat range alone is the wrong test for closest approach when the
+                // round is diving. A terminal waypoint with AllowExceedingAngleLimits left at its
+                // default true and PitchMode Immediate commands a round straight down, and the game
+                // flies it: usn_agm-84d launched 10.8 km out from 20,000 ft holds -90 degrees for
+                // eleven seconds with its x and z frozen. Flat range then stops shrinking, and a
+                // target under way pushes it back up, so the guard fired at 7.1 s of a 56.8 s
+                // flight. Requiring slant range to recede too cannot strand the solve: the guard is
+                // only deferred while the round is trading altitude for nothing, and there is a
+                // finite amount of that to trade, so once it levels out dy goes to zero and slant
+                // recedes exactly when flat does.
+                float slantDy = pos.y - predTgt.y;
+                float slantDist = Mathf.Sqrt(flatDist * flatDist + slantDy * slantDy);
+                if ((flatDist > prevFlat && slantDist > prevSlant && t > dt && hasClosed) ||
+                    flatDist < CloseEnoughDistU)
                 {
-                    ModelStats.LoopDone((int)(t / dt));
+                    ModelStats.LoopDone(steps);
                     if (velKnots < ap.MinVelocity * StallSpeedMultiplier) return -1f;
                     return t;
                 }
                 if (havePrev && flatDist < prevFlat && flatDist <= startFlat - closeMargin)
                     hasClosed = true;
                 prevFlat = flatDist;
+                prevSlant = slantDist;
                 havePrev = true;
 
                 Vector3 horizDir = flatDist > 1e-4f
@@ -1066,7 +1041,17 @@ namespace AutoTOT
                 else
                 {
                     velKnots += thrust;
-                    bool inVacuumDive = phase == 2 && pos.y > ZeroDensityAltU && pitchDeg < VacuumDivePitchThreshold;
+                    // The altitude gate stands in for a window whose real terms are now measured
+                    // and recorded in SolveInput.SeekerBrakeRangeU: the game feeds the round's own
+                    // altitude only while CurrentTarget is null, between the seeker activating on
+                    // FLAT range and detecting on SLANT range. Flying those terms instead was
+                    // measured on 2026-09-13 and NOT adopted: with the descent onset corrected in
+                    // the same change it moves plan_yj-20's short band from -4.63 to -0.16 s and its
+                    // long band from +0.22 to +5.78 s, leaving the within-band spread at 2.8 to
+                    // 3.3 s. A third, range-dependent term is missing and correcting these two
+                    // without it only moves the bias around. See yj-20-motor-sensitivity.md.
+                    bool inVacuumDive = phase == 2 && pos.y > ZeroDensityAltU &&
+                                        pitchDeg < VacuumDivePitchThreshold;
                     float dragTargetAlt = inVacuumDive ? pos.y : predTgt.y;
                     if (_dragFn != null)
                         dragThisStep = _dragFn(pos.y, velKnots * KU, dt, -pitchDeg, dragFactor,
@@ -1087,7 +1072,7 @@ namespace AutoTOT
                     // (Missile.cs:3151); the stage target is consumed only by the other branch.
                 }
 
-                if (velKnots < MinSpeedKn) { ModelStats.LoopDone((int)(t / dt)); return -1f; }
+                if (velKnots < MinSpeedKn) { ModelStats.LoopDone(steps); return -1f; }
 
                 float pr = pitchDeg * Mathf.Deg2Rad;
                 Vector3 dir = horizDir * Mathf.Cos(pr) + Vector3.up * Mathf.Sin(pr);
@@ -1127,7 +1112,7 @@ namespace AutoTOT
                 prevPitch = pitchDeg;
                 t += dt;
             }
-            ModelStats.LoopDone((int)(t / dt));
+            ModelStats.LoopDone(steps);
             return -1f;
         }
     }

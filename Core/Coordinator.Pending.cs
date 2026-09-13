@@ -279,6 +279,9 @@ namespace AutoTOT
                 ? UnitNaming.SafeName(_targetScratch[0])
                 : $"{_targetScratch.Count} targets";
 
+            // Before the anchor election: a pooled lead changes the enroute time of every order in
+            // the pool, and PickAnchor, the release gate and the board all read it as ReleaseLead.
+            PoolSharedLaunchClock(items);
             Intent anchor = PickAnchor(items, out float maxEnroute);
             Schedule(items, GameClock.SimNow() + maxEnroute, anchor);
 

@@ -20,8 +20,8 @@ Every `AmmunitionParameters` field the model reads, all via `ap.`:
 | `_terminalVelocityInKnots` | terminal target speed | [§4](04-speed.md) |
 | `_acceleration` / `_deceleration` | stage-seek slew rates (non-kinematic) | [§4](04-speed.md) |
 | `_maxLoftAngle` | commanded climb angle | [§3](03-trajectory.md) |
-| `_finalFlightPhaseMaxAngle` | descent pitch | [§3](03-trajectory.md) |
-| `_seaSkimmingMaxDescentAngle` | descent pitch alternative; also the onset maximum | [§3](03-trajectory.md) |
+| `_finalFlightPhaseMaxAngle` | descent pitch, where the final-flight leg exists | [§3](03-trajectory.md) |
+| `_seaSkimmingMaxDescentAngle` | descent pitch where it does not; also the onset maximum | [§3](03-trajectory.md) |
 | `_finalFlightPhaseDistToTargetUnity` / `_seaSkimmingStartDistToTargetUnity` | loft → cruise transition distance | [§3](03-trajectory.md) |
 | `_finalFlightPhaseAltUnity` / `_seaSkimmingAltUnity` | cruise altitude | [§3](03-trajectory.md) |
 | `_terminalApproachDist` / `_terminalAltUnity` | terminal onset distance / altitude | [§3](03-trajectory.md) |

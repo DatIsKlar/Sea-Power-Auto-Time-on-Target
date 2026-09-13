@@ -23,10 +23,44 @@ namespace AutoTOT.Lab
         /// replaying the model the round was solved with, and every offline score is suspect.
         ///
         /// Only captures made by the build whose source the lab is compiled from can match.
-        /// --launch-estimate falls back to EstAtLaunch for older captures. That value comes
-        /// through the estimate cache and may be from an earlier solve at a different position,
-        /// so a small difference there is not evidence of anything.
+        /// --launch-estimate falls back to EstAtLaunch for older captures. On the builds that made
+        /// them that value came through the estimate cache and may be from an earlier solve at a
+        /// different position, so a small difference there is not evidence of anything.
         /// </summary>
+        /// <summary>
+        /// The recorded physics-step timeline, "t:step" per change, into a schedule the replay can
+        /// fly. Empty or malformed gives null, which leaves the round excluded exactly as it was
+        /// before the timeline existed rather than replaying it at a guessed step.
+        ///
+        /// The first entry is the step at the round's first sighting, a few tenths of a second
+        /// after launch, and it is taken to hold from t = 0. Nothing better is available for the
+        /// frames before the tracker opened, and at 0.2 s of a 100 s flight the choice cannot
+        /// matter.
+        /// </summary>
+        private static FlightTime.OfflineStepSchedule ParseStepSchedule(string field)
+        {
+            if (string.IsNullOrWhiteSpace(field)) return null;
+            string[] parts = field.Split(';');
+            var at = new List<float>(parts.Length);
+            var dt = new List<float>(parts.Length);
+            foreach (string entry in parts)
+            {
+                if (entry.Length == 0) continue;
+                int colon = entry.IndexOf(':');
+                if (colon <= 0) return null;
+                if (!float.TryParse(entry.Substring(0, colon), NumberStyles.Float, Inv, out float t) ||
+                    !float.TryParse(entry.Substring(colon + 1), NumberStyles.Float, Inv, out float step))
+                    return null;
+                if (step <= 0f) return null;
+                // Ascending by construction; a file that is not is not trusted to be parsed.
+                if (at.Count > 0 && t < at[at.Count - 1]) return null;
+                at.Add(at.Count == 0 ? 0f : t);
+                dt.Add(step);
+            }
+            if (at.Count == 0) return null;
+            return new FlightTime.OfflineStepSchedule(at.ToArray(), dt.ToArray());
+        }
+
         private static int Parity(string[] args)
         {
             bool useLaunch = args.Contains("--launch-estimate");
@@ -76,11 +110,35 @@ namespace AutoTOT.Lab
         /// Scores the whole corpus: every input replayed at every step size, against the flight the
         /// round actually flew. This is the number a model change has to move.
         /// </summary>
+        /// <summary>
+        /// Which LAUNCH a round came from. <c>CapturedAt</c> is written once, when the run
+        /// finishes, so every round of one flight carries the same value and two flights of one
+        /// mission do not.
+        ///
+        /// The key's own timestamp will NOT do: it is stamped when that round's solve was dumped,
+        /// so it differs round to round within a salvo and would defeat the formation test it
+        /// exists to scope. Captures older than the field return the empty string and therefore
+        /// share one bucket, which is exactly the behaviour they were scored with before.
+        /// </summary>
+        private static string RunOf(Dictionary<string, string> r)
+            => r.GetValueOrDefault("CapturedAt", "");
+
         private static int Score(string[] files, float[] steps)
         {
             var rows = new List<(string Label, float Actual, float[] Est, float Flown, float FlownEst,
-                                 bool Grouped, float Launch, float Impact)>();
+                                 bool Grouped, float Launch, float Impact, string Run, string Key)>();
+            // Per-round keyed output, for asking why a family's rounds disagree with each other
+            // rather than how far the family is from the game. The table cannot answer that: it
+            // prints a row per round but no key, so a round cannot be joined back to its capture
+            // and correlated against what it flew. Written only when --csv is given.
+            var keyed = new List<string>();
             var skipped = new List<string>();
+            // Launch state the game decided after the solve, replayed as flown; see FlownRail.
+            bool useFlownRail = System.Environment.GetEnvironmentVariable("AUTOTOT_NO_FLOWN_HEADING") != "1";
+            var railSubs = new List<string>();
+            // Surface-ship target velocity as the game moves the ship; see RoundedTargetVel.
+            bool useTargetRounding = System.Environment.GetEnvironmentVariable("AUTOTOT_NO_TARGET_ROUNDING") != "1";
+            var roundedKeys = new HashSet<string>();
 
             foreach (string file in files)
             {
@@ -99,14 +157,21 @@ namespace AutoTOT.Lab
                 // nothing to do with the model.
                 // Time compression is deliberately NOT an exclusion. Above 10x the game enlarges
                 // its own physics step, but a round flown at a STEADY enlarged step is perfectly
-                // reproducible: the lab replays it at that step. What cannot be reproduced is a
-                // step that MOVED mid-flight, because then no single step describes the flight.
-                // And since the mod is used at high compression, being right there is part of the
-                // job rather than a case to discard.
+                // reproducible: the lab replays it at that step. And since the mod is used at high
+                // compression, being right there is part of the job rather than a case to discard.
+                //
+                // A step that MOVED mid-flight used to be excluded for the same reason inverted:
+                // no single step describes it. That is answered rather than tolerated now. The
+                // outcome writer records the whole timeline as StepChanges, and the replay flies
+                // it, so such a round is reproduced exactly instead of approximated. A round
+                // captured before that recording existed still has no timeline and is still
+                // excluded, because for it the objection stands.
                 float stepLo = F(r, "MinFlownStep"), stepHi = F(r, "MaxFlownStep");
                 bool stepSteady = stepLo > 0f && stepHi > 0f &&
                                   Math.Abs(stepHi - stepLo) <=
                                   SteadyStepRelativeTolerance * stepHi;
+                FlightTime.OfflineStepSchedule schedule =
+                    stepSteady ? null : ParseStepSchedule(r.GetValueOrDefault("StepChanges", ""));
                 string targetManeuver = TargetManeuverReason(r);
 
                 string reason =
@@ -118,9 +183,9 @@ namespace AutoTOT.Lab
                   // as model error would teach the model to chase something it cannot see. 20
                   // degrees and 5 knots are loose enough to ignore station-keeping wobble.
                   : targetManeuver != null ? targetManeuver
-                  : (stepHi > 0f && !stepSteady)
-                        ? $"physics step moved in flight ({stepLo:F4}s to {stepHi:F4}s), " +
-                          "so no single step describes it"
+                  : (stepHi > 0f && !stepSteady && schedule == null)
+                        ? $"physics step moved in flight ({stepLo:F4}s to {stepHi:F4}s) and the " +
+                          "capture predates the recorded timeline, so no single step describes it"
                   : null;
                 if (reason != null) { skipped.Add($"{label}: {reason}"); continue; }
 
@@ -128,18 +193,61 @@ namespace AutoTOT.Lab
                 AmmunitionParameters ap = BuildAmmo(kv);
                 FlightTime.SolveInput input = BuildInput(kv, ap);
 
+                // Which of two fixed launchers a round leaves from is decided by the game after the
+                // solve, the same way its motor roll is, so a round that left a different launcher
+                // from the one its capture modelled replays on the rail it flew.
+                bool railSub = FlownRail(r, in input, out Vector3 flownHeading, out float modelledDeg,
+                                         out float flownDeg)
+                               && useFlownRail;
+                if (railSub)
+                {
+                    input = input with
+                    {
+                        LaunchHeading = flownHeading,
+                        // The mod builds the opening attitude from the heading, so a capture made on
+                        // the flown rail carries both. Rebuilt with the mod's own expression.
+                        Att = GameMath.QEuler(-input.PrevPitch, FlightTime.YawOf(flownHeading), 0f),
+                    };
+                    railSubs.Add($"{r.GetValueOrDefault("Key", Path.GetFileNameWithoutExtension(file))}: " +
+                                 $"modelled {(modelledDeg + 360f) % 360f:F1} deg, flew {(flownDeg + 360f) % 360f:F1} deg");
+                }
+
+                // A capture solved before the mod rounded the target's velocity replays on the
+                // rounded one, so old and new captures are judged on one model. See RoundedTargetVel.
+                if (useTargetRounding && RoundedTargetVel(kv, r, in input, out Vector3 roundedVel))
+                {
+                    input = input with { TargetVel = roundedVel };
+                    roundedKeys.Add(r.GetValueOrDefault("Key", Path.GetFileNameWithoutExtension(file)));
+                }
+
                 // Replay the motor roll this particular round flew, rather than the 1.0 the
                 // estimator has to assume in advance.
                 FlightTime.OfflineMotorScale = F(r, "MotorPerformance") > 0f
                     ? F(r, "MotorPerformance") : 1f;
 
+                // The sweep columns are constant-step by definition, including the 0.1 s
+                // production column, so the schedule is off for them.
                 float[] est = steps.Select(dt => FlightTime.SolveOffline(in input, ap, dt, out _)).ToArray();
 
-                // The step the round itself flew. Zero for a capture that predates the recording,
-                // in which case the column is blank rather than guessed at.
-                float flown = stepSteady ? stepHi : 0f;
-                float flownEst = flown > 0f
-                    ? FlightTime.SolveOffline(in input, ap, flown, out _) : -1f;
+                // The step the round itself flew. A steady round replays at its one step; a round
+                // with a recorded timeline flies that timeline; a capture that predates the
+                // recording leaves the column blank rather than guessing.
+                float flown = stepSteady ? stepHi
+                             : (schedule != null ? schedule.MeanStep(F(r, "ActualFlight")) : 0f);
+                float flownEst;
+                if (schedule != null)
+                {
+                    FlightTime.OfflineSteps = schedule;
+                    // The seed step only matters until the first schedule entry takes effect on the
+                    // first iteration, but pass the round's own opening step so a trace reads right.
+                    flownEst = FlightTime.SolveOffline(in input, ap, schedule.Dt[0], out _);
+                    FlightTime.OfflineSteps = null;
+                }
+                else
+                {
+                    flownEst = flown > 0f
+                        ? FlightTime.SolveOffline(in input, ap, flown, out _) : -1f;
+                }
                 FlightTime.OfflineMotorScale = 1f;
 
                 // Grouped rounds are scored, but never mixed into the solo figure. The integrator
@@ -153,7 +261,21 @@ namespace AutoTOT.Lab
                     r.GetValueOrDefault("Key", Path.GetFileNameWithoutExtension(file)));
 
                 rows.Add((label, F(r, "ActualFlight"), est, flown, flownEst, B(r, "InGroup"),
-                          launch, launch + F(r, "ActualFlight")));
+                          launch, launch + F(r, "ActualFlight"), RunOf(r),
+                          r.GetValueOrDefault("Key", Path.GetFileNameWithoutExtension(file))));
+                // The schema is part of the answer, not decoration. A capture without the raw
+                // Ammo.* fields replays the older model law by design, so its gap measures a path
+                // the mod no longer flies, and a family judged on a mixture of the two is not being
+                // judged on the shipping model. usn_rim-66p reads 6.83 s over its pre-schema rounds
+                // and 0.94 s over all seven of its current ones.
+                keyed.Add(string.Join(",",
+                    r.GetValueOrDefault("Key", Path.GetFileNameWithoutExtension(file)), label,
+                    F(r, "ActualFlight").ToString("R", Inv), est[0].ToString("R", Inv),
+                    (F(r, "ActualFlight") - est[0]).ToString("R", Inv),
+                    F(r, "MotorPerformance").ToString("R", Inv),
+                    (B(r, "InGroup") ? "1" : "0"),
+                    kv.GetValueOrDefault("CaptureSchema", "pre-schema"),
+                    (railSub ? "1" : "0")));
             }
 
             // A missile group arrives TOGETHER, so every member shares one impact time while their
@@ -165,11 +287,31 @@ namespace AutoTOT.Lab
             //
             // So a salvo is scored on its LAST-fired round, the one that waited least, and the rest
             // are set aside as having flown a formation rather than a trajectory.
+
             int waited = 0;
+            // Grouped by RUN as well as by label and impact time. Without the run, two rounds from
+            // two launches of the same mission collide: a repeat section is deliberately identical,
+            // so both rounds impact at the same mission time and the salvo test read them as one
+            // formation and deleted the earlier launch. That silently cost wp_ss-n-19 and
+            // wp_ss-n-12 every round of a re-fly flown to clear them.
             foreach (var salvo in rows.Where(r => r.Grouped)
-                                      .GroupBy(r => (r.Label, Key: (int)Math.Round(r.Impact / 2.0)))
-                                      .Where(g => g.Count() > 1))
+                                      .GroupBy(r => (r.Label, r.Run, Key: (int)Math.Round(r.Impact / 2.0)))
+                                      .ToList())
             {
+                // A group of ONE is not a formation. The game creates a missile group for a single
+                // round of group-capable ammunition, and InGroup then reads true while the round
+                // flies its own speed the whole way with nothing to wait for: a lone wp_ss-n-19
+                // records `GroupChanges ...:1:1:1100` against its own 1100 kn maximum. Scoring it
+                // as grouped hid two families from the solo table that had just been re-flown to
+                // clear them.
+                if (salvo.Count() == 1)
+                {
+                    var lone = salvo.First();
+                    rows[rows.IndexOf(lone)] = (lone.Label, lone.Actual, lone.Est, lone.Flown,
+                                                lone.FlownEst, false, lone.Launch, lone.Impact,
+                                                lone.Run, lone.Key);
+                    continue;
+                }
                 float lastLaunch = salvo.Max(r => r.Launch);
                 foreach (var r in salvo.Where(r => r.Launch < lastLaunch))
                 {
@@ -214,8 +356,38 @@ namespace AutoTOT.Lab
             var grouped = rows.Where(r => r.Grouped).ToList();
             if (grouped.Count > 0) MeanRow("mean |offline gap| grouped", grouped, steps);
 
+            // Per-round rows LAST, so `scored` and `formation` carry the same verdict the table
+            // above used. Written before the salvo pass they said only what the capture claimed,
+            // and a reader joining on the `grouped` column got a different split from the one the
+            // means were taken over.
+            string csv = System.Environment.GetEnvironmentVariable("AUTOTOT_SCORE_CSV");
+            if (!string.IsNullOrEmpty(csv))
+            {
+                var kept = rows.ToDictionary(r => r.Key, r => r.Grouped);
+                var lines = new List<string> {
+                    "key,label,actualFlight,offlineEst,offGap,motor,grouped,schema,flownRail,scored,formation,targetRounded" };
+                foreach (string line in keyed)
+                {
+                    string k = line.Substring(0, line.IndexOf(','));
+                    bool inTable = kept.TryGetValue(k, out bool grp);
+                    lines.Add(line + "," + (inTable ? "1" : "0") + "," + (inTable && grp ? "1" : "0") +
+                              "," + (roundedKeys.Contains(k) ? "1" : "0"));
+                }
+                File.WriteAllLines(csv, lines);
+                Console.WriteLine($"per-round rows written to {csv}");
+            }
+
             Console.WriteLine($"\n{rows.Count} round(s) scored, {skipped.Count} excluded.");
             foreach (string sk in skipped) Console.WriteLine("  excluded  " + sk);
+            Console.WriteLine(useFlownRail
+                ? $"{railSubs.Count} round(s) replayed on the rail they flew, not the launcher their capture " +
+                  "modelled (AUTOTOT_NO_FLOWN_HEADING=1 turns this off)."
+                : "Flown-rail substitution is OFF (AUTOTOT_NO_FLOWN_HEADING=1).");
+            foreach (string s in railSubs) Console.WriteLine("  flown rail  " + s);
+            Console.WriteLine(useTargetRounding
+                ? $"{roundedKeys.Count} older capture(s) replayed on the target velocity the game realises for a " +
+                  "surface ship, rounded as the mod now rounds it (AUTOTOT_NO_TARGET_ROUNDING=1 turns this off)."
+                : "Target velocity rounding is OFF (AUTOTOT_NO_TARGET_ROUNDING=1).");
             return 0;
         }
 
@@ -251,9 +423,127 @@ namespace AutoTOT.Lab
             return null;
         }
 
+        /// <summary>A ship's transform sits within a fraction of a unit of the waterline, so a target
+        /// further from it than this is not a surface ship.</summary>
+        private const float SurfaceTargetMaxAbsYU = 1f;
+
+        /// <summary>A captured target velocity further than this from the recorded course had the
+        /// evasive boost applied, and rounding it would round the boosted vector.</summary>
+        private const float BoostFreeCourseDeg = 1f;
+
+        /// <summary>Time.fixedDeltaTime as GameTime.SetAdaptiveFixedDeltaTime sets it.</summary>
+        private const float Step60Hz = 0.0166667f, Step30Hz = 0.0333333f;
+
+        /// <summary>
+        /// The target velocity the mod now solves on, for a capture solved before it rounded one (no
+        /// TargetVelReported): a surface ship's velocity with the game's float32 position rounding
+        /// applied (GameMath.TranslateRoundedVelocity, as FlightTime.TargetMapVelocity uses it). Done
+        /// only where it can be done the mod's way: the target sits at the waterline with no vertical
+        /// velocity, which a Vessel always has; the captured velocity points along the recorded
+        /// course within <see cref="BoostFreeCourseDeg"/>, so no evasive boost is baked in; and the
+        /// step is the one the target moved at for most of the flight (<see cref="PrevailingFlightStep"/>).
+        /// False otherwise, and the capture replays as recorded.
+        /// </summary>
+        private static bool RoundedTargetVel(Dictionary<string, string> kv, Dictionary<string, string> r,
+                                             in FlightTime.SolveInput input, out Vector3 rounded)
+        {
+            rounded = input.TargetVel;
+            if (kv.ContainsKey("TargetVelReported") || !r.ContainsKey("TargetCourseAtLaunch")) return false;
+            Vector3 v = input.TargetVel;
+            if (v.y != 0f || Math.Abs(input.TargetPos.y) >= SurfaceTargetMaxAbsYU) return false;
+            if (v.x * v.x + v.z * v.z < 1e-12f) return false;
+            if (Math.Abs(DeltaAngle(FlightTime.YawOf(v), F(r, "TargetCourseAtLaunch"))) > BoostFreeCourseDeg)
+                return false;
+            rounded = GameMath.TranslateRoundedVelocity(input.TargetPos, v, PrevailingFlightStep(r));
+            return true;
+        }
+
+        /// <summary>
+        /// The physics step a round's target moved at for most of its flight: its one step when
+        /// steady, else the step its recorded timeline spent longest at (written to four places, so
+        /// snapped back to the game's own value), else 1/60 s. The mod predicts this from the minute
+        /// before the solve (FlightTime.PredictedPhysicsStep); an old capture has no record of that
+        /// minute, and in a session whose step is stable the two are the same. The launch step alone
+        /// is wrong here: a round solved in the 30 Hz stretch after a mission load flies the rest of
+        /// its flight at 60 Hz, and the same ship rounds to 1.014 of its speed at one and 0.870 at the
+        /// other.
+        /// </summary>
+        private static float PrevailingFlightStep(Dictionary<string, string> r)
+        {
+            float lo = F(r, "MinFlownStep"), hi = F(r, "MaxFlownStep");
+            if (lo > 0f && hi > 0f && Math.Abs(hi - lo) <= SteadyStepRelativeTolerance * hi) return lo;
+            float flight = F(r, "ActualFlight");
+            string[] entries = r.GetValueOrDefault("StepChanges", "")
+                                .Split(';', StringSplitOptions.RemoveEmptyEntries);
+            var spans = new Dictionary<float, float>();
+            for (int i = 0; i < entries.Length; i++)
+            {
+                string[] p = entries[i].Split(':');
+                if (p.Length != 2 || !float.TryParse(p[0], NumberStyles.Float, Inv, out float at) ||
+                    !float.TryParse(p[1], NumberStyles.Float, Inv, out float step) || step <= 0f)
+                    continue;
+                float until = flight;
+                if (i + 1 < entries.Length)
+                {
+                    string[] q = entries[i + 1].Split(':');
+                    if (q.Length == 2 && float.TryParse(q[0], NumberStyles.Float, Inv, out float next))
+                        until = Math.Min(next, flight);
+                }
+                if (i == 0) at = 0f;   // the first entry is the step the round was first seen at
+                float snapped = Math.Abs(step - Step60Hz) < 5e-5f ? Step60Hz
+                              : Math.Abs(step - Step30Hz) < 5e-5f ? Step30Hz : step;
+                spans[snapped] = spans.GetValueOrDefault(snapped) + Math.Max(0f, until - at);
+            }
+            if (spans.Count > 0) return spans.OrderByDescending(e => e.Value).First().Key;
+            return lo > 0f ? lo : Step60Hz;
+        }
+
+        /// <summary>
+        /// A disagreement between the modelled and flown launch headings larger than this means the
+        /// round left a different fixed launcher. Measured over the corpus on 2026-09-13: of 217
+        /// fixed-rail, non-vertical captures, 192 agree to under 0.05 deg, seven wp_ss-n-3 rounds
+        /// differ by a steady 2.5 deg, and 18 usn_rgm-84d rounds by 180 deg, with nothing between.
+        /// The 2.5 deg is a separate question and deliberately stays below this line.
+        /// </summary>
+        private const float DifferentLauncherDeg = 90f;
+
+        /// <summary>Above this pitch at t = 0 a round is climbing out of a vertical cell, and its
+        /// heading says nothing about a rail.</summary>
+        private const float VerticalLaunchPitchDeg = 75f;
+
+        /// <summary>
+        /// The heading a round actually left on, from the first sample of its own FlightTrack
+        /// (pitch and heading are its sixth and seventh fields), when that disagrees with the
+        /// capture's LaunchHeading by more than <see cref="DifferentLauncherDeg"/>. A ship with two
+        /// opposed fixed launchers for one ammunition can hand a round the other canister after the
+        /// solve, and captures made before e90c13f recorded the canister the solve named. False for
+        /// a trainable mount (zero heading), a vertical launch, a capture without a track, or a
+        /// round that flew the rail it was modelled on. See docs/plans/done/2026-09-13-launcher-pick-by-arc.md.
+        /// </summary>
+        private static bool FlownRail(Dictionary<string, string> r, in FlightTime.SolveInput input,
+                                      out Vector3 flown, out float modelledDeg, out float flownDeg)
+        {
+            flown = Vector3.zero; modelledDeg = 0f; flownDeg = 0f;
+            Vector3 modelled = input.LaunchHeading;
+            if (modelled.x * modelled.x + modelled.z * modelled.z < 1e-8f) return false;
+            string track = r.GetValueOrDefault("FlightTrack", "");
+            int end = track.IndexOf(';');
+            string[] p = (end >= 0 ? track.Substring(0, end) : track).Split(':');
+            if (p.Length < 7
+                || !float.TryParse(p[5], NumberStyles.Float, Inv, out float pitch0)
+                || !float.TryParse(p[6], NumberStyles.Float, Inv, out flownDeg)
+                || pitch0 > VerticalLaunchPitchDeg)
+                return false;
+            modelledDeg = FlightTime.YawOf(modelled);
+            if (Math.Abs(DeltaAngle(modelledDeg, flownDeg)) <= DifferentLauncherDeg) return false;
+            float rad = flownDeg * Mathf.Deg2Rad;
+            flown = new Vector3(Mathf.Sin(rad), 0f, Mathf.Cos(rad));
+            return true;
+        }
+
         private static void MeanRow(string label,
             List<(string Label, float Actual, float[] Est, float Flown, float FlownEst, bool Grouped,
-                  float Launch, float Impact)> rows,
+                  float Launch, float Impact, string Run, string Key)> rows,
             float[] steps)
         {
             if (rows.Count == 0) return;

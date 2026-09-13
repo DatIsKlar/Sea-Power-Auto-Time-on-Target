@@ -94,10 +94,11 @@ namespace AutoTOT
         /// branch that renumbers or renames the enum then degrades to "not preparing" instead of
         /// throwing or, worse, silently matching the wrong state.
         ///
-        /// LauncherTooLow and LauncherTooHigh are deliberately absent. A submarine holding a
-        /// radio-command weapon it cannot guide sits in LauncherTooLow forever (the launcher raises
-        /// the boat only to the weapon's depth ceiling, never to the periscope depth its guidance
-        /// radar mast needs), and treating that as progress would hang the order for the full hold.
+        /// LauncherTooLow and LauncherTooHigh are deliberately absent. They are what a submarine
+        /// reports for the whole of an ascent to launch depth, which for every guided weapon in the
+        /// game means all the way to the surface, and that ascent is minutes long. Counting it as
+        /// progress would hold an order open for the full NoLaunchMaxHoldSim on a boat that has not
+        /// started a launcher cycle yet; the panel's launch-depth estimate covers the wait instead.
         /// </summary>
         private static readonly HashSet<string> PreparingStates = new HashSet<string>(StringComparer.Ordinal)
         {
@@ -821,9 +822,14 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// True when this ammo needs launcher guidance but no operable sensor can currently provide
-        /// it, which for a submerged submarine means a radar mast that is still under water. The
-        /// order will never fire until the boat comes shallow enough to raise it.
+        /// True when this ammo needs launcher guidance and every sensor that could provide it has
+        /// been shot away. <c>WeaponSystemLauncher</c> then parks the engage task in
+        /// <c>ReadyUpWhileWaiting</c> indefinitely, so the order never fires.
+        ///
+        /// This reads <c>Inoperable</c>, which is DAMAGE. It is deliberately not a depth test: no
+        /// ammunition in the game both requires launcher guidance and declares a nonzero MaxDepth
+        /// (0 of 437 screened 2026-09-13), so the launcher's own depth branch surfaces a submerged
+        /// boat before firing and a mast is never the thing standing in the way.
         /// </summary>
         internal static bool GuidanceSensorUnavailable(ObjectBase ship, string ammoId)
         {

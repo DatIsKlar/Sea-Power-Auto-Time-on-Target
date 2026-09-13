@@ -46,8 +46,9 @@ namespace AutoTOT.Lab
                     "usage: autotot-lab [score] <dump-dir-or-file> [step ...]\n" +
                     "       autotot-lab import <capture-dir> [corpus-dir]\n" +
                     "       autotot-lab index [corpus-dir]\n" +
-                    "       autotot-lab trace <solveinput-file> [step]\n" +
+                    "       autotot-lab trace <solveinput-file> [step] [--motor v]\n" +
                     "       autotot-lab climb <solveinput-file>\n" +
+                    "       autotot-lab motor <solveinput-file> [scale ...]\n" +
                     "       autotot-lab selftest [corpus-dir]\n" +
                     "       autotot-lab parity [corpus-dir] [--launch-estimate]");
                 return 2;
@@ -61,6 +62,7 @@ namespace AutoTOT.Lab
             if (args[0] == "index") return Index(args.Skip(1).ToArray());
             if (args[0] == "trace") return Trace(args.Skip(1).ToArray());
             if (args[0] == "climb") return Climb(args.Skip(1).ToArray());
+            if (args[0] == "motor") return Motor(args.Skip(1).ToArray());
             if (args[0] == "selftest") return SelfTest(args.Skip(1).ToArray());
             if (args[0] == "parity") return Parity(args.Skip(1).ToArray());
 

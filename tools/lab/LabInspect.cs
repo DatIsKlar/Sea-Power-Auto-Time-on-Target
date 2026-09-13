@@ -23,6 +23,57 @@ namespace AutoTOT.Lab
         /// distance and the climb is rate-limited by something we do not model. If it flattens
         /// early and holds, it was commanded to a lower altitude than we think.
         /// </summary>
+        /// <summary>
+        /// How much the model's flight time moves with the per-round thrust roll, for one captured
+        /// round. The game rolls <c>1.02 - rand/25</c> and multiplies thrust by it, and the scorer
+        /// replays each round with the value it flew on the grounds that this removes the roll. It
+        /// only removes it if the model's response matches the game's, and on `plan_yj-20` at 65 nm
+        /// it does not: see docs/plans/open/yj-20-motor-sensitivity.md. Live rounds give the game's
+        /// side of that comparison but carry sampling noise; this gives the model's side exactly.
+        ///
+        /// Reported as seconds per unit of motor and as a multiple of the round's own flight time,
+        /// which is the form the two sides are compared in. The game's figure sits at 1.14 to 1.18
+        /// on every family measured so far.
+        /// </summary>
+        private static int Motor(string[] args)
+        {
+            if (args.Length == 0)
+            {
+                Console.Error.WriteLine("usage: autotot-lab motor <solveinput-file> [scale ...]");
+                return 2;
+            }
+
+            string file = args[0];
+            float[] scales = args.Skip(1).Select(a => float.Parse(a, Inv)).ToArray();
+            if (scales.Length == 0) scales = new[] { 0.98f, 0.99f, 1.00f, 1.01f, 1.02f };
+
+            Dictionary<string, string> kv = ReadDump(file);
+            AmmunitionParameters ap = BuildAmmo(kv);
+            FlightTime.SolveInput input = BuildInput(kv, ap);
+
+            Console.WriteLine($"{"motor",8}{"estimate",12}");
+            Console.WriteLine(new string('-', 20));
+            var pts = new List<(float m, float est)>();
+            foreach (float m in scales)
+            {
+                FlightTime.OfflineMotorScale = m;
+                float est = FlightTime.SolveOffline(in input, ap, 0.1f, out _);
+                FlightTime.OfflineMotorScale = 1f;
+                pts.Add((m, est));
+                Console.WriteLine($"{m,8:F4}{est,12:F3}");
+            }
+
+            // Least squares over whatever scales were asked for, so an uneven sweep still reports
+            // one slope rather than a pair of endpoints that happen to bracket a kink.
+            float mx = pts.Average(p => p.m), my = pts.Average(p => p.est);
+            float den = pts.Sum(p => (p.m - mx) * (p.m - mx));
+            float slope = den > 0f ? pts.Sum(p => (p.m - mx) * (p.est - my)) / den : 0f;
+            Console.WriteLine(new string('-', 20));
+            Console.WriteLine($"d(estimate)/d(motor) = {slope:F1} s per unit, " +
+                              $"{Math.Abs(slope) / Math.Max(my, 0.001f):F2} x the flight");
+            return 0;
+        }
+
         private static int Climb(string[] args)
         {
             if (args.Length == 0)
@@ -67,14 +118,20 @@ namespace AutoTOT.Lab
             }
             FlightTime.OfflineMotorScale = 1f;
 
-            // Model samples, as (t, alt), from the trace it just produced.
-            var model = new List<(float T, float Alt)>();
-            foreach (Match m in Regex.Matches(sw.ToString(), @"t\+([0-9.]+)s spd \d+kn alt ([0-9.]+)"))
-                model.Add((float.Parse(m.Groups[1].Value, Inv), float.Parse(m.Groups[2].Value, Inv)));
+            // Model samples from the trace it just produced. Speed as well as altitude: the trace
+            // has always carried it and the column dropped it, which left the one question the
+            // command cannot otherwise answer, whether a timing difference is a path difference or
+            // a speed difference, needing a second tool.
+            var model = new List<(float T, float Alt, float Spd)>();
+            foreach (Match m in Regex.Matches(sw.ToString(), @"t\+([0-9.]+)s spd (\d+)kn alt ([0-9.]+)"))
+                model.Add((float.Parse(m.Groups[1].Value, Inv),
+                           float.Parse(m.Groups[3].Value, Inv),
+                           float.Parse(m.Groups[2].Value, Inv)));
 
             Console.WriteLine();
-            Console.WriteLine($"{"t",8}{"realAlt",10}{"modelAlt",10}{"diff",9}{"realSpd",9}");
-            Console.WriteLine(new string('-', 46));
+            Console.WriteLine($"{"t",8}{"realAlt",10}{"modelAlt",10}{"diff",9}" +
+                              $"{"realSpd",9}{"modelSpd",10}{"diff%",8}");
+            Console.WriteLine(new string('-', 64));
 
             float ceiling = F(kv, "LoftAlt");
             float peakReal = 0f, peakModel = 0f;
@@ -83,27 +140,33 @@ namespace AutoTOT.Lab
                 string[] p = sample.Split(':');
                 if (p.Length < 3) continue;
                 float t = float.Parse(p[0], Inv), alt = float.Parse(p[1], Inv), spd = float.Parse(p[2], Inv);
-                float ma = NearestAlt(model, t);
+                (float ma, float ms) = NearestSample(model, t);
                 peakReal = Math.Max(peakReal, alt);
                 peakModel = Math.Max(peakModel, ma);
-                Console.WriteLine($"{t,8:F0}{alt,10:F0}{ma,10:F0}{ma - alt,9:+0;-0}{spd,9:F0}");
+                string spdDiff = spd > 1f ? $"{100f * (ms - spd) / spd:+0.0;-0.0}" : "";
+                Console.WriteLine($"{t,8:F0}{alt,10:F0}{ma,10:F0}{ma - alt,9:+0;-0}" +
+                                  $"{spd,9:F0}{ms,10:F0}{spdDiff,8}");
             }
 
-            Console.WriteLine(new string('-', 46));
+            Console.WriteLine(new string('-', 64));
             Console.WriteLine($"commanded ceiling {ceiling:F0}u, real peak {peakReal:F0}u, model peak {peakModel:F0}u");
             Console.WriteLine(r.GetValueOrDefault("StageChanges", ""));
             return 0;
         }
 
-        private static float NearestAlt(List<(float T, float Alt)> model, float t)
+        /// <summary>Model altitude and speed at the sample nearest this time. The recorded track
+        /// and the model trace run on different cadences, so neither can be indexed by the other.
+        /// </summary>
+        private static (float Alt, float Spd) NearestSample(List<(float T, float Alt, float Spd)> model,
+                                                            float t)
         {
-            float best = 0f, bestD = float.MaxValue;
+            float bestAlt = 0f, bestSpd = 0f, bestD = float.MaxValue;
             foreach (var m in model)
             {
                 float d = Math.Abs(m.T - t);
-                if (d < bestD) { bestD = d; best = m.Alt; }
+                if (d < bestD) { bestD = d; bestAlt = m.Alt; bestSpd = m.Spd; }
             }
-            return best;
+            return (bestAlt, bestSpd);
         }
 
         /// <summary>
@@ -114,12 +177,26 @@ namespace AutoTOT.Lab
         {
             if (args.Length == 0)
             {
-                Console.Error.WriteLine("usage: autotot-lab trace <solveinput-file> [step]");
+                Console.Error.WriteLine(
+                    "usage: autotot-lab trace <solveinput-file> [step] [--motor <value>]");
                 return 2;
             }
 
-            string file = args[0];
-            float dt = args.Length > 1 ? float.Parse(args[1], Inv) : 0.1f;
+            // --motor replays the same input at a thrust multiplier of your choosing instead of the
+            // one the round flew. Two traces of one input at two multipliers isolate the model's
+            // response to thrust from every other difference between two rounds, which is what the
+            // live salvo cannot do: its rounds differ in geometry as well as motor.
+            float motorOverride = -1f;
+            var rest = new List<string>();
+            for (int k = 0; k < args.Length; k++)
+            {
+                if (args[k] == "--motor" && k + 1 < args.Length)
+                { motorOverride = float.Parse(args[++k], Inv); continue; }
+                rest.Add(args[k]);
+            }
+
+            string file = rest[0];
+            float dt = rest.Count > 1 ? float.Parse(rest[1], Inv) : 0.1f;
 
             Dictionary<string, string> kv = ReadDump(file);
             AmmunitionParameters ap = BuildAmmo(kv);
@@ -134,6 +211,12 @@ namespace AutoTOT.Lab
                 FlightTime.OfflineMotorScale = F(r, "MotorPerformance") > 0f
                     ? F(r, "MotorPerformance") : 1f;
                 Console.WriteLine($"actual {F(r, "ActualFlight"):F1}s, motor {FlightTime.OfflineMotorScale:F3}");
+            }
+            if (motorOverride > 0f)
+            {
+                FlightTime.OfflineMotorScale = motorOverride;
+                Console.WriteLine($"motor OVERRIDDEN to {motorOverride:F4}; the recorded outcome " +
+                                  "above belongs to a different multiplier");
             }
 
             Bootstrap.Log.Echo = true;

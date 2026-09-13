@@ -5,7 +5,8 @@
 ## 6.1 Accuracy
 
 Measured against real flights on the beta branch, integrator owning every shot with no fallback.
-*Gap* = actual flight time − the estimate made at launch, matching what the `gap` line in the log
+*Gap* = actual flight time − the estimate made at launch, from the rail the round actually left on,
+matching what the `gap` line in the log
 reports (`LaunchDiagnostics.RetireDeadTrackers`). **Positive means the estimate ran SHORT** and the round arrived
 later than predicted; negative means it ran long and the round arrived early.
 
@@ -158,6 +159,16 @@ kinematic measurement should be read against that band, not treated as a point v
 - **Constant-velocity target prediction.** The lead is `targetPos + targetVel · t`, with the same
   evasive-manoeuvre boost the game's own estimator applies. A target that turns hard mid-flight is
   not modelled.
+- **A surface target moves at the rate it realises, not the rate it reports.** The game adds the
+  same `_velocityVecInUnity · dt` to a ship's float32 position every tick, and the add rounds it to a
+  whole number of that coordinate's representable spacings. `targetVel` therefore applies that
+  rounding per component, at the solve's position and at the base step the game has held over the
+  preceding minute, not a momentary 1/30 s dip
+  ([GAME-BEHAVIOUR.md §4](../GAME-BEHAVIOUR.md#4-a-slow-ships-map-speed-depends-on-where-it-is)).
+  A 6.6 kn ship heading along one axis 2,048 to 4,096 u from the centre tile realises 0.87 of its
+  reported speed, which over a 500 s flight is more than 200 m of aim point. Not predicted: a ship
+  whose position crosses a power of two during the flight, and a physics-step change or recentre
+  after launch.
 - **An off-bearing launch is under-charged by 1 to 2 s.** Measured on four ammunition, scaling
   with how long the round spends turning ([§6.1](#61-accuracy)). The largest systematic error
   left; tracked and parked in
