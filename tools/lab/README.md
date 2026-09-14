@@ -35,8 +35,11 @@ Score the whole corpus against what the rounds actually flew:
     dotnet run -- score <corpus-dir> [step ...]
 
 `AUTOTOT_SCORE_CSV=<file>` writes one keyed row per round beside the table:
-`key,label,actualFlight,offlineEst,offGap,motor,grouped,schema,flownRail,scored,formation`, where
-`flownRail` is 1 for a round replayed on the rail it flew (see "launch rail" below). The table prints a row per round but no
+`key,label,actualFlight,offlineEst,offGap,motor,grouped,schema,flownRail,scored,formation,targetRounded,diveStartU,finalFlightStartU,offGapAtStep,hullArrival,arrivalFlatM,heightAt202M`,
+where `flownRail` is 1 for a round replayed on the rail it flew (see "launch rail" below), and the last two
+are the flat distance to the ship at which the first sweep column entered the terminal phase and the final
+flight, -1 when it never did, for reading against the recorded `StageEvents`. `offGapAtStep` is the
+table's `offGap@step`, blank where the round has no comparable step. The table prints a row per round but no
 key, so a round cannot be joined back to its capture and correlated against what it flew. That join
 is what a question like "why do this family's rounds disagree with each other" needs, as opposed to
 "how far is this family from the game", which the table already answers.
@@ -50,6 +53,45 @@ Replay one round with the full step trace, which is how a disagreement gets loca
 Its first line is the waypoint route the replay flies, or `none` when the capture predates it:
 
     dotnet run -- trace <solveinput-file> [step]
+
+Check the port of the game's lead intercept point against the guard frames of flown rounds. Each frame's
+recorded known target, known velocity, position, speed and travelled distance go through
+`FlightTime.LeadInterceptTime`, and the result is compared with the intercept point the game recorded on
+that frame, overall and at the last frame before each stage change. Launch-state frames miss by design:
+the game computes no lead before ToBearing, so their recorded point is still the launch aim point.
+
+    dotnet run -- leadcheck <run-or-capture-dir> [...]
+
+Put the model's flight beside the recorded one, matched on flat distance to the target's centre, to find the
+phase where a timing error is made. Each recorded `FlightTrack` sample and stage event gets the model's height,
+speed and pitch at the same distance and `dt`, the model's time there minus the real time; a `dt` that steps between
+two rows was made between them. It replays the way `score` does (rail flown, rounded target velocity, motor roll,
+recorded steps), and `--no-hull` ends the replay 3 u from the target's centre instead of at its hull. `--time` matches each
+row to the model at the same time since launch instead of the same distance, which is the comparison for a speed
+error (`dt` then reads zero):
+
+    dotnet run -- pathcmp <solveinput-file> [--no-hull] [--time]
+
+Put the model's own flight at two integration steps side by side, at common times, to find where a step-size
+difference is made: flat distance, height, speed and pitch, and the flat difference converted to seconds. `--raw t0 t1`
+prints every step of both flights in that window with its flat closure and how far the flown and wanted headings sit
+from the bearing to the target:
+
+    dotnet run -- stepcmp <solveinput-file> [stepA] [stepB] [every-s] [--raw t0 t1]
+
+Check the model's waypoint look-ahead against the game's own steering points. The guard track records the
+game's `DesiredPosition` (1.5 s ahead) and `FuturePosition` (8 s ahead); `popcheck` feeds each frame's recorded
+state into `FlightTime.WaypointPointAtTime` on every frame whose look-ahead reaches a terminal pop-up leg and prints
+the recorded heights beside the port's, with the pop-up look-ahead off and on:
+
+    dotnet run -- popcheck <result-file-or-dir> [...]
+
+Check a kinematic loft round's steering against the game's live KappaLoft curve. On every ToBearing and
+MaintainLoftAlt guard frame `kappacheck` compares the recorded `DesiredPosition` height with a port of
+`Waypoint.GetOrComputeLoftParams` and `GetKappaLoftAltitude` fed the frame's own state, with the model's Kappa-block
+command at the same state, and with the model's own curve put through the game's look-ahead arithmetic:
+
+    dotnet run -- kappacheck <result-file-or-dir> [...]
 
 Measure how much the model's answer moves with the per-round thrust roll, for one round:
 
@@ -77,6 +119,77 @@ Check that the lab replays the model the game ran:
 
 Set `AUTOTOT_NO_WAYPOINT_LEGS=1` to replay with the non-kinematic waypoint route switched off, so one
 build can be scored with and without it.
+
+Set `AUTOTOT_NO_LEAD_SWITCH=1` to measure stage switches to the ship again instead of to the missile's
+lead intercept point. A capture that predates the recorded switch target derives it from its raw
+ammunition fields; one without `Ammo.MaxLoftAltUnity` (before `rich-flight-v3`) keeps the older rule.
+
+A replay ends where the round's last step passes through the target's hull, as the mod's estimate does: the hull
+the capture recorded (`HullSource`, `HullLengthU`, `HullBeamU`, `HullHeightU`, `HullAxis`), sized by what the
+shooter's side knew (identified: the target's collider; a contact label showing a size class: that class's
+representative hull; noise or no track: the middle class). A capture from before the hull rule gets its target
+name's median hull from the corpus's world-aligned collider bounds and courses, which is what an identified target
+gets. Set `AUTOTOT_NO_HULL_ARRIVAL=1` to end every replay 3 u from the target's centre instead.
+`AUTOTOT_HULL_ARRIVAL=low` keeps that stop for a round still above the hull's top when it comes within 3 u
+(counterfactual only). The CSV carries `hullArrival` (1 when a hull was applied), `arrivalFlatM` (flat distance
+from the target's centre at the end of the replay) and `heightAt202M` (the round's height above the target's
+centre on its first step inside 3 u).
+
+Six corrections to the flight path are on in the mod, and each has a switch that turns it off for an A/B:
+
+- `AUTOTOT_NO_POPUP_LOOKAHEAD=1`: a steering look-ahead that reaches a terminal pop-up leg takes the leg's end
+  height again, instead of that leg's own curve and climb limit as `Waypoint.CalculateFuturePointRecursive` does.
+- `AUTOTOT_NO_POPUP_CLAMP=1`: a cruise missile's active pop-up leg is no longer held to its pop-up angle below
+  0.95 progress.
+- `AUTOTOT_NO_TERMINAL_TURN_STAGE=1`: the terminal vertical turn rate applies only inside a pop-up leg again,
+  instead of for the whole TerminalApproach stage (from the terminal distance once the flight is older than the
+  terminal delay, tested against the raw turn rate for a cruise missile and the derated one for a kinematic one).
+  The delay is the capture's `TerminalDelaySec`; an older capture takes it from `Ammo.TerminalDelay` and
+  `Ammo.MinLaunchRangeInMiles` when a disposable enrichment added them, and is 0 without them.
+- `AUTOTOT_NO_LIVE_KAPPA=1`: a kinematic loft round steers by the sampled `AltNodes` curve again, instead of the
+  live KappaLoft curve (from the round's position when its initial phase ends to the leg's end point, at the
+  steering point's progress by distance to the target, with no `MaxLoftAngle` clamp).
+- `AUTOTOT_NO_ROTATE_DEADBAND=1`: a kinematic surface-target round always turns, instead of holding its nose on a
+  step where its forward and its steering direction already agree to a dot above 1 - 1e-5 (0.256 degrees), as
+  Unity's `Vector3.RotateTowards` does in `WeaponBase.setCourseTowardsPosition`. The hold never applies in the
+  terminal split (angles by `MoveTowards`) or against an air target.
+- `AUTOTOT_NO_KIN_TERMINAL_LINE=1`: a kinematic round's Linear terminal leg starts at its geometric onset and flies
+  a pitch latched at entry again, instead of starting at the terminal distance (every altitude leg of a kinematic
+  round allows exceeding its angle limits, so it holds its height to the boundary) and steering each step at the
+  1.5 s point on the line from where it entered the leg to the terminal height. Reaches `plan_yj-20` and
+  `usn_rim-174b`.
+
+The game's motor clock is `GameTime.missionElapsedTime`, which advances once per rendered frame, so every tick of a
+frame reads the clock as the frame began and a booster burns on to the end of the frame its nominal end falls in.
+Set `AUTOTOT_THRUST_FRAMES=n` to take the motor clock from the recorded `FlightTrack` rows under 5 s (each row is a
+frame start at that cadence), each gap split into `n` equal frames. Set `AUTOTOT_THRUST_LAG=s` to delay the motor
+clock by `s` seconds after those rows, or everywhere when frames are unset. `AUTOTOT_THRUST_LAG=auto` delays it by
+half a frame of game time at the round's `MaxCompression` and 60 fps; `AUTOTOT_THRUST_LAG=recorded` by the round's
+own `ThrustClockLagSec`, a key only a disposable enrichment writes (0 when absent). The overrun is zero with a steady
+frame rate and random with an irregular one, so `recorded` is the replay of a per-round input, like the motor roll,
+and `auto` is kept only as the test that showed an expected lag does not belong in the estimator. `score` and
+`pathcmp` read both. Counterfactuals only.
+
+Set `AUTOTOT_NO_DOUBLE_CLOCK=1` to return the loop's float32 clock as the flight time again instead of the double sum
+of its steps. The float sum reads early on long flights at small steps (0.1 s short by 600 s at 1/60 s), which is what
+made the flown-step column look earlier than the 0.1 s production column.
+
+Set `AUTOTOT_NO_SEEKER_BRAKE=1` to gate the drag brake on the older `phase 2, height above 613.5 u, pitch below -40`
+stand-in instead of the seeker window, and `AUTOTOT_NO_KIN_LINE_LOOKAHEAD=1` to hold a kinematic round's height to the
+terminal distance instead of starting down where its 1.5 s look-ahead crosses into the terminal leg.
+
+Three counterfactuals of the production-step difference, each off by default: `AUTOTOT_ARRIVAL_INTERP=1` places the
+arrival inside its step, from the hull's slab entry fraction or the 3 u crossing; `AUTOTOT_GAME_ROUNDING=1` moves each
+step by the velocity the game realises on its float32 grid at the round's physics step, accumulated in double;
+`AUTOTOT_MOTOR_SUBSTEPS=1` integrates a kinematic round's thrust and drag in physics-step substeps while its motor
+burns. `score` sets the physics step per round from the capture. Counterfactuals only.
+
+Set `AUTOTOT_DRAG_PITCHRATE=k` to scale the pitch rate the model hands `CalculateDrag`. With the motor off its stall
+term falls toward zero under a nose-down rate; 1 is the shipped behaviour and 0 gives the term no rate at all.
+Counterfactual only.
+
+Set `AUTOTOT_NO_TOBEARING_OWN_PITCH=1` to add the banking roll budget to the turn rate during a ToBearing
+turn-rate override again, as the model did before the override was found to give pitch its own rotation.
 
 Timing residuals use the same sign convention as the production mod: **actual flight time minus
 estimate**, so positive means the model predicted too little time. The two residuals are deliberately
@@ -251,3 +364,41 @@ still calls Unity. The `Quaternion` struct itself needs no substitute, since its
 Because of that substitution, a sweep is only trustworthy once the lab reproduces the estimate the
 game logged for the same round at the production 0.1 s step. Check that first; it validates the
 replacements and the reconstruction together.
+
+## Launch schedules
+
+`schedule` scores launch timing rather than flight time. It reads a folder of live-test runs
+(`tools/livetest/runs`), joins each round capture's launch time to its order's registration, and compares two
+predictions of when each round leaves: the coordinator's shot interval and release lead, and a per-round simulation of
+the game's launcher gates (`LaunchSchedule.Simulate` in `LabSchedule.cs`).
+
+    dotnet run -- schedule <runs-dir> [--overhead s] [--last-round-waits] [--last-round-waits-for sys,sys] [--orders]
+
+The error is the recorded minus the predicted launch offset, averaged over a unit's rounds (the last round of a grouped
+salvo). A unit is an order fired alone on its ship's weapon system, or every order that shared that system in the run,
+because the coordinator centres a shared launch clock's rounds as one ripple. Two errors are printed: measured from each
+order's release, which is what moves the time on target, and measured from the unit's own first launch, which separates
+the cadence from the first round's lead. `AUTOTOT_SCHEDULE_CSV=<file>` writes a row per order. FireRate and salvo
+settings come from the installed game's `weapons.ini`.
+
+## Stage gates
+
+`gates` replays every capture once at the production step and counts, per family, two places where the step loop's
+stage tests can disagree with a state the game latches: steps back in ToBearing after the round has left it, and
+terminal-stage steps flown before the ammunition's TerminalDelay.
+
+    dotnet run -- gates [corpus-dir]
+
+`AUTOTOT_TOBEARING_LATCH=1` and `AUTOTOT_TERMINAL_DELAY_GATE=1` make every replay refuse each of them.
+`AUTOTOT_BURNOUT_SUBSTEPS=1` integrates only the step in which a motor burns out, in physics-tick substeps.
+`AUTOTOT_LAUNCH_PHASE_RECORDED=1` makes `score` replay each round with the recorded end of its Launch state as the
+initial phase.
+
+## The installed game branch
+
+The lab copies the installed game's `Seapower-Scripts.dll` when it builds and calls the game's own thrust and drag
+functions through it, so a lab built while the public branch is installed replays public code. Check before scoring:
+
+    strings -n 6 bin/Release/net8.0/Seapower-Scripts.dll | grep -c '^EstimateShot$'
+
+It prints 1 for the beta branch. `max-solo-error-below-1s.enrich.py` also reads the installed ammunition files.

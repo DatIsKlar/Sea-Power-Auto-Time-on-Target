@@ -24,6 +24,9 @@ namespace AutoTOT
         {
             public float LaunchTime; public string AmmoName; public string TargetName;
             public float LastDistM; public float LastSeenTime;
+            // Where the round was, and how fast, at LastSeenTime; dumped rounds only. The retire pass
+            // measures from here to the hit point the game leaves in a destroyed round's transform.
+            public Vector3 LastSeenPosU; public float LastSeenSpeedU; public Vector3 LastSeenDirU;
             public ObjectBase Target;      // kept for residual lookup (predicted vs observed impact)
             // The target the SEEKER is on right now, refreshed every tick. These missiles carry their
             // own active seeker and, unlike grouped rounds, do not split up: one assigned to a ship
@@ -140,6 +143,14 @@ namespace AutoTOT
             public GuardFrame GuardPrev;   // last tick's values, for the line before a change
             public GuardFrame GuardNext;   // the spare frame the next tick fills
             public bool GuardLastWritten;
+            // One-second pools of the pitch rate the game's drag function reads, sampled once a
+            // frame. See MaybeRecordPitchRate.
+            public readonly List<string> PitchRateTrack = new List<string>();
+            public float PitchRateWindow;
+            public int PitchRateN, PitchRateAtOrBelowZero;
+            public float PitchRateMin, PitchRateMax;
+            public double PitchRateSum, PitchRateSq, PitchRateLlf2, PitchRatePitch, PitchRateSpeedU;
+            public long PitchRateTickFirst, PitchRateTickLast;
             // Detailed counterparts to the compact, backwards-compatible StageChanges field, plus
             // the group state transitions that otherwise existed only in the rotating log.
             public readonly List<string> StageEvents = new List<string>();
@@ -187,6 +198,12 @@ namespace AutoTOT
             // the round leaves the rail, so the first sighting often sees a valid grouped round as
             // solo. Kept as a flight-wide observation rather than a launch-time snapshot.
             CaptureGroupMembership(w, s);
+            if (w.transform != null)
+            {
+                s.LastSeenPosU = w.transform.position;
+                s.LastSeenSpeedU = w._velocityInUnity;
+                s.LastSeenDirU = w.transform.forward;
+            }
             // Compression band over the whole flight. Above 10x the game enlarges its own physics
             // step, so the round flies a different trajectory and the flight time stops being
             // comparable with a solve; the corpus needs to know that happened.
@@ -373,6 +390,7 @@ namespace AutoTOT
                         MaybeRecordSeekerEvent(w, tgt, existing, simNow);
                         MaybeRecordGroupChange(w, existing, simNow);
                         RecordGuardTrack(w, existing, simNow);
+                        MaybeRecordPitchRate(w, existing, simNow);
                     }
                     if (!ReferenceEquals(existing.CurrentTarget, tgt))
                     {
@@ -795,6 +813,44 @@ namespace AutoTOT
             }
         }
 
+        private static readonly RaycastHit[] _impactHits = new RaycastHit[16];
+
+        /// <summary>
+        /// The collision time of a round that has just vanished, measured from its last sighting.
+        /// Against a ship the flight ends in WeaponBase.CheckCollision, a raycast along each tick's
+        /// step with mask -131073 (everything but layer 17), and ResolveCollisionCandidate credits the
+        /// hit to transform.root.GetComponentInChildren&lt;ObjectBase&gt;(). The same cast, from the
+        /// last-sighted position along the last-sighted nose and only as far as the round could have
+        /// flown by <paramref name="latestAge"/>, finds where it met its target; the distance over the
+        /// last speed is the time. The round's own transform is no use here: WeaponBase.destroyObject
+        /// hands a missile back to PoolManager on the collision tick. Returns -1 when the cast meets no
+        /// collider of the target.
+        /// </summary>
+        private static float ImpactFromLastSighting(FlightSample s, float lastSeenAge, float latestAge)
+        {
+            try
+            {
+                ObjectBase target = s.CurrentTarget != null ? s.CurrentTarget : s.Target;
+                float reach = (latestAge - lastSeenAge) * s.LastSeenSpeedU;
+                if (target == null || reach <= 0f || s.LastSeenDirU.sqrMagnitude < 0.5f) return -1f;
+                int n = Physics.RaycastNonAlloc(s.LastSeenPosU, s.LastSeenDirU.normalized, _impactHits,
+                                                reach, -131073);
+                float best = float.MaxValue;
+                for (int i = 0; i < n; i++)
+                {
+                    Collider c = _impactHits[i].collider;
+                    if (c == null || c.gameObject.layer == 17 || c.name == "col_missile_proximity") continue;
+                    if (c.transform.root.GetComponentInChildren<ObjectBase>() != target) continue;
+                    if (_impactHits[i].distance < best) best = _impactHits[i].distance;
+                }
+                return best < float.MaxValue ? lastSeenAge + best / s.LastSeenSpeedU : -1f;
+            }
+            catch (System.Exception)
+            {
+                return -1f;
+            }
+        }
+
         /// <summary>
         /// Drop the gathered trackers, logging each round's impact and its actual-minus-estimate gap on
         /// the way out. Deliberately outside the timed region, matching the original instrumentation.
@@ -807,6 +863,20 @@ namespace AutoTOT
                 if (_flightTracker.TryGetValue(w, out FlightSample s))
                 {
                     float flightTime = s.LastSeenTime - s.LaunchTime;
+
+                    // flightTime ends at the last frame the round was seen, so the collision lies
+                    // between that and this frame, the first one it was missed. See
+                    // ImpactFromLastSighting for the collision itself.
+                    const float ImpactToleranceSec = 0.02f;
+                    float flightEndGone = GameClock.SimNow() - s.LaunchTime;
+                    float flightEndImpact = s.DumpKey != null
+                        ? ImpactFromLastSighting(s, flightTime, flightEndGone + ImpactToleranceSec)
+                        : -1f;
+                    // What the impact, gap and residual lines report: the hit when the cast found
+                    // it, else the last sighting. The capture keeps both (ActualFlight stays the
+                    // last sighting, FlightEndImpact the hit). Only dumped rounds carry the hit.
+                    float flightMeasured = flightEndImpact >= 0f ? flightEndImpact : flightTime;
+                    string measuredTo = flightEndImpact >= 0f ? " to the hit" : "";
 
                     // Deliberately OUTSIDE the VerboseLog/TraceFlightModel gate below. A round that
                     // ends without arriving neither falls short at launch (the SHORTFALL line counts
@@ -867,7 +937,7 @@ namespace AutoTOT
                         if (hit)
                         {
                             if (s.PredictedImpact >= 0f)
-                                residual = $", predicted {s.PredictedImpact:0.0}, residual {s.LastSeenTime - s.PredictedImpact:+0.0;-0.0}s";
+                                residual = $", predicted {s.PredictedImpact:0.0}, residual {s.LaunchTime + flightMeasured - s.PredictedImpact:+0.0;-0.0}s";
                         }
                         else
                         {
@@ -876,8 +946,8 @@ namespace AutoTOT
                                        "retired, so sim time above is not an arrival and there is no residual";
                         }
                         Bootstrap.Log.LogInfo(
-                            $"[AutoTOT] impact {s.AmmoName} -> {s.TargetName}: {outcome} at sim {s.LastSeenTime:0.0} " +
-                            $"(flight {flightTime:0.0}s, final range {s.LastDistM:0} m){switched}{residual}");
+                            $"[AutoTOT] impact {s.AmmoName} -> {s.TargetName}: {outcome} at sim {s.LaunchTime + flightMeasured:0.0} " +
+                            $"(flight {flightMeasured:0.0}s{measuredTo}, final range {s.LastDistM:0} m){switched}{residual}");
                         // One corpus entry per round: the input it was solved from, and what the
                         // round then did. Written whenever the round was dumped, arrival or not,
                         // because a no-arrival is a fact the lab needs in order to exclude it.
@@ -892,7 +962,7 @@ namespace AutoTOT
                                 s.MaxFlownStep, s.KinEstAtLaunch, s.LaunchTime,
                                 s.InGroup, s.GroupLeader, s.MaxGroupSize,
                                 s.PeakSpeedKn, s.PeakAltU, s.LastSpeedKn, s.Track,
-                                s.FlightTrack, s.GuardTrack,
+                                s.FlightTrack, s.GuardTrack, s.PitchRateTrack,
                                 s.WpEstAtLaunch, s.LegacyEstAtLaunch,
                                 s.StageChanges, s.StageEvents, s.GroupChanges, s.StepChanges,
                                 s.RegisteredSim, s.StartupLead, s.EnvelopeLead, s.ReleaseLead,
@@ -901,7 +971,7 @@ namespace AutoTOT
                                 s.TargetCourseAtEnd, s.TargetSpeedAtEnd,
                                 (s.TargetPosAtEnd - s.TargetPosAtLaunch).magnitude,
                                 s.HasSpeedCommand, s.SpeedCommandAtLaunch, s.SpeedCommandChanges,
-                                s.LaunchCellBlock);
+                                s.LaunchCellBlock, flightEndGone, flightEndImpact);
 
                         // gap = actual flown time − the sim estimate captured at launch (positive =>
                         // the sim UNDER-predicts). Peak altitude and terminal speed say WHERE the gap
@@ -913,26 +983,26 @@ namespace AutoTOT
                         {
                             Bootstrap.Log.LogInfo(
                                 $"[AutoTOT] gap {s.AmmoName} -> {s.TargetName}: SKIPPED, seeker switched to " +
-                                $"{s.CurrentTargetName}. Flight {flightTime:0.0}s is to that ship; " +
+                                $"{s.CurrentTargetName}. Flight {flightMeasured:0.0}s is to that ship; " +
                                 $"simEst {s.KinEstAtLaunch:0.0}s was for the assigned one. Not estimator error.");
-                            LogSubstituteGap(s, flightTime);
+                            LogSubstituteGap(s, flightMeasured);
                         }
                         else if (s.KinEstAtLaunch > 0f && hit && Coordinator.TraceFlightModel)
                         {
                             string legacy = s.LegacyEstAtLaunch > 0f
-                                ? $", legacyEst {s.LegacyEstAtLaunch:0.0}s (gap {flightTime - s.LegacyEstAtLaunch:+0.0;-0.0}s)"
+                                ? $", legacyEst {s.LegacyEstAtLaunch:0.0}s (gap {flightMeasured - s.LegacyEstAtLaunch:+0.0;-0.0}s)"
                                 : "";
                             string wp = s.WpEstAtLaunch > 0f
-                                ? $", wpEst {s.WpEstAtLaunch:0.0}s (gap {flightTime - s.WpEstAtLaunch:+0.0;-0.0}s)"
+                                ? $", wpEst {s.WpEstAtLaunch:0.0}s (gap {flightMeasured - s.WpEstAtLaunch:+0.0;-0.0}s)"
                                 : "";
                             Bootstrap.Log.LogInfo(
                                 $"[AutoTOT] gap {s.AmmoName} -> {s.TargetName}: simEst {s.KinEstAtLaunch:0.0}s, " +
-                                $"actual {flightTime:0.0}s, gap {flightTime - s.KinEstAtLaunch:+0.0;-0.0}s, " +
+                                $"actual {flightMeasured:0.0}s{measuredTo}, gap {flightMeasured - s.KinEstAtLaunch:+0.0;-0.0}s, " +
                                 $"peakAlt {s.PeakAltU:0}u, realPeakSpd {s.PeakSpeedKn:0}kn, termSpd {s.LastSpeedKn:0}kn{wp}{legacy}");
                         }
                     }
                     // The unattended test runner records every retired round, outcome or not.
-                    LiveTestRunner.OnRoundRetired(s, flightTime);
+                    LiveTestRunner.OnRoundRetired(s, flightMeasured);
                 }
                 _flightTracker.Remove(w);
             }

@@ -50,21 +50,73 @@ namespace AutoTOT.Lab
                     "       autotot-lab climb <solveinput-file>\n" +
                     "       autotot-lab motor <solveinput-file> [scale ...]\n" +
                     "       autotot-lab selftest [corpus-dir]\n" +
-                    "       autotot-lab parity [corpus-dir] [--launch-estimate]");
+                    "       autotot-lab parity [corpus-dir] [--launch-estimate]\n" +
+                    "       autotot-lab schedule <runs-dir> [--overhead s] [--orders]");
                 return 2;
             }
 
             // Scores the same build with the non-kinematic waypoint route on and off.
             if (System.Environment.GetEnvironmentVariable("AUTOTOT_NO_WAYPOINT_LEGS") == "1")
                 FlightTime.WaypointLegSteering = false;
+            // Scores the same build with and without the ToBearing pitch rule (B3).
+            if (System.Environment.GetEnvironmentVariable("AUTOTOT_NO_TOBEARING_OWN_PITCH") == "1")
+                FlightTime.ToBearingOverrideOwnsPitch = false;
+            // The upstream corrections (max-solo-error-below-1s.md, "Variant A build" S2), each off for an A/B.
+            // The look-ahead sees a pop-up leg's own curve.
+            if (System.Environment.GetEnvironmentVariable("AUTOTOT_NO_POPUP_LOOKAHEAD") == "1")
+                FlightTime.PopUpLookAhead = false;
+            // The terminal vertical turn rate for the whole TerminalApproach stage.
+            if (System.Environment.GetEnvironmentVariable("AUTOTOT_NO_TERMINAL_TURN_STAGE") == "1")
+                FlightTime.TerminalTurnWholeStage = false;
+            // The active pop-up leg's pitch is held to its pop-up angle.
+            if (System.Environment.GetEnvironmentVariable("AUTOTOT_NO_POPUP_CLAMP") == "1")
+                FlightTime.PopUpAngleClamp = false;
+            // A kinematic loft round's command from the live KappaLoft curve.
+            if (System.Environment.GetEnvironmentVariable("AUTOTOT_NO_LIVE_KAPPA") == "1")
+                FlightTime.LiveKappaLoft = false;
+            // Vector3.RotateTowards's dead band in the kinematic mover.
+            if (System.Environment.GetEnvironmentVariable("AUTOTOT_NO_ROTATE_DEADBAND") == "1")
+                FlightTime.RotateDeadBand = false;
+            // A kinematic terminal leg entered at TermDist and flown on its line.
+            if (System.Environment.GetEnvironmentVariable("AUTOTOT_NO_KIN_TERMINAL_LINE") == "1")
+                FlightTime.KinematicTerminalLine = false;
+            // Counterfactual: the pitch rate handed to CalculateDrag, scaled.
+            FlightTime.OfflineDragPitchRateScale = float.TryParse(
+                System.Environment.GetEnvironmentVariable("AUTOTOT_DRAG_PITCHRATE"),
+                NumberStyles.Float, Inv, out float dragRateScale) ? dragRateScale : 1f;
+            // Counterfactuals Q, R and K of the production-step lateness (max-solo-error-below-1s.md, "PL2 revised").
+            FlightTime.OfflineArrivalInterp = System.Environment.GetEnvironmentVariable("AUTOTOT_ARRIVAL_INTERP") == "1";
+            FlightTime.OfflineGameRounding = System.Environment.GetEnvironmentVariable("AUTOTOT_GAME_ROUNDING") == "1";
+            FlightTime.OfflineMotorSubsteps = System.Environment.GetEnvironmentVariable("AUTOTOT_MOTOR_SUBSTEPS") == "1";
+            // The seeker-window drag brake and the kinematic terminal line's look-ahead, each off for an A/B.
+            if (System.Environment.GetEnvironmentVariable("AUTOTOT_NO_SEEKER_BRAKE") == "1")
+                FlightTime.SeekerWindowBrake = false;
+            if (System.Environment.GetEnvironmentVariable("AUTOTOT_NO_KIN_LINE_LOOKAHEAD") == "1")
+                FlightTime.KinematicLineLookAhead = false;
+            // The double-summed flight time, off to compare with the float32 clock.
+            if (System.Environment.GetEnvironmentVariable("AUTOTOT_NO_DOUBLE_CLOCK") == "1")
+                FlightTime.DoubleClock = false;
+            // Counterfactuals M1 (ToBearing left for good) and M2 (TerminalDelay in every terminal consumer) of
+            // docs/plans/open/model-and-launcher-audit.md.
+            FlightTime.OfflineToBearingLatch = System.Environment.GetEnvironmentVariable("AUTOTOT_TOBEARING_LATCH") == "1";
+            FlightTime.OfflineTerminalDelayGate = System.Environment.GetEnvironmentVariable("AUTOTOT_TERMINAL_DELAY_GATE") == "1";
+            // Counterfactual M4: substeps only on the step in which the motor burns out.
+            FlightTime.OfflineBurnoutSubsteps = System.Environment.GetEnvironmentVariable("AUTOTOT_BURNOUT_SUBSTEPS") == "1";
 
             if (args[0] == "import") return Import(args.Skip(1).ToArray());
             if (args[0] == "index") return Index(args.Skip(1).ToArray());
             if (args[0] == "trace") return Trace(args.Skip(1).ToArray());
+            if (args[0] == "leadcheck") return LeadCheck(args.Skip(1).ToArray());
+            if (args[0] == "pathcmp") return PathCompare(args.Skip(1).ToArray());
+            if (args[0] == "stepcmp") return StepCompare(args.Skip(1).ToArray());
+            if (args[0] == "popcheck") return PopUpCheck(args.Skip(1).ToArray());
+            if (args[0] == "kappacheck") return KappaCheck(args.Skip(1).ToArray());
             if (args[0] == "climb") return Climb(args.Skip(1).ToArray());
             if (args[0] == "motor") return Motor(args.Skip(1).ToArray());
             if (args[0] == "selftest") return SelfTest(args.Skip(1).ToArray());
             if (args[0] == "parity") return Parity(args.Skip(1).ToArray());
+            if (args[0] == "schedule") return ScheduleCommand(args.Skip(1).ToArray());
+            if (args[0] == "gates") return GatesCommand(args.Skip(1).ToArray());
 
             bool score = args[0] == "score";
             if (score) args = args.Skip(1).ToArray();

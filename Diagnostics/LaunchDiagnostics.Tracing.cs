@@ -311,6 +311,83 @@ namespace AutoTOT
 
         private const int MaxFlightTrackSamples = 256;
 
+        // Both by reflection: _prevPitch is private, and a branch without either member loses
+        // PitchRateTrack (or its ticks-per-frame field) and nothing else.
+        private static readonly FieldInfo MissilePrevPitch =
+            typeof(Missile).GetField("_prevPitch", BindingFlags.Instance | BindingFlags.NonPublic);
+        private static readonly PropertyInfo GameSimulationTick =
+            typeof(GameTime).GetProperty("simulationTick", BindingFlags.Static | BindingFlags.Public);
+
+        /// <summary>
+        /// Once a frame, the pitch rate the game's drag function reads on that frame's last tick,
+        /// pooled into one-second rows. Missile.OnFixedUpdate copies _currentPitch into _prevPitch
+        /// and re-reads the transform before the state action steers, and PerformMoveForward hands
+        /// (_currentPitch - _prevPitch) / fixedDeltaTime to CalculateDrag. With the motor off, that
+        /// function's stall term scales with the square of
+        /// clamp01(|cos pitch| - v 67.2 max(rate, 0) / g), which is convex in the rate, so jitter
+        /// from tick to tick raises the drag above what the mean rate alone gives.
+        ///
+        /// Fields are t:frames:meanRate:sdRate:minRate:maxRate:shareAtOrBelowZero:meanSquare:
+        /// squareAtMeanRate:meanPitch:meanSpeedKn:ticksPerFrame. t is the window's start in whole
+        /// seconds since launch. Rate and pitch carry the game's sign, nose down positive, in deg/s
+        /// and deg.
+        /// </summary>
+        private static void MaybeRecordPitchRate(WeaponBase w, FlightSample s, float simNow)
+        {
+            Missile m = w as Missile;
+            if (m == null || MissilePrevPitch == null || s.PitchRateTrack.Count >= MaxFlightTrackSamples)
+                return;
+            float dt = GameTime.fixedDeltaTime;
+            if (dt <= 0f) return;
+            float window = Mathf.Floor(simNow - s.LaunchTime);
+            if (s.PitchRateN > 0 && window > s.PitchRateWindow) FlushPitchRate(s);
+            if (s.PitchRateN == 0)
+            {
+                s.PitchRateWindow = window;
+                s.PitchRateTickFirst = GameSimulationTick != null ? (long)GameSimulationTick.GetValue(null) : -1L;
+            }
+
+            float pitch = m._currentPitch;
+            float rate = (pitch - (float)MissilePrevPitch.GetValue(m)) / dt;
+            float vU = w._velocityInUnity;
+            float llf = LiftLoad(pitch, rate, vU);
+            s.PitchRateTickLast = GameSimulationTick != null ? (long)GameSimulationTick.GetValue(null) : -1L;
+            s.PitchRateN++;
+            s.PitchRateMin = s.PitchRateN == 1 ? rate : Mathf.Min(s.PitchRateMin, rate);
+            s.PitchRateMax = s.PitchRateN == 1 ? rate : Mathf.Max(s.PitchRateMax, rate);
+            if (rate <= 0f) s.PitchRateAtOrBelowZero++;
+            s.PitchRateSum += rate;
+            s.PitchRateSq += (double)rate * rate;
+            s.PitchRateLlf2 += (double)llf * llf;
+            s.PitchRatePitch += pitch;
+            s.PitchRateSpeedU += vU;
+        }
+
+        // MissileSimulator.LiftLoadFactor, which is private.
+        private static float LiftLoad(float pitchDeg, float rateDegPerSec, float velocityU) =>
+            Mathf.Clamp01(Mathf.Abs(Mathf.Cos(pitchDeg * Mathf.Deg2Rad)) -
+                          velocityU * 67.200066f * Mathf.Max(rateDegPerSec, 0f) * Mathf.Deg2Rad / 9.81f);
+
+        private static void FlushPitchRate(FlightSample s)
+        {
+            int n = s.PitchRateN;
+            float mean = (float)(s.PitchRateSum / n);
+            float sd = Mathf.Sqrt(Mathf.Max((float)(s.PitchRateSq / n) - mean * mean, 0f));
+            float meanPitch = (float)(s.PitchRatePitch / n);
+            float meanU = (float)(s.PitchRateSpeedU / n);
+            float atMean = LiftLoad(meanPitch, mean, meanU);
+            string ticks = n > 1 && s.PitchRateTickFirst >= 0
+                ? $"{(s.PitchRateTickLast - s.PitchRateTickFirst) / (float)(n - 1):0.0}" : "";
+            s.PitchRateTrack.Add(
+                $"{s.PitchRateWindow:0}:{n}:{mean:0.000}:{sd:0.000}:{s.PitchRateMin:0.000}:" +
+                $"{s.PitchRateMax:0.000}:{s.PitchRateAtOrBelowZero / (float)n:0.00}:" +
+                $"{s.PitchRateLlf2 / n:0.0000}:{atMean * atMean:0.0000}:{meanPitch:0.00}:" +
+                $"{meanU / GameUnits.KnotsToUnityPerSecond:0}:{ticks}");
+            s.PitchRateN = 0;
+            s.PitchRateAtOrBelowZero = 0;
+            s.PitchRateSum = s.PitchRateSq = s.PitchRateLlf2 = s.PitchRatePitch = s.PitchRateSpeedU = 0.0;
+        }
+
         /// <summary>
         /// Persist the live trajectory and the target state that produced it. Fields are
         /// t:px:py:pz:speed:pitch:heading:stage:flatM:slantM:tx:ty:tz:targetCourse:

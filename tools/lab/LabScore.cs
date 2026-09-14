@@ -132,6 +132,19 @@ namespace AutoTOT.Lab
             // prints a row per round but no key, so a round cannot be joined back to its capture
             // and correlated against what it flew. Written only when --csv is given.
             var keyed = new List<string>();
+            // The first sweep column's switch ranges per round, for reading against the recorded stage
+            // events: flat distance to the ship where the model entered the dive and the final flight.
+            var switchStamps = new Dictionary<string, string>();
+            // offGap@step per round, the replay at the step the round flew, which is what the gate reads.
+            var flownGaps = new Dictionary<string, string>();
+            var lastSeenFlights = new Dictionary<string, string>();
+            // Each replay ends where the round enters the target's hull, as the mod's does; see ReplayHull.
+            // AUTOTOT_NO_HULL_ARRIVAL=1 ends every replay 3 u from the centre instead, and
+            // AUTOTOT_HULL_ARRIVAL=low keeps that stop for a round still above the hull's top.
+            bool useHullArrival = System.Environment.GetEnvironmentVariable("AUTOTOT_NO_HULL_ARRIVAL") != "1";
+            FlightTime.OfflineHullOnlyWhenLow = System.Environment.GetEnvironmentVariable("AUTOTOT_HULL_ARRIVAL") == "low";
+            Dictionary<string, Vector3> hullByName = useHullArrival ? HullsByTargetName(files) : null;
+            var hullArrivals = new Dictionary<string, string>();
             var skipped = new List<string>();
             // Launch state the game decided after the solve, replayed as flown; see FlownRail.
             bool useFlownRail = System.Environment.GetEnvironmentVariable("AUTOTOT_NO_FLOWN_HEADING") != "1";
@@ -220,14 +233,43 @@ namespace AutoTOT.Lab
                     roundedKeys.Add(r.GetValueOrDefault("Key", Path.GetFileNameWithoutExtension(file)));
                 }
 
+                // M3 of docs/plans/open/model-and-launcher-audit.md: replay the Launch state the round actually left, which the
+                // game's once-per-frame clock ends up to a frame after InitialFlightPhaseDuration. A replay input, like the
+                // motor roll, never an estimator term.
+                if (UseRecordedLaunchPhase && RecordedLaunchPhase(r, out float launchPhase))
+                    input = input with { InitialPhaseDur = launchPhase };
+
                 // Replay the motor roll this particular round flew, rather than the 1.0 the
                 // estimator has to assume in advance.
                 FlightTime.OfflineMotorScale = F(r, "MotorPerformance") > 0f
                     ? F(r, "MotorPerformance") : 1f;
+                SetThrustClock(r);
+                // The physics step the round flew, for the rounding and substep counterfactuals.
+                FlightTime.OfflineGameStep = PrevailingFlightStep(r);
 
                 // The sweep columns are constant-step by definition, including the 0.1 s
                 // production column, so the schedule is off for them.
-                float[] est = steps.Select(dt => FlightTime.SolveOffline(in input, ap, dt, out _)).ToArray();
+                input = input with { Hull = useHullArrival ? ReplayHull(kv, r, in input, hullByName) : null };
+                float[] est = new float[steps.Length];
+                for (int stepIdx = 0; stepIdx < steps.Length; stepIdx++)
+                {
+                    FlightTime.OfflineArrivalFlatU = -1f;
+                    FlightTime.OfflineHeightAtCloseU = float.NaN;
+                    est[stepIdx] = FlightTime.SolveOffline(in input, ap, steps[stepIdx],
+                                                          out FlightTime.IntegratedPhases stepPhases);
+                    if (stepIdx == 0)
+                    {
+                        string rowKey = r.GetValueOrDefault("Key", Path.GetFileNameWithoutExtension(file));
+                        switchStamps[rowKey] =
+                            stepPhases.DiveStartU.ToString("R", Inv) + "," +
+                            stepPhases.FinalFlightStartU.ToString("R", Inv);
+                        hullArrivals[rowKey] = (input.Hull != null ? "1" : "0") + "," +
+                            (FlightTime.OfflineArrivalFlatU >= 0f
+                                ? (FlightTime.OfflineArrivalFlatU * GameUnits.MetersPerUnity).ToString("R", Inv) : "") + "," +
+                            (float.IsNaN(FlightTime.OfflineHeightAtCloseU) ? ""
+                                : (FlightTime.OfflineHeightAtCloseU * GameUnits.MetersPerUnity).ToString("R", Inv));
+                    }
+                }
 
                 // The step the round itself flew. A steady round replays at its one step; a round
                 // with a recorded timeline flies that timeline; a capture that predates the
@@ -249,6 +291,12 @@ namespace AutoTOT.Lab
                         ? FlightTime.SolveOffline(in input, ap, flown, out _) : -1f;
                 }
                 FlightTime.OfflineMotorScale = 1f;
+                ClearThrustClock();
+                if (flownEst > 0f)
+                    flownGaps[r.GetValueOrDefault("Key", Path.GetFileNameWithoutExtension(file))] =
+                        (ActualEnd(r) - flownEst).ToString("R", Inv);
+                lastSeenFlights[r.GetValueOrDefault("Key", Path.GetFileNameWithoutExtension(file))] =
+                    F(r, "ActualFlight").ToString("R", Inv);
 
                 // Grouped rounds are scored, but never mixed into the solo figure. The integrator
                 // models a round flying alone; the formation effect is corrected for elsewhere, on
@@ -260,8 +308,8 @@ namespace AutoTOT.Lab
                 if (launch <= 0f) launch = LaunchTimeFromKey(
                     r.GetValueOrDefault("Key", Path.GetFileNameWithoutExtension(file)));
 
-                rows.Add((label, F(r, "ActualFlight"), est, flown, flownEst, B(r, "InGroup"),
-                          launch, launch + F(r, "ActualFlight"), RunOf(r),
+                rows.Add((label, ActualEnd(r), est, flown, flownEst, B(r, "InGroup"),
+                          launch, launch + ActualEnd(r), RunOf(r),
                           r.GetValueOrDefault("Key", Path.GetFileNameWithoutExtension(file))));
                 // The schema is part of the answer, not decoration. A capture without the raw
                 // Ammo.* fields replays the older model law by design, so its gap measures a path
@@ -270,8 +318,8 @@ namespace AutoTOT.Lab
                 // and 0.94 s over all seven of its current ones.
                 keyed.Add(string.Join(",",
                     r.GetValueOrDefault("Key", Path.GetFileNameWithoutExtension(file)), label,
-                    F(r, "ActualFlight").ToString("R", Inv), est[0].ToString("R", Inv),
-                    (F(r, "ActualFlight") - est[0]).ToString("R", Inv),
+                    ActualEnd(r).ToString("R", Inv), est[0].ToString("R", Inv),
+                    (ActualEnd(r) - est[0]).ToString("R", Inv),
                     F(r, "MotorPerformance").ToString("R", Inv),
                     (B(r, "InGroup") ? "1" : "0"),
                     kv.GetValueOrDefault("CaptureSchema", "pre-schema"),
@@ -365,13 +413,17 @@ namespace AutoTOT.Lab
             {
                 var kept = rows.ToDictionary(r => r.Key, r => r.Grouped);
                 var lines = new List<string> {
-                    "key,label,actualFlight,offlineEst,offGap,motor,grouped,schema,flownRail,scored,formation,targetRounded" };
+                    "key,label,actualFlight,offlineEst,offGap,motor,grouped,schema,flownRail,scored,formation,targetRounded,diveStartU,finalFlightStartU,offGapAtStep,hullArrival,arrivalFlatM,heightAt202M,actualLastSeen" };
                 foreach (string line in keyed)
                 {
                     string k = line.Substring(0, line.IndexOf(','));
                     bool inTable = kept.TryGetValue(k, out bool grp);
                     lines.Add(line + "," + (inTable ? "1" : "0") + "," + (inTable && grp ? "1" : "0") +
-                              "," + (roundedKeys.Contains(k) ? "1" : "0"));
+                              "," + (roundedKeys.Contains(k) ? "1" : "0") +
+                              "," + switchStamps.GetValueOrDefault(k, ",") +
+                              "," + flownGaps.GetValueOrDefault(k, "") +
+                              "," + hullArrivals.GetValueOrDefault(k, ",,") +
+                              "," + lastSeenFlights.GetValueOrDefault(k, ""));
                 }
                 File.WriteAllLines(csv, lines);
                 Console.WriteLine($"per-round rows written to {csv}");
@@ -444,6 +496,102 @@ namespace AutoTOT.Lab
         /// step is the one the target moved at for most of the flight (<see cref="PrevailingFlightStep"/>).
         /// False otherwise, and the capture replays as recorded.
         /// </summary>
+        /// <summary>
+        /// Counterfactual only ("Hull arrival" in max-solo-error-below-1s.md): a target's hull length,
+        /// height and beam in metres (x, y, z of the result) from one capture's world-aligned collider
+        /// bounds and its course. False when the course lies within 15 degrees of a diagonal, where the
+        /// two horizontal axes cannot be separated.
+        /// </summary>
+        private static bool RecoverHull(Dictionary<string, string> r, out Vector3 hullM)
+        {
+            hullM = default;
+            string bounds = r.GetValueOrDefault("TargetBoundsM", "");
+            if (bounds.Length == 0 || !r.ContainsKey("TargetCourseAtLaunch")) return false;
+            string[] p = bounds.Split(',');
+            if (p.Length != 3) return false;
+            float x = float.Parse(p[0], Inv), y = float.Parse(p[1], Inv), z = float.Parse(p[2], Inv);
+            if (x <= 0f || z <= 0f) return false;
+            float course = F(r, "TargetCourseAtLaunch") * Mathf.Deg2Rad;
+            float sinC = Mathf.Abs(Mathf.Sin(course)), cosC = Mathf.Abs(Mathf.Cos(course));
+            float det = sinC * sinC - cosC * cosC;
+            if (Mathf.Abs(det) < 0.5f) return false;
+            float length = (x * sinC - z * cosC) / det, beam = (z * sinC - x * cosC) / det;
+            if (length <= 0f || beam <= 0f) return false;
+            hullM = new Vector3(Mathf.Max(length, beam), y, Mathf.Min(length, beam));
+            return true;
+        }
+
+        private static string TargetNameOf(Dictionary<string, string> r)
+        {
+            string t = r.GetValueOrDefault("Target", "");
+            int i = t.IndexOf("] ", StringComparison.Ordinal);
+            return i >= 0 ? t.Substring(i + 2) : t;
+        }
+
+        /// <summary>Each target name's median recovered hull over the scored files, reported on stderr
+        /// with its spread so HA0 can be read.</summary>
+        private static Dictionary<string, Vector3> HullsByTargetName(string[] files)
+        {
+            var all = new Dictionary<string, List<Vector3>>();
+            foreach (string file in files)
+            {
+                string res = Path.ChangeExtension(file, ".result");
+                if (!File.Exists(res)) continue;
+                Dictionary<string, string> r = ReadDump(res);
+                if (!RecoverHull(r, out Vector3 hull)) continue;
+                string name = TargetNameOf(r);
+                if (!all.TryGetValue(name, out List<Vector3> list)) all[name] = list = new List<Vector3>();
+                list.Add(hull);
+            }
+            var medians = new Dictionary<string, Vector3>();
+            foreach (var entry in all)
+            {
+                List<Vector3> v = entry.Value;
+                float Median(Func<Vector3, float> axis)
+                {
+                    List<float> sorted = v.Select(axis).OrderBy(q => q).ToList();
+                    return sorted[sorted.Count / 2];
+                }
+                medians[entry.Key] = new Vector3(Median(q => q.x), Median(q => q.y), Median(q => q.z));
+                Console.Error.WriteLine($"hull {entry.Key}: {v.Count} recoveries, length {v.Min(q => q.x):F1} to " +
+                    $"{v.Max(q => q.x):F1} m, beam {v.Min(q => q.z):F1} to {v.Max(q => q.z):F1} m, height " +
+                    $"{medians[entry.Key].y:F1} m; median {medians[entry.Key].x:F1} by {medians[entry.Key].z:F1} m");
+            }
+            return medians;
+        }
+
+        /// <summary>The flight a round is scored against: the recorded hit (FlightEndImpact) when the
+        /// capture has one, else ActualFlight, the last frame the round was seen alive, which at 10x is up
+        /// to a frame or two before the hit.</summary>
+        internal static float ActualEnd(Dictionary<string, string> r) =>
+            r.TryGetValue("FlightEndImpact", out string v) &&
+            float.TryParse(v, NumberStyles.Float, Inv, out float impact) && impact >= 0f
+                ? impact
+                : F(r, "ActualFlight");
+
+        /// <summary>The hull a replay ends at: the one the mod recorded (null when it had none), or, for a
+        /// capture from before the hull rule, <see cref="HullBoxOf"/>, which is what an identified target
+        /// gets. <paramref name="byName"/> is read only for such a capture.</summary>
+        internal static FlightTime.HullBox ReplayHull(Dictionary<string, string> kv, Dictionary<string, string> r,
+                                                      in FlightTime.SolveInput input,
+                                                      Dictionary<string, Vector3> byName) =>
+            kv.ContainsKey("HullSource") ? input.Hull : HullBoxOf(r, in input, byName);
+
+        /// <summary>An old capture's hull: its target name's median hull, centred on the ship and aligned
+        /// to its course at launch. Null for an air target or a name with no hull.</summary>
+        private static FlightTime.HullBox HullBoxOf(Dictionary<string, string> r,
+                                                    in FlightTime.SolveInput input,
+                                                    Dictionary<string, Vector3> byName)
+        {
+            if (Math.Abs(input.TargetPos.y) >= SurfaceTargetMaxAbsYU || !r.ContainsKey("TargetCourseAtLaunch"))
+                return null;
+            if (!byName.TryGetValue(TargetNameOf(r), out Vector3 hullM)) return null;
+            float course = F(r, "TargetCourseAtLaunch") * Mathf.Deg2Rad;
+            return new FlightTime.HullBox(new Vector3(Mathf.Sin(course), 0f, Mathf.Cos(course)),
+                hullM.x / GameUnits.MetersPerUnity, hullM.z / GameUnits.MetersPerUnity,
+                hullM.y / GameUnits.MetersPerUnity);
+        }
+
         private static bool RoundedTargetVel(Dictionary<string, string> kv, Dictionary<string, string> r,
                                              in FlightTime.SolveInput input, out Vector3 rounded)
         {

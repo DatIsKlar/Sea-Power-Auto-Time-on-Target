@@ -173,11 +173,6 @@ kinematic measurement should be read against that band, not treated as a point v
   with how long the round spends turning ([§6.1](#61-accuracy)). The largest systematic error
   left; tracked and parked in
   [docs/plans/open/rgm-109b-orientation-residual.md](../plans/open/rgm-109b-orientation-residual.md).
-- **The per-axis turn split is not modelled.** Both mover paths spend one combined rotation
-  budget, and the model matches that ([§3.1](03-trajectory.md#heading)). What it does not carry
-  is the game's split into separate yaw and pitch budgets, which needs a `TerminalVerticalTurnRate`
-  more than 1 deg/s from `MaxTurnRate` and the round already in TerminalApproach. Six of 446
-  shipped ammunition declare such a rate.
 - **Three phases, not the game's full stage list.** The model collapses the guidance machine to
   loft / final / terminal with instant speed transitions. The boundary values it uses are tuned to
   that collapsed form; feeding it the game's own multi-stage waypoint boundaries makes it *worse*,
@@ -188,7 +183,13 @@ kinematic measurement should be read against that band, not treated as a point v
 - **Beta branch only.** On the public branch the model gates off entirely and the game's own
   simulator drives timing ([§1](01-overview.md#branch-behaviour)).
 - **Fixed 0.1 s step.** No adaptive stepping. A 16-minute flight is ~9,600 steps, which the 0.5 s
-  result cache keeps off the per-frame path.
+  result cache keeps off the per-frame path. The step leaves two known effects in the estimate. The
+  arrival is found at the start of the first step inside the target's hull, so an estimate reads up to
+  one step late, about 0.04 s on average against the game's own step. And the model's position rounds on
+  the float32 grid by a different increment than the game's physics tick does
+  ([GAME-BEHAVIOUR.md §4](../GAME-BEHAVIOUR.md#4-a-slow-ships-map-speed-depends-on-where-it-is)), which
+  matters only far from the centre tile at high speed. Both are measured and left in for now: correcting
+  the first alone makes four families' remaining positive biases worse.
 
 ## 6.4 Error the model cannot remove
 
@@ -222,12 +223,12 @@ can be, and they are recorded so nobody spends a test run chasing them.
   sprint as its search state. A yj-18 that reaches terminal with no echo flies more than three
   times the speed the model gives it, and the estimate runs late by whatever that leg costs.
   `yj-18a` and `yj-18c` do not declare a search mode and are unaffected.
-- **`TerminalDelay` is not modelled.** The mover refuses `TerminalApproach` until
+- **`TerminalDelay` gates only the turn split.** The mover refuses `TerminalApproach` until
   `elapsedSinceLaunch` passes `TerminalDelay`, which defaults to `0.8 * GoActiveTime` and is set
-  explicitly by none of the 446 shipped ammunition. It can only matter for a shot launched already
-  inside terminal distance, since the delay is seconds and terminal distance is tens of kilometres.
-  Modelling it would add a branch to the hottest loop in the mod for a case the coordinator does not
-  plan.
+  explicitly by none of the 446 shipped ammunition. The model applies it where it was measured to
+  matter: whether a round launched inside terminal distance turns on its terminal vertical rate
+  ([§3.1](03-trajectory.md#heading)). The phase-2 speed and altitude ignore it, since the delay is
+  seconds and terminal distance is tens of kilometres.
 - **Tiers 2 and 3 disagree with the mover for a moving surface launcher, and the mover is right.**
   The ported waypoint sim seeds launch speed from the platform for every unit, matching what the live
   mover does. The game's own `MaxRangePrecise` seeds it only for air units. This is a deliberate

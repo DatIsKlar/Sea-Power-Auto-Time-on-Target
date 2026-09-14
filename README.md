@@ -178,6 +178,8 @@ then pick a target. A **SHOOTERS (n)** line reports what is held, each unit has 
 **CLEAR** empties it. With no target selected the rows still list every missile aboard, so salvo
 sizes can be set in advance. An empty roster means the panel follows the single selected ship.
 
+Missile rows start unticked. Tick each missile you want to fire on each unit: **FIRE THIS TARGET** fires only ticked rows, so holding a whole formation with **+ FORMATION** does not by itself commit every ship in it.
+
 ### Multi-target strike
 
 A strike is assembled one target at a time. Pick a target and its shooters as usual,

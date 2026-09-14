@@ -198,8 +198,16 @@ It also changes with the physics step, which `GameTime.SetAdaptiveFixedDeltaTime
 1/60 and 1/30 s with frame rate, and with the centre tile, whose change re-derives every position from
 its geographic coordinates (`ObjectBase.cs:2224-2228`). Every speed the game reports, including
 `_velocityInKnots` and `_velocityVecInUnity`, is the commanded value; only the transform shows the
-realised one. Missiles are not affected in practice: at 540 kn one tick is about 280 spacings at the
-same distances, and the rounding changes as the round moves.
+realised one.
+
+Missiles move the same way (`Missile.PerformMoveForward` adds `speed * 0.0076554087 * fixedDeltaTime * forward` to a
+float32 position and writes it back at `Missile.cs:2103`), and a fast round is far from immune. Near the centre tile
+a tick is hundreds of spacings and the bias is negligible, but at 16,384 to 32,768 u a 900 kn tick at 1/60 s is 0.1148 u,
+58.79 spacings, rounded to 59: the round crosses the map 0.35 percent faster than its speed. That was measured on
+recorded SS-N-3 flights at x = 27,800 to 29,100 u (realised minus predicted +0.003 percent, realised minus nominal
++0.355 percent, over eleven cruise stretches of 20 s or more), about 0.7 s over a 200 s cruise. The flight-time model
+integrates in the same coordinates, so at the game's own step it reproduces this; at its 0.1 s production step it
+rounds a different increment and does not.
 
 AutoTOT predicts a surface target with the realised velocity (`FlightTime.TargetMapVelocity`), taken at
 the solve's position and at the base step the game has held over the preceding minute of sim time, so
@@ -232,3 +240,119 @@ task will take, the same firing-arc pick the game makes, which lies within about
 fires. A unit whose launcher has no cells keeps its own position, and the fallback estimators used on the
 public branch still start at the unit's position.
 
+## 6. A missile changes stage at the point it is aiming for, not at the ship
+
+`MaintainHeight.takeAction` decides the terminal approach, the final-flight altitude and the sea-skimming
+leg from one distance:
+
+```csharp
+Vector3 position = missile.transform.position;
+Vector3 vector2 = missile._targetInterceptPosition.ToUnity();
+vector2.y = position.y;
+float magnitude = (position - vector2).magnitude;
+```
+
+`CalculateInterceptAimPoint` sets `_targetInterceptPosition` every tick to a lead intercept: the target
+position the missile believes in, advanced by the target velocity it believes in over the time the missile
+needs to get there. `CalculateLeadInterceptPoint` solves that time as a quadratic twice, the second time at
+a drag-corrected average speed. The waypoint route completes its legs against the same point, and the
+seeker is switched on against the same distance.
+
+The position the missile believes in is not always where the ship is. A missile guided by its launcher
+(`RadioCommand`, `Datalink`) is given the true position while guidance holds. Any other missile takes the
+ship's position when it leaves the ToBearing stage and advances it at the ship's reported velocity until
+its own seeker locks. Section 4 describes a slow ship whose motion over the map differs from its reported
+speed, and for that ship the estimate drifts away from the real hull: a YJ-18A fired at a merchant
+reporting 6.60 kn that covers the map at 5.74 kn carries an estimate 156 m ahead of it five minutes into
+the flight.
+
+The lead and the drift together put a YJ-18A's terminal switch 310 to 525 m outside its declared terminal
+distance, measured to the ship. The YJ-18A accelerates from 530 to 1900 kn at that switch, so measuring
+to the ship made its flight 0.7 to 1.3 s longer than it is. Once a missile has entered TerminalApproach it
+stays there, even when the seeker lock moves its known target back outside the threshold.
+
+AutoTOT computes the same intercept point at every integration step from what is known when the shot is
+planned: the target's position and reported velocity, the ammunition's drag parameters, and the modelled
+flight. INS drift, aim deviation and the seeker's own estimate are random per missile and are left out.
+A `ForceDirectPoint` weapon never updates its intercept point after launch, and semi-active homers against
+aircraft measure to the target itself, so both keep measuring to the target.
+
+## 7. A missile's motor clock advances once per rendered frame
+
+`Missile.PerformMoveForward` (`Missile.cs:3133`) asks for this tick's thrust with the time since the booster
+started:
+
+```csharp
+num = MissileSimulator.CalculateThrustOverTime(_ap, _airLaunched,
+    (float)(GameTime.missionElapsedTime - _boosterEffectStartTime), GameTime.fixedDeltaTime) * _motorPerformance;
+```
+
+`missionElapsedTime` advances in `GameTime.OnUpdateUnpaused` (section 3), which runs once per rendered frame, while
+`PerformMoveForward` runs on every physics tick. Every tick of a frame therefore reads the clock as the frame began.
+`CalculateThrustOverTime` returns full booster thrust whenever the booster's remaining time is at least one tick, so
+the booster burns to the end of the frame in which its nominal end falls. The sustainer's end, `WeaponBase._dt`, and
+every other `missionElapsedTime -` timer in `Missile.cs` are quantised the same way.
+
+How late the booster ends depends on the frame pacing, not on the frame length alone. The clock starts on a frame
+(`ScheduleFlightEffects` stamps `_boosterEffectStartTime` from `missionElapsedTime`), so with a steady 60 fps at 10x
+compression, frames of exactly 1/6 s land on a booster that ends on a whole second and it ends on time. With an
+irregular frame rate the end falls anywhere in a frame. At 10x a frame is about ten ticks, and a RIM-66P booster that
+ran 0.12 s past its 4 s was recorded 40 kn faster than one that ended on time, a difference that lasted the whole
+flight. At 1x and 60 fps a frame is one tick and the effect vanishes.
+
+AutoTOT ends each motor on time. The overrun cannot be known when the shot is planned, and an expected half-frame
+lag was tested against recorded flights and made rounds from steady sessions worse. The offline lab replays a
+round's measured overrun the way it replays the round's motor roll.
+
+## 8. A kinematic missile's nose moves in 0.256 degree steps
+
+`WeaponBase.setCourseTowardsPosition` turns a `Kinematics = Full` missile toward a surface target with one call
+(`WeaponBase.cs:1731-1733`):
+
+```csharp
+vector2 = Vector3.RotateTowards(base.transform.forward, target, num * (MathF.PI / 180f) * GameTime.fixedDeltaTime, 0f);
+base.transform.rotation = Quaternion.FromToRotation(base.transform.forward, vector2) * base.transform.rotation;
+```
+
+Unity's `Vector3.RotateTowards` treats two directions whose dot product exceeds `1 - 1e-5` as the same direction and
+returns the current one. The nose therefore holds until the steering error passes `acos(1 - 1e-5)`, 0.2562 degrees,
+and then turns the whole error in one tick. On a RIM-66P's descent from its loft apex, sampled once per frame, the
+pitch rate was exactly zero on 97 to 98 percent of ticks, and every nonzero sample was 15.4 to 16.9 deg/s, which is
+one 0.256 degree step in a 1/60 s tick. Eighteen degrees of descent took 71 such steps, one about every 49 ticks.
+The same held at 2x and at 10x compression.
+
+The hold matters because of how drag reads the pitch rate. `Missile.OnFixedUpdate` copies `_currentPitch` into
+`_prevPitch` each tick, and `PerformMoveForward` passes `(_currentPitch - _prevPitch) / fixedDeltaTime` to
+`MissileSimulator.CalculateDrag`. With the motor off, that function adds a stall term scaled by the square of
+`clamp01(|cos pitch| - v * max(pitchRate, 0) / g)`. A smooth nose-down rate keeps that factor small on a ballistic
+descent; a held tick sets it to `|cos pitch|` and charges the full term. Over a RIM-66P's motor-off descent that is
+67 to 74 kn of speed by the terminal phase.
+
+The branch does not apply everywhere. In TerminalApproach, when the ammunition's terminal vertical turn rate differs
+from the derated turn rate by more than 1 deg/s, the same function turns pitch and yaw separately with `MoveTowards`
+on angles. An air target takes a `Quaternion.AngleAxis` rotation guarded only by a 1e-12 cross-product test. The
+legacy mover (`Kinematics = None`) uses `Quaternion.RotateTowards`, which snaps to the target inside its own
+threshold instead of holding.
+
+AutoTOT models the hold on the kinematic surface-target path with the same test and the same exclusions
+(`FlightTime.RotateHolds`). On every recorded RIM-66P, HHQ-9B and RIM-174B round checked, it removes the motor-off
+speed error.
+
+## 9. A missile's recorded flight ends a frame before it hits
+
+Against a ship, a missile's flight ends in `WeaponBase.CheckCollision`, a raycast along each physics tick's step (the
+proximity fuse returns early for a surface target, `Missile.cs:1633`). The collision destroys the round on that tick,
+and `WeaponBase.destroyObject` hands a missile straight to `PoolManager.freeObject`, so by the next rendered frame the
+object is back in the pool and its transform no longer describes the round.
+
+Anything that samples missiles once per rendered frame therefore sees a round alive on its last frame and gone on the
+next, and the collision lies between the two. At 10x compression a frame is about 1/6 s of game time: the last
+sighting comes up to 0.2 to 0.3 s before the hit, 40 to 260 m from the ship's centre. At 2x it is within 0.03 s.
+Reading the impact point from the destroyed round's transform does not work, because the pool has already taken it
+back.
+
+On a traced round, AutoTOT repeats the game's collision cast from the last sighting (position, nose direction and
+speed) against the target's colliders (layer mask -131073), as far as the round could fly before it was found
+missing, and takes the time of the hit from the distance along the cast. On the 13 rounds where it found a hit, every
+impact time lay between the last sighting and the first frame the round was missing. The impact, gap and residual
+lines report that time, marked `to the hit`, and the last sighting otherwise.

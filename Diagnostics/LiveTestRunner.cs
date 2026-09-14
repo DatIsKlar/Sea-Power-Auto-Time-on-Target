@@ -98,6 +98,7 @@ namespace AutoTOT
 
         private void Step()
         {
+            if (_state >= State.Arm && _state <= State.Watch) TickManualOrders();
             switch (_state)
             {
                 case State.Idle:
@@ -183,6 +184,16 @@ namespace AutoTOT
                             Fail("STUCK waiting for contact: " + string.Join(", ", waiting));
                         return;
                     }
+                    // Panel fire: build the shot in the planner as a player does, and keep it on
+                    // screen from contact on, so the panel's per-frame work over the whole roster runs
+                    // through the hold, the release and the flight, as it does while a player waits.
+                    if (_plan.PanelFire && _plan.PanelHoldSec <= 0f && !_panelStaged)
+                    {
+                        _panelStaged = Hud.StagePanelForShots(_shots, wholeFormation: true);
+                        if (!_panelStaged) { Fail("panel fire: staging failed, the panel is not up"); return; }
+                        Bootstrap.Log.LogInfo("[AutoTOT] livetest: panel staged for FIRE THIS TARGET, whole formation rostered");
+                        _panelHeldFrom = Time.realtimeSinceStartup;
+                    }
                     if (!HoldSatisfied()) return;
                     // Panel mode: stage the first shot on screen and hold, instead of firing. The
                     // warnings this photographs are drawn per weapon row and in the strike section,
@@ -204,6 +215,12 @@ namespace AutoTOT
                         Enter(State.Finish);
                         return;
                     }
+                    if (_plan.PanelFire && _panelStaged)
+                    {
+                        // A few frames for the rows the panel draws to be built before the press.
+                        const float PanelFireSettleSec = 3f;
+                        if (Time.realtimeSinceStartup - _panelHeldFrom < PanelFireSettleSec) return;
+                    }
                     Enter(State.Fire);
                     return;
                 }
@@ -211,8 +228,24 @@ namespace AutoTOT
                 case State.Fire:
                     _firedSim = GameClock.SimNow();
                     _firedReal = Time.realtimeSinceStartup;
-                    Bootstrap.Log.LogInfo($"[AutoTOT] livetest: firing {_shots.Count} shot(s) at sim {_firedSim:0.0}");
-                    Coordinator.FireCoordinated(new List<Coordinator.Shot>(_shots));
+                    Bootstrap.Log.LogInfo($"[AutoTOT] livetest: firing {_shots.Count} shot(s) at sim {_firedSim:0.0}" +
+                                          (_plan.FireNow ? " as direct FIRE NOW orders" : _plan.PanelFire ? " through the panel's FIRE THIS TARGET" : ""));
+                    if (_plan.FireNow)
+                    {
+                        // Direct orders, the panel's FIRE NOW path without its range filter: nothing is
+                        // coordinated or held, and an order inside minimum range reaches the game as is.
+                        foreach (Coordinator.Shot shot in _shots)
+                            Coordinator.FireNow(shot.Unit, shot.AmmoId, shot.Target, shot.Salvo);
+                        _notes.Add("fired as direct orders through Coordinator.FireNow, nothing coordinated");
+                    }
+                    else if (_plan.PanelFire && _panelStaged)
+                    {
+                        string why = Hud.PressFireThisTarget();
+                        if (why != null) { Fail("panel fire: FIRE THIS TARGET not pressed, " + why); return; }
+                        _notes.Add("fired through the panel's FIRE THIS TARGET, whole formation rostered");
+                    }
+                    else
+                        Coordinator.FireCoordinated(new List<Coordinator.Shot>(_shots));
             _notes.Add($"expected rounds {_expectedRounds}");
                     Enter(State.Watch);
                     return;
@@ -223,6 +256,17 @@ namespace AutoTOT
                     // compression mid-flight. Unattended, nobody clicks them away, so do it here.
                     ApplyCompression();
                     float simElapsed = GameClock.SimNow() - _firedSim;
+                    if (_plan.FireNow)
+                    {
+                        // Direct orders register no launch expectation, so nothing below can see them.
+                        // The run is an observation window: the game's own logs are the result.
+                        if (simElapsed > _plan.TimeoutSec)
+                        {
+                            _notes.Add($"observation window of {_plan.TimeoutSec:0}s sim elapsed");
+                            Enter(State.Finish);
+                        }
+                        return;
+                    }
                     if (simElapsed > _plan.TimeoutSec)
                     {
                         Fail($"STUCK in Watch: {_plan.TimeoutSec:0}s of sim time elapsed with rounds unresolved");
@@ -270,6 +314,53 @@ namespace AutoTOT
                 case State.Finish:
                     Finish(_stuckReason ?? "DONE");
                     return;
+            }
+        }
+
+        private bool[] _manualDone;
+
+        /// <summary>
+        /// ManualAtInbound lines. Once a missile threatens the named ship and is inside its SAM's range,
+        /// issue the SAM order the way the game's own attack order does (AttackTask.OnExecute calls
+        /// InsertEngageTask with autoAttack false and GetEngagePriority), without the coordinator's
+        /// bypass, so the Harmony prefix sees a player order. Each line is issued once.
+        /// </summary>
+        private void TickManualOrders()
+        {
+            if (_plan == null || _plan.Manual.Count == 0) return;
+            if (_manualDone == null) _manualDone = new bool[_plan.Manual.Count];
+            var byKey = Singleton<SceneCreator>.Instance.ObjectsByPvKey;
+            for (int i = 0; i < _plan.Manual.Count; i++)
+            {
+                if (_manualDone[i]) continue;
+                Plan.ManualLine m = _plan.Manual[i];
+                if (!byKey.TryGetValue(m.Shooter, out ObjectBase ship) || ship == null || ship.IsDestroyed)
+                {
+                    _manualDone[i] = true;
+                    _notes.Add($"manual {m.Shooter}: shooter not found or destroyed");
+                    continue;
+                }
+                Ammunition ammo = ship.getAmmunitionByName(m.Ammo);
+                if (ammo == null)
+                {
+                    _manualDone[i] = true;
+                    _notes.Add($"manual {m.Shooter}: no {m.Ammo} aboard");
+                    continue;
+                }
+                Missile threat = ship.ThreateningMissile;
+                if (threat == null || threat.IsDestroyed) continue;
+                float dist = (threat.transform.position - ship.transform.position).magnitude;
+                if (dist > ship.GetMaxRangeForAmmo(ammo, threat)) continue;
+
+                _manualDone[i] = true;
+                string what = $"manual {m.Ammo} x{m.Salvo} from {UnitNaming.SafeName(ship)} at " +
+                              $"{UnitNaming.SafeName(threat)}, {dist * GameUnits.UnityToNm:0.0} nm, sim " +
+                              $"{GameClock.SimNow():0.0}, auto mode {(Coordinator.Active ? "ON" : "off")}";
+                Bootstrap.Log.LogInfo("[AutoTOT] livetest: " + what);
+                _notes.Add(what);
+                ship.InsertEngageTask(m.Ammo, threat, Vector3.zero, Mathf.Max(1, m.Salvo),
+                                      ship.GetEngagePriority(threat), autoAttack: false,
+                                      markAsReturned: false, isFormationAttack: false);
             }
         }
 
@@ -417,7 +508,8 @@ namespace AutoTOT
             float dist = (target.transform.position - unit.transform.position).magnitude;
             if (dist > unit.GetMaxRangeForAmmo(a, target))
             { reason = "out of range"; return false; }
-            if (LaunchEnvelope.IsInsideMinimumRange(unit, a._ap, target, out float rangeNm, out float minNm))
+            if (!(_active?._plan?.AllowInsideMinRange ?? false) &&
+                LaunchEnvelope.IsInsideMinimumRange(unit, a._ap, target, out float rangeNm, out float minNm))
             { reason = $"inside min range ({rangeNm:0.0} nm < {minNm:0.0} nm)"; return false; }
             return true;
         }

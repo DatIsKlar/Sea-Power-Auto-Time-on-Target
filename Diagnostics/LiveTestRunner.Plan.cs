@@ -43,6 +43,17 @@ namespace AutoTOT
             // firing, so a screenshot can verify a label the runner cannot read. 0 disables. The
             // run still ends normally, with no rounds and no corpus captures.
             public float PanelHoldSec;
+            // Fire through the planner instead of handing the coordinator the shot list: stage every
+            // shot in the panel with the first shooter's whole formation rostered, keep it on screen
+            // from contact on, and press FIRE THIS TARGET. PanelHoldSec wins if both are set.
+            public bool PanelFire;
+            // Send each shot as a direct order through Coordinator.FireNow, the panel's FIRE NOW path
+            // without its range filter: nothing is coordinated or held. Watch becomes an observation
+            // window that ends on TimeoutSec, since direct orders register no launch expectation.
+            public bool FireNow;
+            // Accept shots inside the weapon's minimum launch range at arm, so a plan can create the
+            // order the game turns to unmask and then never launches.
+            public bool AllowInsideMinRange;
             // Delay firing until the geometry is right. See LiveTestRunner.HoldSatisfied.
             public float HoldUntilSec;
             public string HoldShooter;
@@ -52,6 +63,15 @@ namespace AutoTOT
             public sealed class ShotLine
             {
                 public string Shooter; public string Target; public string Ammo = "*"; public int Salvo = 1;
+            }
+
+            // "Shooter | ammo | salvo": a player-style SAM order at whatever missile first threatens the
+            // shooter inside that SAM's range. See LiveTestRunner.TickManualOrders.
+            public readonly List<ManualLine> Manual = new List<ManualLine>();
+
+            public sealed class ManualLine
+            {
+                public string Shooter; public string Ammo; public int Salvo = 1;
             }
         }
 
@@ -131,6 +151,9 @@ namespace AutoTOT
                 else if (key.Equals("Profiling", StringComparison.OrdinalIgnoreCase)) cur.Profiling = ParseB(val, false);
                 else if (key.Equals("VerifySolve", StringComparison.OrdinalIgnoreCase)) cur.VerifySolve = ParseB(val, false);
                 else if (key.Equals("PanelHoldSec", StringComparison.OrdinalIgnoreCase)) cur.PanelHoldSec = ParseF(val, 0f);
+                else if (key.Equals("PanelFire", StringComparison.OrdinalIgnoreCase)) cur.PanelFire = ParseB(val, false);
+                else if (key.Equals("FireNow", StringComparison.OrdinalIgnoreCase)) cur.FireNow = ParseB(val, false);
+                else if (key.Equals("AllowInsideMinRange", StringComparison.OrdinalIgnoreCase)) cur.AllowInsideMinRange = ParseB(val, false);
                 else if (key.Equals("HoldUntilSec", StringComparison.OrdinalIgnoreCase)) cur.HoldUntilSec = ParseF(val, 0f);
                 else if (key.Equals("HoldUntilRangeNm", StringComparison.OrdinalIgnoreCase))
                 {
@@ -141,6 +164,11 @@ namespace AutoTOT
                         cur.HoldShooter = val.Substring(0, colon).Trim();
                         cur.HoldRangeNm = ParseF(val.Substring(colon + 1), 0f);
                     }
+                }
+                else if (key.StartsWith("ManualAtInbound", StringComparison.OrdinalIgnoreCase))
+                {
+                    Plan.ManualLine m = ParseManual(val);
+                    if (m != null) cur.Manual.Add(m);
                 }
                 else if (key.StartsWith("Shot", StringComparison.OrdinalIgnoreCase))
                 {
@@ -161,6 +189,16 @@ namespace AutoTOT
             if (parts.Length > 1 && parts[1].Trim().Length > 0) s.Ammo = parts[1].Trim();
             if (parts.Length > 2) s.Salvo = (int)ParseF(parts[2], 1f);
             return string.IsNullOrEmpty(s.Shooter) || string.IsNullOrEmpty(s.Target) ? null : s;
+        }
+
+        /// <summary>"Shooter | ammo | salvo". Salvo is optional.</summary>
+        private static Plan.ManualLine ParseManual(string val)
+        {
+            string[] parts = val.Split('|');
+            if (parts.Length < 2) return null;
+            var m = new Plan.ManualLine { Shooter = parts[0].Trim(), Ammo = parts[1].Trim() };
+            if (parts.Length > 2) m.Salvo = (int)ParseF(parts[2], 1f);
+            return string.IsNullOrEmpty(m.Shooter) || string.IsNullOrEmpty(m.Ammo) ? null : m;
         }
 
         private static string SafeFileName(string s)

@@ -113,10 +113,13 @@ With no heading error the quaternion angle equals the pitch change exactly, so t
 plain slew above and cannot disturb a shot that has nothing to yaw.
 
 The kinematic path excludes roll from that budget and levels the airframe in a separate call, so
-the model's attitude, which carries no roll of its own, is the matching shape there. What the
-model does not carry on either path is the game's split into separate yaw and pitch budgets: that
-needs a `TerminalVerticalTurnRate` more than 1 deg/s away from `MaxTurnRate`, and the round
-already in TerminalApproach. Six of 446 shipped ammunition declare such a rate.
+the model's attitude, which carries no roll of its own, is the matching shape there. In
+TerminalApproach the game splits the budget into separate yaw and pitch rates when the
+ammunition's `TerminalVerticalTurnRate` lies more than 1 deg/s from the turn rate (the raw
+`MaxTurnRate` on the legacy path, the derated rate on the kinematic one). The model does the same
+for the whole stage, once the flight is older than the terminal delay: `TerminalDelay`, or 0.8 of
+the time to fly `MinLaunchRange` at `MaxVelocity` when that is unset. Six of 446 shipped ammunition
+declare such a rate.
 
 ## 3.2 The turn-rate budget
 
@@ -145,6 +148,13 @@ if nonKinematic && ap._supportsBanking:
 
 Modelling only `_maxTurnRateDegrees` makes such a round nose over roughly three times too slowly.
 
+The addend applies only where the mover spends one combined rotation. When the rate in force differs from
+`MaxTurnRate` by more than 1°/s, `setCourseTowardsPositionLegacy` rotates roll, yaw and pitch in three
+separate calls, pitch at its own rate, and the roll call that follows aims at the pitch the round already
+has. A ToBearing launch-rate override is such a case: `plan_yj-18a` noses over at exactly its 50°/s
+`LaunchTurnRate` through ToBearing, not at 110°/s. The model therefore drops the addend while the override
+is in force (next section).
+
 ### Two corrections ride on the base rate
 
 The mover does not spend `MaxTurnRate` as written. It derates it for the G-limit first, then floors
@@ -155,8 +165,9 @@ afterwards, because the mover's roll call runs at a hardcoded rate that no G-lim
 ```
 rate = MaxTurnRate
 if TurnRateGDerate       && knots > gThreshold:  rate *= gThreshold / knots
-if LaunchTurnRateOverride && inToBearing && LaunchTurnRate > rate:  rate = LaunchTurnRate
-rate += bankingRollAddend
+override = LaunchTurnRateOverride && inToBearing && LaunchTurnRate > rate
+if override:  rate = LaunchTurnRate
+if not override:  rate += bankingRollAddend      # the three-rotation branch gives pitch its own rate
 ```
 
 **The G-limit.** The mover converts the commanded rate into a load at the round's *current* speed
@@ -303,6 +314,16 @@ diveStart       = max(termDist, descentGeomDist)
 
 The geometric term matters for a high lofter, which would otherwise arrive far too high to dive.
 
+A kinematic round whose terminal leg is Linear has no geometric onset. Every altitude leg of a kinematic
+round allows exceeding its angle limits, so the game holds the leg before the terminal one until the
+terminal distance and only then flies the terminal leg, a straight line from where the round entered it
+to the terminal height. The model starts that phase at `termDist` and steers each step at the point
+1.5 s ahead on the line (`Waypoint.CalculatePointAtTime` on a Linear leg), instead of a pitch fixed when
+the phase began. It starts down before that: once the 1.5 s look-ahead reaches past the boundary, the
+game continues it into the terminal leg from the boundary, at the height the round's vertical speed
+projects there (`Waypoint.CalculateFuturePointRecursive`), and the model steers at the same point, so
+the dive begins about 1.5 s before `termDist` as recorded rounds show.
+
 **`_searchForTargetsTime` pulls the onset in.** The game does not enter `TerminalApproach` on
 distance alone: with `SearchForTargetsTime > 0` the seeker must also hold an echo for that long
 first, and the clock resets on every tick without one (`Missile.cs:584-593`). The missile therefore
@@ -314,6 +335,29 @@ termDist = max( _terminalApproachDist − _maxVelocityInKnots · KU · _searchFo
 ```
 
 Inert by construction for ammunition that leaves the field unset.
+
+**The distance is to the missile's intercept point, not to the ship** (beta branch). The game tests these
+boundaries, the seeker switch-on and every waypoint leg against the flat distance to
+`_targetInterceptPosition` (`Missile.cs:374-376`; GAME-BEHAVIOUR.md section 6). The step loop computes the
+same point every step (`FlightTime.Lead.cs`):
+
+```
+known      = launcher-guided or seeker locked
+               ? predTgt
+               : targetPos + targetVel · min(t, initialPhaseDur) + vRep · max(t − initialPhaseDur, 0)
+tLead      = CalculateLeadInterceptPoint(pos, speed, travelledFlat, known, vRep)
+intercept  = known + vRep · tLead                    # kept from the last step when there is no root
+switchFlat = horizontal |intercept − pos|
+```
+
+`vRep` is the target's reported velocity, before the map-speed rounding (GAME-BEHAVIOUR.md section 4), and
+`travelledFlat` is the flat distance flown so far. A dead-reckoning round's seeker locks once phase 2 has
+started and the slant range is inside its seeker range. `diveStart`, `finalDist`, the final-flight altitude
+switch, the loft-speed hold and every leg boundary compare against `switchFlat`. The arrival test,
+steering and drag keep `flatDist` to the predicted ship. Once `switchFlat` has crossed `termDist` the round
+stays in phase 2: TerminalApproach is a state in the game, and a seeker lock can move the known target back
+outside the threshold. An air target, a `ForceDirectPoint` weapon, or an unbound drag method keeps
+`switchFlat = flatDist`.
 
 ## 3.4 The pitch command
 
@@ -356,7 +400,11 @@ targetPitch = atan2(height − alt, lead)
 Because `lead` is stretched by `flatDist / remaining`, the commanded pitch flattens before every
 boundary, and a lofting round levels off below its loft height before the first boundary and
 climbs again after it. When the look-ahead runs past a boundary it continues into the next leg, from
-the boundary, using that leg's own settings. The pre-apex guard (`Missile.cs:2559-2581`) compares
+the boundary, using that leg's own settings. A terminal pop-up leg's own settings are its KappaLoft
+curve up to `TerminalPopUpHeight`, limited to `TerminalPopUpAngle`, so a look-ahead that reaches it
+climbs on that curve rather than jumping to the leg's end height. While the round flies the pop-up
+leg, its steering point is held to `TerminalPopUpAngle` below 0.95 progress, because that waypoint
+does not allow exceeding its angle limits. The pre-apex guard (`Missile.cs:2559-2581`) compares
 the pitch change needed between the 1.5 s and 8 s points with the raw `_maxTurnRate` times pitch's
 share of the steering error, and commands level flight when the round cannot make it.
 
@@ -437,5 +485,10 @@ pitch    = −clamp( atan2(alt − altAhead, look), −climbDeg, descentDeg )
 If the nodes are unavailable, it falls back to a glide: once the loft altitude is reached, descend at
 the angle that reaches the target, capped at `descentDeg`.
 
-Nodes are used **only** for terminal-loft ammunition. The generator describes that specific concave
-profile; applied to an ordinary lofter it would command the wrong shape.
+Every kinematic lofter follows this curve, not only terminal-loft ammunition: the game flies a
+`Kinematics != None` round by `Waypoint.KappaLoft` whether `TerminalLoft` is set or not, and
+`BuildAltitudeNodes` is the game's sampled form of that curve. Once the nodes exist, the step's command
+comes from a port of the live curve (`Waypoint.GetOrComputeLoftParams` and `BallisticHeightAt`) rather
+than from the samples: the curve starts where the round is when its initial phase ends, ends on the
+line to the target at the leg's end distance, and is read at the steering point's progress by distance
+to the target, with no `_maxLoftAngle` clamp.

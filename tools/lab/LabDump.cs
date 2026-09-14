@@ -254,6 +254,41 @@ namespace AutoTOT.Lab
             return range > 0f ? range : FlightTime.NoSeekerBrakeWindow;
         }
 
+        /// <summary>
+        /// What the stage switches are measured to, mirroring the mod's setup. A capture that recorded
+        /// it is believed. An older one is derived from its raw fields by the mod's own
+        /// FlightTime.ResolveSwitchTarget, and replays the older law where a field the lead reads is
+        /// missing, which is every capture before rich-flight-v3. AUTOTOT_NO_LEAD_SWITCH=1 turns the
+        /// rule off for an A/B.
+        /// </summary>
+        private static FlightTime.SwitchTarget StageSwitchTargetOf(Dictionary<string, string> kv)
+        {
+            if (System.Environment.GetEnvironmentVariable("AUTOTOT_NO_LEAD_SWITCH") == "1")
+                return FlightTime.SwitchTarget.ShipCentre;
+            if (kv.TryGetValue("StageSwitchTarget", out string recorded))
+                return System.Enum.Parse<FlightTime.SwitchTarget>(recorded);
+            if (!kv.ContainsKey("Ammo.MaxLoftAltUnity") ||
+                !kv.ContainsKey("Ammo.FinalFlightPhaseMaxAngle") ||
+                !kv.ContainsKey("Ammo.MidCourseCorrection")) return FlightTime.SwitchTarget.ShipCentre;
+            // A capture from before the field does not say whether its target was airborne. Every one
+            // was fired at a ship, whose recorded position sits within a unit of the sea.
+            bool airTarget = Mathf.Abs(V3(kv, "TargetPos").y) >= 1f;
+            // AmmunitionParameters: only RadioCommand and Datalink set AllowsLauncherGuidance.
+            string mcc = kv["Ammo.MidCourseCorrection"];
+            return FlightTime.ResolveSwitchTarget(airTarget, B(kv, "Ammo.ForceDirectPoint"),
+                                                  mcc == "RadioCommand" || mcc == "Datalink",
+                                                  dragBound: true);
+        }
+
+        /// <summary>The seeker lock range, recorded or recomputed from the raw seeker fields.</summary>
+        private static float SeekerLockRangeOf(Dictionary<string, string> kv)
+        {
+            if (kv.ContainsKey("SeekerLockRange")) return F(kv, "SeekerLockRange");
+            return FlightTime.ResolveSeekerLockRange(
+                kv.GetValueOrDefault("Ammo.GuidanceType", "None") == "None",
+                F(kv, "Ammo.SeekerActiveRange"), F(kv, "Ammo.SeekerPassiveRange"));
+        }
+
         private static FlightTime.SolveInput BuildInput(Dictionary<string, string> kv,
                                                         AmmunitionParameters ap,
                                                         bool trackDiag = false)
@@ -278,6 +313,13 @@ namespace AutoTOT.Lab
                     : terminalLinear && legacyRawTerminalUnset
                         ? F(kv, "TargetAlt0")
                         : F(kv, "TermAlt");
+            // The game's terminal delay, TerminalDelay or 0.8 of the time to fly the minimum launch range.
+            // Captures before TerminalDelaySec have neither; an enriched copy may add both ammunition fields.
+            float terminalDelay = kv.ContainsKey("Ammo.TerminalDelay") ? F(kv, "Ammo.TerminalDelay") : -1f;
+            float terminalDelaySec = kv.ContainsKey("TerminalDelaySec") ? F(kv, "TerminalDelaySec")
+                : terminalDelay >= 0f ? terminalDelay
+                : kv.ContainsKey("Ammo.MinLaunchRangeInMiles") && F(kv, "MaxVelKn") > 0f
+                    ? 0.8f * 3600f * F(kv, "Ammo.MinLaunchRangeInMiles") / F(kv, "MaxVelKn") : 0f;
             return new FlightTime.SolveInput
             {
                 AltNodes = Nodes(kv, "AltNodes"),
@@ -317,6 +359,16 @@ namespace AutoTOT.Lab
                 TargetAlt0 = F(kv, "TargetAlt0"),
                 TargetPos = V3(kv, "TargetPos"),
                 TargetVel = V3(kv, "TargetVel"),
+                // A capture from before the field solved on the reported velocity itself, so its
+                // TargetVel is the reported value. score rounds TargetVel afterwards, not this.
+                TargetVelReported = kv.ContainsKey("TargetVelReported")
+                    ? V3(kv, "TargetVelReported") : V3(kv, "TargetVel"),
+                StageSwitchTarget = StageSwitchTargetOf(kv),
+                SeekerLockRangeU = SeekerLockRangeOf(kv),
+                LeadLoftAltU = kv.ContainsKey("LeadLoftAlt")
+                    ? F(kv, "LeadLoftAlt") : F(kv, "Ammo.MaxLoftAltUnity"),
+                LeadFinalAngleDeg = kv.ContainsKey("LeadFinalAngle")
+                    ? F(kv, "LeadFinalAngle") : F(kv, "Ammo.FinalFlightPhaseMaxAngle"),
                 TerminalLinear = terminalLinear,
                 TermAlt = termAlt,
                 TermDist = F(kv, "TermDist"),
@@ -327,6 +379,14 @@ namespace AutoTOT.Lab
                 TerminalPopUpAngle = kv.ContainsKey("TerminalPopUpAngle") ? F(kv, "TerminalPopUpAngle") : 60f,
                 TerminalVerticalTurnRate = kv.ContainsKey("TerminalVerticalTurnRate")
                     ? F(kv, "TerminalVerticalTurnRate") : F(kv, "TurnRateBase"),
+                TerminalDelaySec = terminalDelaySec,
+                // The recorded hull. A capture from before the hull rule has no HullSource; score and
+                // pathcmp give it its target name's median hull (see ReplayHull).
+                Hull = kv.ContainsKey("HullLengthU")
+                    ? new FlightTime.HullBox(V3(kv, "HullAxis"), F(kv, "HullLengthU"), F(kv, "HullBeamU"),
+                                             F(kv, "HullHeightU"))
+                    : null,
+                HullSource = kv.GetValueOrDefault("HullSource", ""),
                 TrackDiag = trackDiag,   // off unless the trace command asked
                 TurnRate = F(kv, "TurnRate"),
                 ToBearingTurnRate = F(kv, "ToBearingTurnRate"),

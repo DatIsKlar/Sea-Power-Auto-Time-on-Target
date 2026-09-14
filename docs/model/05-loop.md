@@ -36,7 +36,8 @@ isHighBallisticLofter = !nonKin && lofting && loftAlt > 613.5
 # --- rates (§3.2) ---
 boostClimbDeg = isHighBallisticLofter ? 90 : (ap._maxLoftAngle || 30)
 turnRate      = ap._maxTurnRateDegrees || 5
-if nonKin && ap._supportsBanking:  turnRate += 60    # the roll budget lands on pitch
+if nonKin && ap._supportsBanking:  turnRate += 60    # the roll budget lands on pitch,
+                                                     # except under a ToBearing override (§3)
 
 # --- launch geometry (§3.1) ---
 pick        = launcher whose horizontal rail bearing is closest to the target
@@ -69,12 +70,13 @@ while t < maxFlight:
     predTgt  = targetPos + targetVel · t                  # moving-target lead
     flatDist = horizontal distance |predTgt − pos|
 
-    # --- intercept: closest approach, or inside the radius ---
+    # --- intercept: the hull, closest approach, or inside the radius ---
     slantDist = |predTgt − pos|                           # 3-D, not flattened
-    if (flatDist > prevFlat and slantDist > prevSlant and t > dt and hasClosed) \
-       or flatDist < 3:
+    rel       = pos − predTgt
+    arrived   = hull ? hull.segmentHits(prevRel, rel) : flatDist < 3
+    if (flatDist > prevFlat and slantDist > prevSlant and t > dt and hasClosed) or arrived:
         return velKnots < ap.MinVelocity · 1.1 ? −1 : t   # reject a too-slow arrival
-    prevFlat = flatDist;  prevSlant = slantDist
+    prevFlat = flatDist;  prevSlant = slantDist;  prevRel = rel
 
     # --- heading (§3.1) ---
     horizDir = unit vector toward predTgt, flattened
@@ -83,11 +85,19 @@ while t < maxFlight:
             launchHeading = RotateTowards(launchHeading, horizDir, turnRate · dt)
         horizDir = launchHeading
 
+    # --- switch distance (§3.3, beta branch) ---
+    switchFlat = flatDist                                 # air target, ForceDirectPoint
+    if the round leads its intercept point:
+        intercept  = known + vRep · leadTime(pos, velKnots, travelledFlat, known, vRep)
+        switchFlat = horizontal distance |intercept − pos|
+        terminalLatched |= switchFlat <= termDist
+
     # --- stage selection (§3.3) ---
     descentGeomDist = (pos.y − termAlt) / tan(max(descentOnsetDeg, 5))
     diveStart       = max(termDist, descentGeomDist)
-    if   flatDist <= diveStart:   phase = 2;  stageAlt = termAlt;   stageTgt = termVelKn
-    elif flatDist <= finalDist:   phase = 1;  stageAlt = finalAlt;  stageTgt = maxVelKn
+    if   switchFlat <= diveStart or terminalLatched:
+                                  phase = 2;  stageAlt = termAlt;   stageTgt = termVelKn
+    elif switchFlat <= finalDist: phase = 1;  stageAlt = finalAlt;  stageTgt = maxVelKn
     elif lofting:                 phase = 0;  stageAlt = loftAlt;   stageTgt = loftVelKn
     else:                         phase = 1;  stageAlt = finalAlt;  stageTgt = maxVelKn
 
@@ -134,7 +144,7 @@ while t < maxFlight:
     pos += velKnots · KU · dt · dir
 
     accumulate phase timings and peak altitude;  emit sim-track on the sampling schedule
-    prevPitch = pitchDeg;  t += dt
+    prevPitch = pitchDeg;  t += dt;  clock += dt           # clock is double: see below
 
 return −1                                                            # out of range
 ```
@@ -142,7 +152,8 @@ return −1                                                            # out of 
 ## 5.3 The closest-approach intercept test
 
 The loop does not test for a distance threshold alone. It returns at the step where distance
-**stops decreasing**, or when horizontal distance falls inside 3 u. A pure threshold test would miss
+**stops decreasing**, or when it reaches the target's hull (a surface ship) or comes inside 3 u
+horizontally (any other target). A pure threshold test would miss
 any flight whose closest approach is wider than the threshold, and would then run to `maxFlight` and
 decline a shot that in fact intercepts.
 
@@ -156,3 +167,26 @@ target under way pushes it back up, so the test fired at 7.1 s of a 56.8 s fligh
 Adding the slant term cannot strand the loop. The test is deferred only while the round is trading
 altitude for no ground progress, and there is a finite amount of altitude to trade; once the round
 levels out the vertical separation goes to zero and slant recedes exactly when horizontal does.
+
+**The flight time returned is a double sum of the steps.** The loop's `t` is float32, and adding the
+same step to it rounds every sum the same way within a power of two: 0.1 s steps come out 0.015 s long
+by 400 s, 1/60 s steps 0.05 s short by 400 s and 0.1 s short by 600 s. Motion already uses the step
+itself, so only the reported time carried that error, and the loop returns `clock` instead. The
+comparisons inside the loop keep `t`, whose error is far below a step.
+
+**A surface ship's flight ends at its hull.** Against a `Vessel` the round arrives on the step whose
+segment passes through a box centred on the ship's position and turned to its heading, which is
+where the game's collision cast ends the flight. The test is swept (a slab test on the step's
+segment), because a hypersonic round covers more than a hull's height in one step. Any other target
+keeps the 3 u radius, which against a ship ends the flight up to 200 m and 0.3 s before the hull.
+
+The box is sized by what the shooter's side knows about the contact, so the estimate uses no more
+than a player could:
+
+| contact | hull |
+|---|---|
+| identified | the target's own collider, measured in its heading frame |
+| held by a sensor whose label shows a size class (every sensor but passive sonar and ESM) | the representative hull of that class ([§2](02-parameters.md)) |
+| passive sonar or ESM only, or not held by any sensor now | the `Medium` class's hull |
+
+The hull only ends the estimate's flight; nothing about it is shown.

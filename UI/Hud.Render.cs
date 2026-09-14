@@ -314,7 +314,11 @@ namespace AutoTOT
         private void DrawMissileRow(ObjectBase ship, Row r)
         {
             string key = Key(ship, r.AmmoId);
-            if (!_checked.ContainsKey(key)) _checked[key] = true;
+            // Rows start unticked. They used to start ticked, so + FORMATION followed by FIRE THIS
+            // TARGET fired every in-range weapon on every ship in the formation, not only the rows
+            // the player picked; the slowest of those became the anchor and held the rest
+            // (docs/plans/open/public-formation-freeze.md, H1).
+            if (!_checked.ContainsKey(key)) _checked[key] = false;
             if (!_salvo.ContainsKey(key)) _salvo[key] = 1;
 
             bool haveTarget = _target != null && !_target.IsDestroyed;

@@ -88,6 +88,73 @@ namespace AutoTOT
             }
         }
 
+        /// <summary>
+        /// Stage a shot from more than one hull at one target, the way a player builds it: pick the
+        /// first shooter, press + FORMATION (or + UNIT), then tick each weapon row and set its salvo.
+        /// The roster is the only way the panel fires from several hulls (see GetShooters), so
+        /// StagePanelFor alone would leave just one shooter. A shooter outside the anchor's formation
+        /// is added the way + UNIT adds it. False if the panel is not up or the shots name more than
+        /// one target, which the panel cannot hold.
+        /// </summary>
+        internal static bool StagePanelForShots(List<Coordinator.Shot> shots, bool wholeFormation)
+        {
+            Hud h = _instance;
+            if (h == null || shots == null || shots.Count == 0) return false;
+            Coordinator.Shot first = shots[0];
+            if (!StagePanelFor(first.Unit, first.Target, first.AmmoId, first.Salvo)) return false;
+            try
+            {
+                h._group.Clear();
+                h.AddSelectionToGroup(wholeFormation);
+                for (int i = 0; i < shots.Count; i++)
+                {
+                    Coordinator.Shot s = shots[i];
+                    if (s.Unit == null) continue;
+                    if (s.Target != first.Target)
+                    {
+                        Bootstrap.Log.LogWarning("[AutoTOT] StagePanelForShots: the panel holds one target, and these shots name two.");
+                        return false;
+                    }
+                    if (!h._group.Contains(s.Unit)) h._group.Add(s.Unit);
+                    string key = Key(s.Unit, s.AmmoId);
+                    h._checked[key] = true;
+                    h._salvo[key] = Mathf.Max(1, s.Salvo);
+                }
+                return true;
+            }
+            catch (System.Exception e)
+            {
+                Bootstrap.Log.LogWarning("[AutoTOT] StagePanelForShots failed: " + e.Message);
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Press FIRE THIS TARGET the way a click does: the same shooter list, the same enable test
+        /// DrawWindowInner passes to DrawCommitRow (a live target and a fireable ticked row) and the
+        /// same FireSelected call. Called from the runner's Update, so like a real click it lands
+        /// between OnGUI passes and cannot change state between one frame's Layout and Repaint.
+        /// Returns null when it fired, otherwise the reason the button would have been disabled.
+        /// </summary>
+        internal static string PressFireThisTarget()
+        {
+            Hud h = _instance;
+            if (h == null) return "the panel is not up";
+            try
+            {
+                if (h._target == null || h._target.IsDestroyed) return "no live target";
+                List<ObjectBase> shooters = h.GetShooters();
+                if (!h.AnyFireable(shooters))
+                    return "the button is disabled: no ticked row is in range with rounds ready";
+                h.FireSelected(shooters, coordinated: true);
+                return null;
+            }
+            catch (System.Exception e)
+            {
+                return "it threw: " + e.Message;
+            }
+        }
+
         private readonly Dictionary<string, bool> _checked = new Dictionary<string, bool>();
         private readonly Dictionary<string, int> _salvo = new Dictionary<string, int>();
         private readonly List<EngagementBoard.SalvoLine> _salvos = new List<EngagementBoard.SalvoLine>();

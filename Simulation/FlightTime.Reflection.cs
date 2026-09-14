@@ -20,6 +20,37 @@ namespace AutoTOT
         internal const int OptimalLoftParameterCount = 9;
         internal const int AltitudeNodesParameterCount = 6;
 
+        // AmmunitionParameters fields declared ONLY on the beta branch. Mono faults a method that
+        // reads a missing field when it compiles that method, before any branch guard inside it can
+        // run: TryBuildSolveInput read _ballisticLoft directly and threw MissingFieldException on
+        // every estimate on the public branch (2026-09-14), taking the planner panel down with it.
+        // So both are read by reflection, as LauncherFacts reads WeaponParameters._automatic. Null
+        // on public.
+        internal static readonly FieldInfo BallisticLoftField =
+            typeof(AmmunitionParameters).GetField("_ballisticLoft", BindingFlags.Public | BindingFlags.Instance);
+        internal static readonly FieldInfo OptimizeLoftAltField =
+            typeof(AmmunitionParameters).GetField("_optimizeLoftAlt", BindingFlags.Public | BindingFlags.Instance);
+        private static bool _ballisticLoftMissWarned;
+
+        /// <summary>
+        /// <c>ap._ballisticLoft</c>. Only reached once the integrator has bound, which happens on the
+        /// beta branch alone, so a null field here means a game update renamed it. Said once, and
+        /// read as false, which flies a ballistic lofter as an ordinary one.
+        /// </summary>
+        private static bool BallisticLoftOf(AmmunitionParameters ap)
+        {
+            if (BallisticLoftField != null) return (bool)BallisticLoftField.GetValue(ap);
+            if (!_ballisticLoftMissWarned)
+            {
+                _ballisticLoftMissWarned = true;
+                Bootstrap.Log.LogWarning(
+                    "[AutoTOT] estimator: beta branch detected, but AmmunitionParameters._ballisticLoft " +
+                    "was not found. Ballistic-loft rounds are flown as ordinary lofters; a game update " +
+                    "has probably renamed the field.");
+            }
+            return false;
+        }
+
         private static MethodInfo _simulateShotMethod;
         private static bool _simulateLookedUp;
         private static bool _simIsBeta;

@@ -167,6 +167,14 @@ namespace AutoTOT
         private const bool BankingAddsRollBudgetToPitch = true;
         private const float BankingRollRateDeg = 60f;   // WeaponBase.cs:1792, hardcoded
 
+        // Except while the ToBearing turn-rate override is in force. The override makes the rate
+        // differ from MaxTurnRate, and WeaponBase.setCourseTowardsPositionLegacy then rotates roll,
+        // yaw and pitch in three separate calls, pitch at its own rate. Measured on plan_yj-18a:
+        // 50.0 deg/s through ToBearing, its LaunchTurnRate, against the 110 the addend flew. The
+        // addend stays everywhere else: no vertical launch without an override has been measured.
+        // Settable so the lab can score the same build with it on and off.
+        internal static bool ToBearingOverrideOwnsPitch = true;
+
         // The 90 deg boost climb is scoped to isHighBallisticLofter, not to kinematic ammo at large:
         // AllowExceedingAngleLimits (Missile.cs:2197) permits exceeding the commanded angle but does
         // not make the command 90. A round lofting inside the atmosphere flies its own MaxLoftAngle.
@@ -709,6 +717,11 @@ namespace AutoTOT
 
         internal static void ClearRailLog()
         { _railLogged.Clear(); _railLoggedAz.Clear(); _railLogCount.Clear(); }
+#if AUTOTOT_OFFLINE
+        /// <summary>Offline entry for tools/lab `kappacheck`.</summary>
+        internal static float InterpNodeAltOffline(Vector2[] nodes, float x) => InterpNodeAlt(nodes, x);
+#endif
+
         private static float InterpNodeAlt(Vector2[] nodes, float x)
         {
             if (x <= nodes[0].x) return nodes[0].y;
@@ -744,6 +757,10 @@ namespace AutoTOT
             // so unlike the raw TermDistU it carries the geometric ramp that governs high lofters.
             // -1 = never reached phase 2. Compare against `stage-obs`.
             public float DiveStartU;
+            // Flat distance to the ship at the model's final-flight switch, -1 when it never
+            // switched. Read against the recorded MaintainFinalFlightAlt event, as DiveStartU is
+            // against TerminalApproach.
+            public float FinalFlightStartU;
             public float DescentOnsetDeg;
         }
 
@@ -1080,6 +1097,7 @@ namespace AutoTOT
                 phases.FinalDistU = finalDist;
                 phases.TermDistU = termDist;
                 phases.DiveStartU = -1f;
+                phases.FinalFlightStartU = -1f;
                 phases.DescentOnsetDeg = descentOnsetDeg;
 
                 Vector3 pos = launchPos;
@@ -1164,6 +1182,10 @@ namespace AutoTOT
                         WarnSetupFallback(ap, "the game's altitude-node sample", e);
                     }
                 }
+                // What the stage switches are measured to. See FlightTime.Lead.cs.
+                SwitchTarget switchTarget = ResolveSwitchTarget(target.IsAirUnit,
+                    ap._forceDirectPoint, ap._midCourseCorrection.AllowsLauncherGuidance,
+                    _dragFn != null || _dragMethod != null);
                 float nextSample = NoseOverIntervalSim;
                 bool trackDiag = Coordinator.TraceFlightModel && emitDiag;
                 string ammoLabel = ap._ammunitionFileName ?? "?";
@@ -1204,7 +1226,8 @@ namespace AutoTOT
                         $", gLimit {(turnDerateThresholdKn > 0f ? turnDerateThresholdKn.ToString("0") + "kn" : "none")}" +
                         // Sampled on the fired-shot path: the planning-path launch-rail reading goes
                         // stale because the ship keeps turning between planning and launch.
-                        $", railAz {railAzTxt}");
+                        $", railAz {railAzTxt}" +
+                        $", switchTo {switchTarget}");
 
                 // The waypoint route the round will fly. Only for a surface target: an air target
                 // gets RelativeToTarget heights and Linear legs, which are not ported.
@@ -1229,6 +1252,8 @@ namespace AutoTOT
                         ap._terrainFollowFlight,
                         groupLeader ? ap._groupLeaderAltUnity : -1f)
                     : null;
+
+                HullBox hull = TargetHull(unit, target, out string hullSource);
 
                 // The loop runs as a pure function of this snapshot. Building it here keeps every
                 // Unity read and every mutable-game-state read on the main thread, which is what
@@ -1258,7 +1283,7 @@ namespace AutoTOT
                     LoftEntryDist = loftEntryDist,
                     LoftSpeedHoldDist = loftSpeedHoldDist,
                     LoftVelKn = loftVelKn,
-                    BallisticLoft = ap._ballisticLoft,
+                    BallisticLoft = BallisticLoftOf(ap),
                     LoftClimbTan = loftClimbTan,
                     LoftDescentTan = loftDescentTan,
                     LaunchAltU = launchPos.y,
@@ -1271,6 +1296,12 @@ namespace AutoTOT
                     TargetPos = targetPos,
                     TargetVel = targetVel,
                     TargetVelReported = target._velocityVecInUnity,
+                    StageSwitchTarget = switchTarget,
+                    SeekerLockRangeU = ResolveSeekerLockRange(
+                        ap._guidanceType == AmmunitionParameters.GuidanceType.None,
+                        ap._seekerActiveRange, ap._seekerPassiveRange),
+                    LeadLoftAltU = ap._maxLoftAltUnity,
+                    LeadFinalAngleDeg = ap._finalFlightPhaseMaxAngle,
                     TargetMoveStep = targetMoveStep,
                     TerminalLinear = stage.TerminalLinear,
                     TermAlt = termAlt,
@@ -1281,6 +1312,10 @@ namespace AutoTOT
                     TerminalPopUpHeight = Mathf.Max(ap._terminalPopUpHeight, 0f),
                     TerminalPopUpAngle = Mathf.Clamp(ap._terminalPopUpAngle, 0.01f, 89f),
                     TerminalVerticalTurnRate = Mathf.Max(ap._terminalVerticalTurnRate, 0f),
+                    TerminalDelaySec = ap._terminalDelay >= 0f ? ap._terminalDelay
+                        : 0.8f * 3600f * Mathf.Max(ap._minLaunchRangeInMiles, 0f) / maxVelKn,
+                    Hull = hull,
+                    HullSource = hullSource,
                     TrackDiag = trackDiag,
                     TurnRate = turnRate,
                     ToBearingTurnRate = toBearingTurnRate,
@@ -1311,6 +1346,113 @@ namespace AutoTOT
                 ModLog.VerboseWarn("integrated flight-time setup failed", e);
                 return false;
             }
+        }
+
+        /// <summary>
+        /// The hull a round has to reach, sized by what the shooter's side knows about the target
+        /// ("Variant A build" in max-solo-error-below-1s.md). Identified (the contact has a class): the
+        /// target's own collider. Held by a sensor whose contact label shows a size class, which is every
+        /// sensor but passive sonar and ESM (Vehicle.IncomingSignalInfo): the representative hull of the
+        /// class the label shows. Otherwise, a noise contact or one no sensor holds now, the middle class.
+        /// Not a surface ship: no hull, and the 3 u stop. The hull only ends the estimate's flight; neither
+        /// its size nor its source reaches the player.
+        /// </summary>
+        private static HullBox TargetHull(ObjectBase unit, ObjectBase target, out string source)
+        {
+            source = "none";
+            if (!(target is Vessel)) return null;
+            Vehicle contact = null;
+            try { contact = unit?._taskforce?.PlottingTable?.VehicleForObject(target); }
+            catch { contact = null; }
+            float headingDeg = target.getHeading();
+            Vector3 hullM;   // length, height, beam
+            if (contact != null && contact.Identified.Value && ColliderHull(target, headingDeg, out hullM))
+            {
+                source = "identified";
+            }
+            else
+            {
+                SensorSystem.SensorTypeSet sensors = contact != null
+                    ? contact.DetectingSensors : SensorSystem.SensorTypeSet.Unknown;
+                bool sizeShown = (sensors & ~(SensorSystem.SensorTypeSet.PassiveSonar |
+                                              SensorSystem.SensorTypeSet.ESM)) != 0;
+                string size = target._sensorData != null ? target._sensorData._size : null;
+                if (sizeShown && ClassHull(size, out hullM))
+                    source = "size " + size;
+                else
+                {
+                    ClassHull(MiddleSizeClass, out hullM);
+                    source = sizeShown ? "size unknown" : sensors != SensorSystem.SensorTypeSet.Unknown ? "noise" : "no track";
+                }
+            }
+            float heading = headingDeg * Mathf.Deg2Rad;
+            return new HullBox(new Vector3(Mathf.Sin(heading), 0f, Mathf.Cos(heading)),
+                               hullM.x / GameUnits.MetersPerUnity, hullM.z / GameUnits.MetersPerUnity,
+                               hullM.y / GameUnits.MetersPerUnity);
+        }
+
+        /// <summary>
+        /// The target's first collider, the one the trace records as TargetBoundsM, measured in the ship's
+        /// heading frame: length, height and beam in metres. The collider's own box when it has one (a
+        /// BoxCollider's box, a MeshCollider's mesh bounds), its world-aligned bounds otherwise.
+        /// </summary>
+        private static bool ColliderHull(ObjectBase target, float headingDeg, out Vector3 hullM)
+        {
+            hullM = default;
+            Collider c = target.GetComponentInChildren<Collider>();
+            if (c == null) return false;
+            Bounds box;
+            Transform frame = c.transform;
+            if (c is BoxCollider bc) box = new Bounds(bc.center, bc.size);
+            else if (c is MeshCollider mc && mc.sharedMesh != null) box = mc.sharedMesh.bounds;
+            else { box = c.bounds; frame = null; }
+            Quaternion toShip = Quaternion.Euler(0f, -headingDeg, 0f);
+            Vector3 lo = new Vector3(float.MaxValue, float.MaxValue, float.MaxValue), hi = -lo;
+            for (int k = 0; k < 8; k++)
+            {
+                Vector3 corner = new Vector3((k & 1) != 0 ? box.max.x : box.min.x,
+                                             (k & 2) != 0 ? box.max.y : box.min.y,
+                                             (k & 4) != 0 ? box.max.z : box.min.z);
+                Vector3 p = toShip * (frame != null ? frame.TransformPoint(corner) : corner);
+                lo = Vector3.Min(lo, p);
+                hi = Vector3.Max(hi, p);
+            }
+            Vector3 size = (hi - lo) * GameUnits.MetersPerUnity;
+            if (size.x <= 0f || size.z <= 0f) return false;
+            hullM = new Vector3(Mathf.Max(size.x, size.z), size.y, Mathf.Min(size.x, size.z));
+            return true;
+        }
+
+        /// <summary>The class a contact without a shown size takes: the middle of the ship classes.</summary>
+        private const string MiddleSizeClass = "Medium";
+
+        /// <summary>A class hull's height over its beam. No ini declares a height; the two ship classes in
+        /// the corpus give collider height over ini beam 0.51 (the tanker) and 0.94 (Yuniy Partizan).</summary>
+        private const float ClassHullHeightPerBeam = 0.7f;
+
+        /// <summary>
+        /// The representative hull of a sensor size class (SensorData RCS, EnumRCSValues): the median
+        /// Length and Beam of the vessel inis declaring that class, in metres (length, height, beam).
+        /// VerySmall has one placeholder type and takes Small's, as do VeryTiny and Tiny, which no ship
+        /// declares. False for anything else, such as a numeric RCS.
+        /// </summary>
+        private static bool ClassHull(string size, out Vector3 hullM)
+        {
+            float length, beam;
+            switch (size)
+            {
+                case "VeryTiny": case "Tiny": case "VerySmall":
+                case "Small":     length = 58.0f;  beam = 6.8f;  break;   // 26 types
+                case "SemiSmall": length = 59.5f;  beam = 8.8f;  break;   // 51
+                case "Meager":    length = 38.6f;  beam = 7.6f;  break;   // 41
+                case "Medium":    length = 103.0f; beam = 11.8f; break;   // 33
+                case "SemiLarge": length = 136.0f; beam = 14.3f; break;   // 38
+                case "Large":     length = 172.0f; beam = 19.2f; break;   // 29
+                case "VeryLarge": length = 250.0f; beam = 31.0f; break;   // 29
+                default: hullM = default; return false;
+            }
+            hullM = new Vector3(length, ClassHullHeightPerBeam * beam, beam);
+            return true;
         }
     }
 }

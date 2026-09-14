@@ -35,6 +35,9 @@
   <ItemGroup>
     <Reference Include="UnityEngine.CoreModule"><HintPath>$(Managed)/UnityEngine.CoreModule.dll</HintPath></Reference>
     <Reference Include="Seapower-Scripts"><HintPath>$(Managed)/Seapower-Scripts.dll</HintPath></Reference>
+    <!-- TargetHull (FlightTime.Integrator.cs) reads colliders and the contact's Identified property. -->
+    <Reference Include="UnityEngine.PhysicsModule"><HintPath>$(Managed)/UnityEngine.PhysicsModule.dll</HintPath></Reference>
+    <Reference Include="UniRx"><HintPath>$(Managed)/UniRx.dll</HintPath></Reference>
   </ItemGroup>
 
 </Project>

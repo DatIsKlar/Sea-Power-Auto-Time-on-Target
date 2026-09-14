@@ -30,7 +30,7 @@ Every `AmmunitionParameters` field the model reads, all via `ap.`:
 | `_terminalLoft` | concave glide; altitude comes from `BuildAltitudeNodes` | [§3](03-trajectory.md) |
 | `_initialFlightPhaseDuration` | how long the round flies its launch attitude and heading | [§3](03-trajectory.md) |
 | `_maxTurnRateDegrees` | finite pitch and heading slew rate | [§3](03-trajectory.md) |
-| `_supportsBanking` | adds a second rotation budget on non-kinematic ammunition | [§3](03-trajectory.md) |
+| `_supportsBanking` | adds a second rotation budget on non-kinematic ammunition, except while a ToBearing launch-rate override is in force | [§3](03-trajectory.md) |
 | `_maxFlightTime` | loop bound (600 s when unset) | [§5](05-loop.md) |
 | `GetDragFactor(isAir)` | drag coefficient passed to `CalculateDrag` | [§4](04-speed.md) |
 | `LiftFactor` | induced-lift coefficient passed to `CalculateDrag` | [§4](04-speed.md) |
@@ -95,7 +95,9 @@ per-missile tuning.
 | `MinDescentOnsetDeg` | 5° | floor on the geometric dive onset, bounds the tangent |
 | `VacuumDivePitchThreshold` | −40° | lock-drop proxy for the vacuum brake ([§4](04-speed.md)) |
 | `StallSpeedMultiplier` | 1.1 | intercept-reject threshold against `MinVelocity` |
-| `CloseEnoughDistU` | 3 u | intercept radius |
+| `CloseEnoughDistU` | 3 u | intercept radius for a target without a hull (anything but a surface ship) |
+| `ClassHullHeightPerBeam` | 0.7 | a size-class hull's height over its beam; no `.ini` declares a height, and two recorded ship colliders give 0.51 and 0.94 |
+| representative hulls | length × beam: `Small` 58.0 × 6.8 m, `SemiSmall` 59.5 × 8.8, `Meager` 38.6 × 7.6, `Medium` 103.0 × 11.8, `SemiLarge` 136.0 × 14.3, `Large` 172.0 × 19.2, `VeryLarge` 250.0 × 31.0; `VeryTiny`, `Tiny` and `VerySmall` take `Small`'s | median `Length` and `Beam` of the vessel `.ini` files declaring each `RCS` class ([§5.3](05-loop.md#53-the-closest-approach-intercept-test)) |
 | `MinSpeedKn` | 1 kn | mid-flight stall abort |
 | `LookaheadMultiplier`, `MinLookaheadU` | 20 steps, 50 u | lookahead for proportional hold and node following |
 | `EvasiveBoostFraction` | 0.8 | evasive-target speed boost, mirroring the game's own estimator |

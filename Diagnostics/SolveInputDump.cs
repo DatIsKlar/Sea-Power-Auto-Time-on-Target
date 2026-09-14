@@ -83,7 +83,7 @@ namespace AutoTOT
                 b.AppendLine(F("Ammo.SustainerBurnTime", ap._sustainerBurnTime));
                 b.AppendLine(F("Ammo.MaxVelocityInKnots", ap._maxVelocityInKnots));
                 b.AppendLine(F("Ammo.Kinematics", ap.Kinematics.ToString()));
-                b.AppendLine(F("Ammo.OptimizeLoftAlt", ap._optimizeLoftAlt));
+                b.AppendLine(FOptionalBool("Ammo.OptimizeLoftAlt", FlightTime.OptimizeLoftAltField, ap));
                 b.AppendLine(F("Ammo.TerminalAltRaw", ap._terminalAltUnity));
                 b.AppendLine(F("Ammo.TerminalAltMode", ap._terminalAltMode.ToString()));
                 b.AppendLine(F("Ammo.LoftToSkim", ap._loftToSkim));
@@ -109,7 +109,7 @@ namespace AutoTOT
                 b.AppendLine(F("Ammo.ToBearingTurnRateDegrees", ap._toBearingTurnRateDegrees));
                 b.AppendLine(F("Ammo.MaxTurnG", ap._maxTurnG));
                 b.AppendLine(F("Ammo.SupportsBanking", ap._supportsBanking));
-                b.AppendLine(F("Ammo.BallisticLoft", ap._ballisticLoft));
+                b.AppendLine(FOptionalBool("Ammo.BallisticLoft", FlightTime.BallisticLoftField, ap));
                 b.AppendLine(F("Ammo.TerminalLoft", ap._terminalLoft));
                 b.AppendLine(F("Ammo.MaxFlightTime", ap._maxFlightTime));
                 b.AppendLine(F("Ammo.MaxGroupSize", ap._maxGroupSize));
@@ -136,6 +136,9 @@ namespace AutoTOT
                 b.AppendLine(F("Ammo.TerminalDiveDistance", ap._terminalDiveDistance));
                 b.AppendLine(F("Ammo.MaxLoftAltUnity", ap._maxLoftAltUnity));
                 b.AppendLine(F("Ammo.GroupLeaderAltUnity", ap._groupLeaderAltUnity));
+                // A ForceDirectPoint round never updates its intercept point after launch
+                // (Missile.cs:2441), so its switches are not measured to a lead.
+                b.AppendLine(F("Ammo.ForceDirectPoint", ap._forceDirectPoint));
 
                 b.AppendLine(F("AmmoLabel", i.AmmoLabel));
                 b.AppendLine(F("BoostClimbDeg", i.BoostClimbDeg));
@@ -178,6 +181,12 @@ namespace AutoTOT
                 // FlightTime.TargetMapVelocity). tools/lab score rounds older captures that do not.
                 b.AppendLine(F("TargetVelReported", i.TargetVelReported));
                 b.AppendLine(F("TargetMoveStep", i.TargetMoveStep));
+                // What the stage switches were measured to, and the lead's own inputs. tools/lab
+                // derives these for a capture that predates them.
+                b.AppendLine(F("StageSwitchTarget", i.StageSwitchTarget.ToString()));
+                b.AppendLine(F("SeekerLockRange", i.SeekerLockRangeU));
+                b.AppendLine(F("LeadLoftAlt", i.LeadLoftAltU));
+                b.AppendLine(F("LeadFinalAngle", i.LeadFinalAngleDeg));
                 b.AppendLine(F("TerminalLinear", i.TerminalLinear));
                 b.AppendLine(F("TerminalEndAlt", i.TermAlt));
                 b.AppendLine(F("TermAlt", i.TermAlt));
@@ -188,6 +197,16 @@ namespace AutoTOT
                 b.AppendLine(F("TerminalPopUpHeight", i.TerminalPopUpHeight));
                 b.AppendLine(F("TerminalPopUpAngle", i.TerminalPopUpAngle));
                 b.AppendLine(F("TerminalVerticalTurnRate", i.TerminalVerticalTurnRate));
+                b.AppendLine(F("TerminalDelaySec", i.TerminalDelaySec));
+                // The hull the estimate ends at, and what the shooter's side knew that sized it.
+                b.AppendLine(F("HullSource", i.HullSource ?? "none"));
+                if (i.Hull != null)
+                {
+                    b.AppendLine(F("HullLengthU", i.Hull.HalfLengthU * 2f));
+                    b.AppendLine(F("HullBeamU", i.Hull.HalfBeamU * 2f));
+                    b.AppendLine(F("HullHeightU", i.Hull.HalfHeightU * 2f));
+                    b.AppendLine(F("HullAxis", i.Hull.Axis));
+                }
                 b.AppendLine(F("TurnRate", i.TurnRate));
                 b.AppendLine(F("ToBearingTurnRate", i.ToBearingTurnRate));
                 b.AppendLine(F("TurnRateBase", i.TurnRateBase));
@@ -241,6 +260,7 @@ namespace AutoTOT
                                          List<string> track,
                                          List<string> flightTrack,
                                          List<string> guardTrack,
+                                         List<string> pitchRateTrack,
                                          float wpEst, float legacyEst,
                                          List<string> stageChanges, List<string> stageEvents,
                                          List<string> groupChanges,
@@ -254,7 +274,8 @@ namespace AutoTOT
                                          bool hasSpeedCommand,
                                          TargetMotionProbe.SpeedCommand speedCommand,
                                          List<string> speedCommandChanges,
-                                         string launchCellBlock)
+                                         string launchCellBlock,
+                                         float flightEndGone = -1f, float flightEndImpact = -1f)
         {
             // A round that finished with no input to pair against is a hole in the corpus, and the
             // only way to notice is to say so. Silence here cost six of seven rounds once.
@@ -277,6 +298,12 @@ namespace AutoTOT
                 b.AppendLine(F("AmmoFingerprint", ammoFingerprint));
                 b.AppendLine(F("Target", targetName));
                 b.AppendLine(F("ActualFlight", actualFlight));
+                // ActualFlight ends at the last frame the round was seen alive. The collision lies
+                // between that and FlightEndGone, the first frame it was missed; FlightEndImpact is
+                // the collision itself, from a raycast along the last-sighted path against the
+                // target's colliders, or -1 when the cast met none. All three are seconds since launch.
+                b.AppendLine(F("FlightEndGone", flightEndGone));
+                b.AppendLine(F("FlightEndImpact", flightEndImpact));
                 b.AppendLine(F("Arrived", arrived));
                 b.AppendLine(F("FinalRangeM", finalRangeM));
                 b.AppendLine(F("Retargeted", retargeted));
@@ -319,6 +346,10 @@ namespace AutoTOT
                 b.AppendLine(F("GuardTrackFields", LaunchDiagnostics.GuardTrackFields));
                 b.AppendLine(F("GuardTrack", guardTrack == null || guardTrack.Count == 0
                                              ? "" : string.Join(";", guardTrack)));
+                // One-second pools of the pitch rate the game hands CalculateDrag, read once a
+                // frame; field order in LaunchDiagnostics.MaybeRecordPitchRate.
+                b.AppendLine(F("PitchRateTrack", pitchRateTrack == null || pitchRateTrack.Count == 0
+                                                 ? "" : string.Join(";", pitchRateTrack)));
                 // The other estimator tiers, as they stood at launch. Recording them lets a tier
                 // be compared against the others offline, on the whole corpus, without re-flying.
                 b.AppendLine(F("WpEstAtLaunch", wpEst));
@@ -418,6 +449,12 @@ namespace AutoTOT
         private static string F(string k, bool v) => k + " = " + (v ? "true" : "false");
         private static string F(string k, string v) => k + " = " + (v ?? string.Empty);
 
+        // Beta-only ammunition fields (see FlightTime.BallisticLoftField). The same text as
+        // F(k, bool) where the field exists, so beta dumps and fingerprints do not change, and
+        // "n/a" on the public branch, where it does not.
+        private static string FOptionalBool(string k, System.Reflection.FieldInfo f, AmmunitionParameters ap)
+            => f == null ? F(k, "n/a") : F(k, (bool)f.GetValue(ap));
+
         private static string F(string k, Vector3 v)
             => k + " = " + v.x.ToString("R", Inv) + "," + v.y.ToString("R", Inv) + "," +
                v.z.ToString("R", Inv);
@@ -441,7 +478,7 @@ namespace AutoTOT
             b.AppendLine(F("SustainerBurnTime", ap._sustainerBurnTime));
             b.AppendLine(F("MaxVelocity", ap._maxVelocityInKnots));
             b.AppendLine(F("Kinematics", ap.Kinematics.ToString()));
-            b.AppendLine(F("OptimizeLoftAlt", ap._optimizeLoftAlt));
+            b.AppendLine(FOptionalBool("OptimizeLoftAlt", FlightTime.OptimizeLoftAltField, ap));
             b.AppendLine(F("TerminalAlt", ap._terminalAltUnity));
             b.AppendLine(F("TerminalAltMode", ap._terminalAltMode.ToString()));
             b.AppendLine(F("LoftToSkim", ap._loftToSkim));
@@ -464,7 +501,7 @@ namespace AutoTOT
             b.AppendLine(F("BearingTurnRate", ap._toBearingTurnRateDegrees));
             b.AppendLine(F("MaxTurnG", ap._maxTurnG));
             b.AppendLine(F("SupportsBanking", ap._supportsBanking));
-            b.AppendLine(F("BallisticLoft", ap._ballisticLoft));
+            b.AppendLine(FOptionalBool("BallisticLoft", FlightTime.BallisticLoftField, ap));
             b.AppendLine(F("TerminalLoft", ap._terminalLoft));
             b.AppendLine(F("MaxFlight", ap._maxFlightTime));
             b.AppendLine(F("MaxGroupSize", ap._maxGroupSize));

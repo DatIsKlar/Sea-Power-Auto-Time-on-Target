@@ -163,12 +163,18 @@ namespace AutoTOT
         /// leg from the boundary, at the height the missile would reach there, using that leg's OWN
         /// settings: the skip-copy happens only when a leg completes. That is why a loft round dips
         /// briefly toward sea-skimming height just before its first boundary.
+        ///
+        /// <paramref name="popUpHeight"/> is the terminal pop-up's height when a look-ahead that reaches
+        /// the pop-up leg should follow its KappaLoft curve (0: take the leg's end height), with the
+        /// target's height and the pop-up angle that curve needs.
         /// </summary>
         internal static Vector2 WaypointPointAtTime(WaypointLeg[] legs, int activeIdx,
                                                      in WaypointLeg active, float legProgress,
                                                      float legStartAlt, float lookTime,
                                                      float flatDist, float posY,
-                                                     float flatSpeed, float verticalSpeed)
+                                                     float flatSpeed, float verticalSpeed,
+                                                     float popUpTargetAlt, float popUpHeight,
+                                                     float popUpAngle)
         {
             WaypointLeg leg = active;
             int k = activeIdx;
@@ -189,14 +195,25 @@ namespace AutoTOT
                         ? lastAlt + progress * (leg.Alt - lastAlt)
                         : leg.Alt;
                     float lead = fromS * fraction;
-                    if (leg.ClampAngles && lead > WaypointDistanceEpsilonU &&
+                    bool clamp = leg.ClampAngles;
+                    float climbDeg = leg.ClimbDeg, descentDeg = leg.DescentDeg;
+                    // A look-ahead that reaches the pop-up leg takes that leg's own KappaLoft height and
+                    // climb limit, as Waypoint.CalculateFuturePointRecursive does, instead of its end height.
+                    if (popUpHeight > 0f && leg.Mode == WaypointLegMode.Kappa && k != activeIdx)
+                    {
+                        h = TerminalPopUpAltitude(progress, lastAlt, popUpTargetAlt, popUpHeight,
+                                                  popUpAngle, Mathf.Max(fromS, WaypointDistanceEpsilonU));
+                        clamp = true;
+                        climbDeg = descentDeg = popUpAngle;
+                    }
+                    if (clamp && lead > WaypointDistanceEpsilonU &&
                         progress < WaypointClampProgressLimit)
                     {
                         float rise = h - fromY;
-                        if (rise > 0f && leg.ClimbDeg > WaypointAngleEpsilonDeg)
-                            h = Mathf.Min(h, fromY + lead * Mathf.Tan(leg.ClimbDeg * Mathf.Deg2Rad));
-                        else if (rise < 0f && leg.DescentDeg > WaypointAngleEpsilonDeg)
-                            h = Mathf.Max(h, fromY - lead * Mathf.Tan(leg.DescentDeg * Mathf.Deg2Rad));
+                        if (rise > 0f && climbDeg > WaypointAngleEpsilonDeg)
+                            h = Mathf.Min(h, fromY + lead * Mathf.Tan(climbDeg * Mathf.Deg2Rad));
+                        else if (rise < 0f && descentDeg > WaypointAngleEpsilonDeg)
+                            h = Mathf.Max(h, fromY - lead * Mathf.Tan(descentDeg * Mathf.Deg2Rad));
                     }
                     return new Vector2(fromS - lead, Mathf.Max(h, WaypointMinHeightU));
                 }

@@ -81,8 +81,21 @@ namespace AutoTOT
             internal Vector3 TargetVel { get; init; }
             /// <summary>The target's own <c>_velocityVecInUnity</c>, before
             /// <see cref="FlightTime.TargetMapVelocity(SeaPower.ObjectBase, out float)"/> rounded it and
-            /// before the evasive boost. Written to the capture only; the step loop never reads it.</summary>
+            /// before the evasive boost. It is the velocity the round itself believes in, so the step
+            /// loop leads and dead-reckons the switch point with it; see FlightTime.Lead.cs.</summary>
             internal Vector3 TargetVelReported { get; init; }
+            /// <summary>What the distance-keyed stage and waypoint switches are measured to. The
+            /// default, <see cref="SwitchTarget.ShipCentre"/>, is the older law.</summary>
+            internal SwitchTarget StageSwitchTarget { get; init; }
+            /// <summary>Slant range inside which a dead-reckoning round's seeker locks, once its
+            /// terminal phase has started. 0 = it never locks.</summary>
+            internal float SeekerLockRangeU { get; init; }
+            /// <summary><c>_maxLoftAltUnity</c> at setup, for the lead's average speed. Captured rather
+            /// than read in the loop: the game rewrites it at launch for two loft modes
+            /// (Missile.cs:1792-1800).</summary>
+            internal float LeadLoftAltU { get; init; }
+            /// <summary><c>_finalFlightPhaseMaxAngle</c>, the descent angle the lead reads.</summary>
+            internal float LeadFinalAngleDeg { get; init; }
             /// <summary>The physics step <see cref="TargetVel"/> was rounded at, 0 when the target is
             /// not a surface ship and nothing was rounded. Written to the capture only.</summary>
             internal float TargetMoveStep { get; init; }
@@ -98,6 +111,16 @@ namespace AutoTOT
             internal float TerminalPopUpHeight { get; init; }
             internal float TerminalPopUpAngle { get; init; }
             internal float TerminalVerticalTurnRate { get; init; }
+            /// <summary>Seconds of flight before MaintainHeight will enter TerminalApproach: the
+            /// ammunition's TerminalDelay, or 0.8 of the time to fly its minimum launch range
+            /// (Missile.cs:487-491 with :52).</summary>
+            internal float TerminalDelaySec { get; init; }
+            /// <summary>The target's hull, which ends the flight where the round enters it; null (an air
+            /// or submerged target) keeps the 3 u stop.</summary>
+            internal HullBox Hull { get; init; }
+            /// <summary>Why the hull has its size, for the capture: "identified", "size" and the contact's
+            /// size class, "noise", "no track", "size unknown", or "none" without a hull.</summary>
+            internal string HullSource { get; init; }
             internal bool TrackDiag { get; init; }
             /// <summary>The rate every ordinary turn is budgeted at: the ammunition's
             /// <c>MaxTurnRate</c>, plus the banking roll addend where that applies.</summary>
@@ -151,6 +174,31 @@ namespace AutoTOT
         /// </summary>
         internal static float OfflineMotorScale = 1f;
 
+        /// <summary>Offline counterfactual for tools/lab: the game's motor clock is
+        /// <c>GameTime.missionElapsedTime</c>, which advances once per rendered frame, so every tick of
+        /// a frame reads the clock as the frame began. When set, a tick before the last entry reads the
+        /// latest entry at or before it (recorded frame starts, seconds since launch); a later tick
+        /// reads its own time less <see cref="OfflineThrustClockLagSec"/>, floored at zero.</summary>
+        internal static float[] OfflineThrustFrameClock;
+        internal static float OfflineThrustClockLagSec;
+
+        internal static float OfflineThrustClock(float t)
+        {
+            float[] c = OfflineThrustFrameClock;
+            if (c != null && c.Length > 0 && t < c[c.Length - 1] - 1e-4f)
+            {
+                float clock = 0f;
+                for (int i = 0; i < c.Length && c[i] <= t + 1e-4f; i++) clock = c[i];
+                return clock;
+            }
+            return Mathf.Max(t - OfflineThrustClockLagSec, 0f);
+        }
+
+        /// <summary>Offline counterfactual for tools/lab: scales the pitch rate handed to
+        /// <c>CalculateDrag</c>, whose motor-off stall term falls toward zero under a nose-down rate.
+        /// 1 is the shipped behaviour.</summary>
+        internal static float OfflineDragPitchRateScale = 1f;
+
         /// <summary>
         /// A round's recorded physics-step timeline, so a replay can fly the steps the round
         /// actually flew instead of one average of them.
@@ -201,6 +249,70 @@ namespace AutoTOT
         /// </summary>
         internal static OfflineStepSchedule OfflineSteps;
 
+        /// <summary>Variant B of the hull counterfactual, defined after reading variant A: a round still above
+        /// the hull's top when it comes within 3 u keeps the older stop, so only a round already down at
+        /// hull height ends at the hull.</summary>
+        internal static bool OfflineHullOnlyWhenLow;
+
+        /// <summary>Counterfactual Q of "PL2 revised" (production-step lateness): the arrival time is
+        /// interpolated inside the step, from the hull's slab entry fraction or the 3 u crossing, instead of
+        /// the start of the first step found inside.</summary>
+        internal static bool OfflineArrivalInterp;
+
+        /// <summary>Counterfactual R: each step moves by the velocity the game realises when it adds the
+        /// increment to a float32 position once per physics tick (GameMath.TranslateRoundedVelocity at
+        /// <see cref="OfflineGameStep"/>), accumulated in double so the model does not round on its own grid.</summary>
+        internal static bool OfflineGameRounding;
+
+        /// <summary>Counterfactual K: while a kinematic round's motor burns, thrust and drag are integrated in
+        /// <see cref="OfflineGameStep"/> substeps inside each step, and the step moves at their mean speed.</summary>
+        internal static bool OfflineMotorSubsteps;
+
+        /// <summary>Counterfactual M4 of docs/plans/open/model-and-launcher-audit.md: substep only the step in which the motor
+        /// burns out. On that step MissileSimulator.CalculateThrustOverTime returns remainingTime * timeWindow instead of
+        /// remainingTime times the sustainer acceleration, so a 0.1 s window loses up to six times what the game's 1/60 s tick
+        /// loses.</summary>
+        internal static bool OfflineBurnoutSubsteps;
+
+
+        /// <summary>The game physics step counterfactuals R and K use; the lab sets it per replay.</summary>
+        internal static float OfflineGameStep = 1f / 60f;
+
+        /// <summary>Flat distance from the ship's centre at which the last offline replay ended, -1 when
+        /// it did not arrive.</summary>
+        internal static float OfflineArrivalFlatU = -1f;
+
+        /// <summary>The round's height above the ship's centre on the first step inside 3 u, where the
+        /// older arrival test ends a flight; NaN when it never got there.</summary>
+        internal static float OfflineHeightAtCloseU = float.NaN;
+
+        /// <summary>Counterfactual M1 of docs/plans/open/model-and-launcher-audit.md: the round leaves ToBearing for good on
+        /// the first step it is inside the cone or past the time cap (Missile.cs:343; only the Launch and GoToSurface states
+        /// enter ToBearing, :188 and :253), instead of re-entering whenever the step's own test reads true again.</summary>
+        internal static bool OfflineToBearingLatch;
+
+        /// <summary>Steps of the last replay on which the step's ToBearing test read true after the round had left
+        /// ToBearing. Reset by <see cref="SolveOffline"/>.</summary>
+        internal static int OfflineToBearingReentrySteps;
+
+        /// <summary>Counterfactual M2: TerminalApproach waits for TerminalDelay (Missile.cs:485-538) in every consumer, not
+        /// only the terminal turn split: the terminal stage's speed and altitude, its latch, and the group leader's
+        /// cash-in.</summary>
+        internal static bool OfflineTerminalDelayGate;
+
+        /// <summary>Steps of the last replay flown in the terminal stage before TerminalDelay had passed. Reset by
+        /// <see cref="SolveOffline"/>.</summary>
+        internal static int OfflinePhase2BeforeDelaySteps;
+
+        /// <summary>Offline diagnostic for tools/lab `pathcmp`: when set, each step of the next replay
+        /// appends its time, flat distance to the target's centre, height above it, speed and pitch.</summary>
+        internal static System.Collections.Generic.List<(float T, float Flat, float Height, float Kn, float Pitch)> OfflinePath;
+
+        /// <summary>Offline diagnostic for tools/lab `stepcmp --raw`: when set, each step of the next replay
+        /// appends the flat offset to the predicted target at the step's start, the horizontal direction it
+        /// flies, and the direction it wanted.</summary>
+        internal static System.Collections.Generic.List<(float T, float Dx, float Dz, float DirX, float DirZ, float WantX, float WantZ)> OfflineGeom;
+
         /// <summary>
         /// Offline entry point to the step loop, for the replay lab in tools/lab. Exists only in
         /// the AUTOTOT_OFFLINE build; the shipped mod has no such member.
@@ -211,11 +323,154 @@ namespace AutoTOT
             // The step loop calls the game's own thrust and drag helpers through reflection, so the
             // lookup that binds them has to have run. In game this happens during startup.
             EnsureSimLookup();
+            OfflineToBearingReentrySteps = 0;
+            OfflinePhase2BeforeDelaySteps = 0;
             phases = default;
             phases.DiveStartU = -1f;
+            phases.FinalFlightStartU = -1f;
             return Solve(in i, ap, ref phases, dt);
         }
 #endif
+
+        // The upstream corrections of max-solo-error-below-1s.md ("Variant A build", step S2), on in the
+        // mod. Plain statics so the offline lab can turn each off for an A/B; nothing in game writes them,
+        // so the worker threads only ever read them.
+
+        /// <summary>A steering look-ahead that reaches a terminal pop-up leg takes that leg's own KappaLoft
+        /// height and climb limit, as Waypoint.CalculateFuturePointRecursive does, instead of its end
+        /// height.</summary>
+        internal static bool PopUpLookAhead = true;
+
+        /// <summary>A cruise missile's active pop-up leg holds its steering point to TerminalPopUpAngle below
+        /// 0.95 progress: that waypoint does not allow exceeding its angle limits.</summary>
+        internal static bool PopUpAngleClamp = true;
+
+        /// <summary>TerminalVerticalTurnRate applies for the whole TerminalApproach stage, not only inside a
+        /// pop-up leg.</summary>
+        internal static bool TerminalTurnWholeStage = true;
+
+        /// <summary>A kinematic loft round steers by the live KappaLoft curve (Waypoint.GetOrComputeLoftParams
+        /// and BallisticHeightAt, started where the round is when its initial phase ends), unclamped,
+        /// instead of the sampled altitude nodes.</summary>
+        internal static bool LiveKappaLoft = true;
+
+        /// <summary>Unity's Vector3.RotateTowards returns the current direction unchanged when its dot with
+        /// the target direction exceeds 1 - 1e-5 (0.256 degrees), and WeaponBase.setCourseTowardsPosition
+        /// turns a kinematic surface-target round with it, so the nose holds between steps of that size and
+        /// the motor-off stall drag sees no pitch rate on the held ticks. Not in the terminal split, which
+        /// turns angles with MoveTowards, and not for an air target, which the mover rotates by
+        /// Quaternion.AngleAxis.</summary>
+        internal static bool RotateDeadBand = true;
+
+        /// <summary>A kinematic round's altitude legs all allow exceeding their angle limits, so the game
+        /// holds the leg before the terminal one until the terminal distance and then flies the terminal
+        /// leg's Linear line: the terminal phase starts at TermDist, and each step steers at the 1.5 s point
+        /// on the line from where the round entered it to the terminal height.</summary>
+        internal static bool KinematicTerminalLine = true;
+
+        /// <summary>The flight time returned is a double sum of the steps taken. The loop's own clock
+        /// <c>t</c> is float32, and adding the same step to it rounds every sum the same way within a power of
+        /// two: at 0.1 s steps the sum is 0.015 s long by 400 s, at 1/60 s it is 0.05 s short by 400 s and 0.1 s
+        /// short by 600 s. Motion already uses the step itself, so only the reported time carried the error.
+        /// The comparisons inside the loop keep <c>t</c>; their error is far below a step.</summary>
+        internal static bool DoubleClock = true;
+
+        /// <summary>The drag brake (CalculateDrag handed the round's own height) holds over the seeker window the
+        /// game actually has: the missile's CurrentTarget is null from the seeker's activation, tested on a vector
+        /// flattened to the missile's height, until its detection, a plain 3-D range, both against
+        /// SeekerActiveRange, and only for an ammunition without TargetMemory whose mid-course correction allows
+        /// launcher guidance (SolveInput.SeekerBrakeRangeU, negative when it can never open). Measured to the tick
+        /// on 24 rounds (done/2026-09-13-yj-20-motor-sensitivity.md). A capture without the range keeps the older
+        /// altitude and pitch gate.</summary>
+        internal static bool SeekerWindowBrake = true;
+
+        /// <summary>A kinematic terminal-linear round whose 1.5 s look-ahead crosses the terminal boundary steers at
+        /// the point that look-ahead reaches on the terminal Linear leg, from the boundary at the height its vertical
+        /// speed projects there (Waypoint.CalculateFuturePointRecursive), so it starts down about 1.5 s before
+        /// TermDist as the recorded rounds do.</summary>
+        internal static bool KinematicLineLookAhead = true;
+
+        internal static bool RotateHolds(bool nonKin, float targetAltU, bool terminalStage,
+                                         float terminalVerticalRate, float stepTurnRate,
+                                         Vector3 forward, Vector3 wanted) =>
+            RotateDeadBand && !nonKin && Mathf.Abs(targetAltU) < 1f &&
+            !(terminalStage && terminalVerticalRate > 0f && Mathf.Abs(terminalVerticalRate - stepTurnRate) > 1f) &&
+            Vector3.Dot(forward, wanted) > 1f - 1e-5f;
+
+        /// <summary>Waypoint.BallisticHeightAt, non-ballistic, term for term.</summary>
+        private static float LoftCurve(float percent, float startHeight, float hPeak, float endHeight,
+                                       float midpointPercent, float startSlopeNormalized)
+        {
+            float mid = Mathf.Max(midpointPercent, 1e-5f);
+            if (percent < midpointPercent)
+            {
+                float u = percent / mid;
+                float slope = MathF.Max(1f, startSlopeNormalized);
+                return startHeight + (hPeak - startHeight) *
+                       (u * u * (3f - 2f * u) + slope * u * (1f - u) * (1f - u));
+            }
+            float v = (percent - midpointPercent) / Mathf.Max(1f - midpointPercent, 1e-5f);
+            float v2 = v * v, v3 = v2 * v;
+            return (2f * v3 - 3f * v2 + 1f) * hPeak + (-2f * v3 + 3f * v2) * endHeight +
+                   (v3 - v2) * 3f * (endHeight - hPeak);
+        }
+
+        /// <summary>
+        /// A surface target's hull as a box centred on the ship and aligned to its heading, so a flight
+        /// ends where the round enters the hull, which is where the game's collision cast
+        /// (WeaponBase.CheckCollision) ends it, instead of 3 u from the ship's centre. Its size is what
+        /// the shooter's side knows; see TargetHull. Immutable, so one instance can ride in a SolveInput
+        /// to a worker thread.
+        /// </summary>
+        internal sealed class HullBox
+        {
+            internal readonly Vector3 Axis;
+            internal readonly float HalfLengthU, HalfBeamU, HalfHeightU;
+
+            internal HullBox(Vector3 axis, float lengthU, float beamU, float heightU)
+            {
+                Axis = axis;
+                HalfLengthU = lengthU * 0.5f;
+                HalfBeamU = beamU * 0.5f;
+                HalfHeightU = heightU * 0.5f;
+            }
+
+            /// <summary>Whether the round's last step, from <paramref name="a"/> to <paramref name="b"/>
+            /// (each its position minus the ship's centre at that step), passed through the hull. A swept
+            /// test, because a hypersonic round covers more than the hull's height in one step and a
+            /// point test lets it pass straight through.</summary>
+            internal bool SegmentHits(Vector3 a, Vector3 b)
+            {
+                float t0 = 0f, t1 = 1f;
+                return Slab(a.x * Axis.x + a.z * Axis.z, b.x * Axis.x + b.z * Axis.z, HalfLengthU, ref t0, ref t1) &&
+                       Slab(a.x * Axis.z - a.z * Axis.x, b.x * Axis.z - b.z * Axis.x, HalfBeamU, ref t0, ref t1) &&
+                       Slab(a.y, b.y, HalfHeightU, ref t0, ref t1);
+            }
+#if AUTOTOT_OFFLINE
+
+            /// <summary>Where along the segment from <paramref name="a"/> to <paramref name="b"/> it enters the
+            /// hull, 0 to 1; 1 when it does not.</summary>
+            internal float SegmentEntry(Vector3 a, Vector3 b)
+            {
+                float t0 = 0f, t1 = 1f;
+                bool hit = Slab(a.x * Axis.x + a.z * Axis.z, b.x * Axis.x + b.z * Axis.z, HalfLengthU, ref t0, ref t1) &&
+                           Slab(a.x * Axis.z - a.z * Axis.x, b.x * Axis.z - b.z * Axis.x, HalfBeamU, ref t0, ref t1) &&
+                           Slab(a.y, b.y, HalfHeightU, ref t0, ref t1);
+                return hit ? t0 : 1f;
+            }
+#endif
+
+            private static bool Slab(float p0, float p1, float half, ref float t0, ref float t1)
+            {
+                float d = p1 - p0;
+                if (Mathf.Abs(d) < 1e-9f) return Mathf.Abs(p0) <= half;
+                float ta = (-half - p0) / d, tb = (half - p0) / d;
+                if (ta > tb) { float swap = ta; ta = tb; tb = swap; }
+                t0 = Mathf.Max(t0, ta);
+                t1 = Mathf.Min(t1, tb);
+                return t0 <= t1;
+            }
+        }
 
         /// <summary>
         /// Which of the two cruise-leg altitudes applies at this distance. The game runs
@@ -341,12 +596,28 @@ namespace AutoTOT
             float       targetAlt0             = i.TargetAlt0;
             Vector3     targetPos              = i.TargetPos;
             Vector3     targetVel              = i.TargetVel;
+            // What the stage and waypoint switches are measured to; see FlightTime.Lead.cs.
+            SwitchTarget switchTarget          = i.StageSwitchTarget;
+            Vector3     knownVel               = i.TargetVelReported;
+            float       seekerLockRange        = i.SeekerLockRangeU;
+            float       leadLoftAlt            = i.LeadLoftAltU;
+            float       leadFinalAngle         = i.LeadFinalAngleDeg;
+            // The game's _targetInterceptPosition starts at the launch aim point (Missile.cs:63) and
+            // keeps its last value on a tick the lead has no solution.
+            Vector3     intercept              = i.TargetPos;
+            float       travelledFlat          = 0f;
+            bool        terminalEntered        = false;
+            bool        terminalLatched        = false;
+            bool        seekerLocked           = false;
             bool        terminalLinear         = i.TerminalLinear;
             float       termAlt                = i.TermAlt;
             float       termDist               = i.TermDist;
             float       termVelKn              = i.TermVelKn;
             bool        terminalPopUpEnabled   = i.TerminalPopUpEnabled;
             float       terminalPopUpDist      = i.TerminalPopUpDist;
+            float       terminalDelaySec       = i.TerminalDelaySec;
+            HullBox     hull                   = i.Hull;
+            float       seekerBrakeRangeU      = i.SeekerBrakeRangeU;
             float       terminalPopUpHeight    = i.TerminalPopUpHeight;
             float       terminalPopUpAngle     = i.TerminalPopUpAngle;
             float       terminalVerticalRate   = i.TerminalVerticalTurnRate;
@@ -452,9 +723,25 @@ namespace AutoTOT
             // Counted rather than derived from t/dt, which is only the step count while the step is
             // constant. See the offline step schedule below.
             int steps = 0;
+            // The pop-up leg a look-ahead may reach, as WaypointPointAtTime takes it (height 0: none).
+            float popUpLookHeight = PopUpLookAhead && terminalPopUpEnabled && terminalPopUpDist > 0f
+                ? terminalPopUpHeight : 0f;
+            // Where the live KappaLoft waypoint starts, fixed when the initial phase ends, and where the
+            // kinematic terminal line starts, fixed when the round enters it.
+            bool kappaStartSet = false;
+            float kappaStartY = 0f, kappaStartFlat = 0f;
+            float lineStartY = 0f, lineStartFlat = 0f;
+            // The round's position relative to the ship's centre on the previous step, for the hull's
+            // swept test.
+            Vector3 prevRel = Vector3.zero;
+            bool havePrevRel = false;
+            double clock = t;
 #if AUTOTOT_OFFLINE
+            double offlinePosX = pos.x, offlinePosY = pos.y, offlinePosZ = pos.z;
             OfflineStepSchedule sched = OfflineSteps;
             int schedIdx = 0;
+            // M1: set on the first step the round is out of ToBearing; the game never enters it again.
+            bool offlineToBearingLeft = false;
 #endif
 
             while (t < maxFlight)
@@ -477,6 +764,9 @@ namespace AutoTOT
                 Vector3 predTgt = targetPos + targetVel * t;
                 float dx = predTgt.x - pos.x, dz = predTgt.z - pos.z;
                 float flatDist = Mathf.Sqrt(dx * dx + dz * dz);
+#if AUTOTOT_OFFLINE
+                OfflinePath?.Add((t, flatDist, pos.y - predTgt.y, velKnots, prevPitch));
+#endif
 
                 if (startFlat < 0f)
                 {
@@ -499,18 +789,90 @@ namespace AutoTOT
                 // recedes exactly when flat does.
                 float slantDy = pos.y - predTgt.y;
                 float slantDist = Mathf.Sqrt(flatDist * flatDist + slantDy * slantDy);
-                if ((flatDist > prevFlat && slantDist > prevSlant && t > dt && hasClosed) ||
-                    flatDist < CloseEnoughDistU)
+                // Arrival: the step that passes through the target's hull, or 3 u from the centre of a
+                // target without one.
+                Vector3 rel = pos - predTgt;
+                bool closeEnough = hull != null
+                    ? hull.SegmentHits(havePrevRel ? prevRel : rel, rel)
+                    : flatDist < CloseEnoughDistU;
+#if AUTOTOT_OFFLINE
+                float offlineEntryBack = 0f;
+                if (OfflineArrivalInterp && closeEnough && havePrevRel)
                 {
+                    float entry = hull != null ? hull.SegmentEntry(prevRel, rel)
+                        : prevFlat > flatDist && prevFlat < float.MaxValue
+                            ? Mathf.Clamp01((prevFlat - CloseEnoughDistU) / (prevFlat - flatDist)) : 1f;
+                    offlineEntryBack = (1f - entry) * dt;
+                }
+#endif
+                prevRel = rel;
+                havePrevRel = true;
+#if AUTOTOT_OFFLINE
+                if (hull != null && OfflineHullOnlyWhenLow && flatDist < CloseEnoughDistU && rel.y > hull.HalfHeightU)
+                    closeEnough = true;
+                if (float.IsNaN(OfflineHeightAtCloseU) && flatDist < CloseEnoughDistU)
+                    OfflineHeightAtCloseU = rel.y;
+#endif
+                if ((flatDist > prevFlat && slantDist > prevSlant && t > dt && hasClosed) || closeEnough)
+                {
+#if AUTOTOT_OFFLINE
+                    OfflineArrivalFlatU = flatDist;
+#endif
                     ModelStats.LoopDone(steps);
                     if (velKnots < ap.MinVelocity * StallSpeedMultiplier) return -1f;
-                    return t;
+#if AUTOTOT_OFFLINE
+                    return DoubleClock ? (float)(clock - offlineEntryBack) : t - offlineEntryBack;
+#else
+                    return DoubleClock ? (float)clock : t;
+#endif
                 }
                 if (havePrev && flatDist < prevFlat && flatDist <= startFlat - closeMargin)
                     hasClosed = true;
                 prevFlat = flatDist;
                 prevSlant = slantDist;
                 havePrev = true;
+
+                // The distance the game's switches read: flat range to its intercept point, the known
+                // target led by the velocity the target reports (Missile.cs:374-376, :2427-2468). The
+                // arrival test above, steering, the ToBearing cone and drag keep the predicted ship.
+                float switchFlat = flatDist;
+                if (switchTarget != SwitchTarget.ShipCentre)
+                {
+                    // A dead-reckoning round's seeker is switched on by the terminal branch and locks
+                    // on its first echo; from then on the round knows where the ship really is.
+                    if (switchTarget == SwitchTarget.DeadReckoned && !seekerLocked && terminalEntered &&
+                        seekerLockRange > 0f && slantDist <= seekerLockRange)
+                        seekerLocked = true;
+                    // Dead reckoning restarts from the true position at ToBearing entry, where the game
+                    // resets _lostGuidanceTime (Missile.cs:252).
+                    Vector3 known = switchTarget == SwitchTarget.DeadReckoned && !seekerLocked
+                        ? targetPos + targetVel * Mathf.Min(t, initialPhaseDur) +
+                          knownVel * Mathf.Max(t - initialPhaseDur, 0f)
+                        : predTgt;
+                    if (knownVel.sqrMagnitude >= UnityVectorEqualitySqr)
+                    {
+                        float leadTime = LeadInterceptTime(pos, velKnots, travelledFlat, known, knownVel,
+                            maxVelKn, leadLoftAlt, leadFinalAngle, prevPitch, dragFactor,
+                            ap.LiftFactor, ap.MinVelocity);
+                        if (leadTime > 0f) intercept = known + knownVel * leadTime;
+                    }
+                    else intercept = known;
+                    float leadDx = intercept.x - pos.x, leadDz = intercept.z - pos.z;
+                    switchFlat = Mathf.Sqrt(leadDx * leadDx + leadDz * leadDz);
+                    // TerminalApproach is a state the game never leaves (MaintainHeight.takeAction
+                    // changes state into it), not a distance. The lock above can move the known
+                    // position back past the threshold, 2.3 u on a ship that realises less than its
+                    // reported speed, and a distance test alone would read that as leaving the
+                    // terminal phase and fly the gap at cruise speed.
+#if AUTOTOT_OFFLINE
+                    // M2 of docs/plans/open/model-and-launcher-audit.md: the game enters TerminalApproach only once
+                    // TerminalDelay has passed (Missile.cs:485-538).
+                    if (termDist > 0f && switchFlat <= termDist &&
+                        (!OfflineTerminalDelayGate || t >= terminalDelaySec)) terminalLatched = true;
+#else
+                    if (termDist > 0f && switchFlat <= termDist) terminalLatched = true;
+#endif
+                }
 
                 Vector3 horizDir = flatDist > 1e-4f
                     ? new Vector3(dx / flatDist, 0f, dz / flatDist) : Vector3.forward;
@@ -542,6 +904,19 @@ namespace AutoTOT
                                 && t >= initialPhaseDur
                                 && t < initialPhaseDur + ToBearingMaxSeconds
                                 && Mathf.Abs(prevPitch - elevToTgtDeg) >= ToBearingConeDeg;
+#if AUTOTOT_OFFLINE
+                // M1 of docs/plans/open/model-and-launcher-audit.md: count, and optionally refuse, a return to ToBearing
+                // after the round has left it.
+                if (launchPitch >= 0f && t >= initialPhaseDur)
+                {
+                    if (offlineToBearingLeft && inToBearing)
+                    {
+                        OfflineToBearingReentrySteps++;
+                        if (OfflineToBearingLatch) inToBearing = false;
+                    }
+                    if (!inToBearing) offlineToBearingLeft = true;
+                }
+#endif
 
                 // The rate this step is budgeted at. Two corrections ride on the base rate, in the
                 // mover's own order: the G-limit derate first, then the ToBearing override, which
@@ -552,9 +927,17 @@ namespace AutoTOT
                 float stepTurnRate = turnRateBase;
                 if (TurnRateGDerate && turnDerateThresholdKn > 0f && velKnots > turnDerateThresholdKn)
                     stepTurnRate *= turnDerateThresholdKn / velKnots;
-                if (LaunchTurnRateOverride && inToBearing && toBearingTurnRate > stepTurnRate)
+                bool toBearingOverride = LaunchTurnRateOverride && inToBearing &&
+                                         toBearingTurnRate > stepTurnRate;
+                if (toBearingOverride)
                     stepTurnRate = toBearingTurnRate;
-                stepTurnRate += bankingRollAddend;
+                // The roll addend reaches pitch only where the mover spends one combined rotation.
+                // With the override in force the rate differs from MaxTurnRate, so the legacy mover
+                // takes its three-rotation branch and pitch is its own RotateTowards at the override
+                // rate: plan_yj-18a pitches over at 50.0 deg/s through ToBearing at 0.167 s sampling,
+                // its LaunchTurnRate, where the addend made the model fly 110.
+                if (!(ToBearingOverrideOwnsPitch && toBearingOverride))
+                    stepTurnRate += bankingRollAddend;
 
                 // Fixed-rail launch heading: fly the rail's bearing for the initial flight
                 // phase, then turn toward the target at MaxTurnRate. The horizontal mirror of
@@ -582,22 +965,34 @@ namespace AutoTOT
                     // truncate the valid Kappa curve early.
                     bool terminalKappaActive = TerminalKappaOwnsAltitude(
                         terminalLinear, nonKin, loftPath, altNodes != null, kappaEndFlat,
-                        flatDistTotal, flatDist);
+                        flatDistTotal, switchFlat);
                     float descentGeomDist = (pos.y - termAlt)
                                           / Mathf.Tan(Mathf.Max(descentOnsetDeg, MinDescentOnsetDeg) * Mathf.Deg2Rad);
-                    float diveStart = Mathf.Max(termDist, descentGeomDist);
-                    if (!terminalKappaActive && diveStart > 0f && flatDist <= diveStart)
+                    // A kinematic round's legs allow exceeding their angle limits, so it holds its height
+                    // to the terminal distance instead of starting down at a geometric onset.
+                    float diveStart = KinematicTerminalLine && terminalLinear
+                        ? termDist : Mathf.Max(termDist, descentGeomDist);
+#if AUTOTOT_OFFLINE
+                    // M2: count terminal-stage steps flown before TerminalDelay, and optionally refuse them.
+                    bool offlineTerminalStage = !terminalKappaActive && diveStart > 0f &&
+                        (switchFlat <= diveStart || terminalLatched);
+                    if (offlineTerminalStage && t < terminalDelaySec) OfflinePhase2BeforeDelaySteps++;
+                    if (offlineTerminalStage && (!OfflineTerminalDelayGate || t >= terminalDelaySec))
+#else
+                    if (!terminalKappaActive && diveStart > 0f &&
+                        (switchFlat <= diveStart || terminalLatched))
+#endif
                     { stageTgt = termVelKn; stageAlt = termAlt; phase = 2; }
-                    else if (!terminalKappaActive && finalDist > 0f && flatDist <= finalDist)
+                    else if (!terminalKappaActive && finalDist > 0f && switchFlat <= finalDist)
                     {
                         phase = 1;
-                        stageAlt = CruiseOrFinalFlightAlt(flatDist, finalFlightDist,
+                        stageAlt = CruiseOrFinalFlightAlt(switchFlat, finalFlightDist,
                                                           finalFlightAlt, cruiseAlt);
                         // The altitude schedule ends here, the speed may not. An ammunition that
                         // requires a target to proceed stays in MaintainLoftAlt, and so at loft
                         // speed, until its seeker activates, which is further in than this
                         // boundary. It still descends on cue, which is why only stageTgt is held.
-                        stageTgt = (loftSpeedHoldDist > 0f && flatDist > loftSpeedHoldDist)
+                        stageTgt = (loftSpeedHoldDist > 0f && switchFlat > loftSpeedHoldDist)
                                  ? loftVelKn : maxVelKn;
                     }
                     // A round only enters the loft if it was LAUNCHED outside the sea-skimming
@@ -643,7 +1038,7 @@ namespace AutoTOT
                         // Explicit final/sea-skimming stages were handled by the branch above and
                         // deliberately keep their configured altitude.
                         stageAlt = ResolveUnstagedAltitude(
-                            nonKin, lofting, targetAlt0, flatDist, finalFlightDist,
+                            nonKin, lofting, targetAlt0, switchFlat, finalFlightDist,
                             finalFlightAlt, cruiseAlt);
                         stageTgt = maxVelKn;
                     }
@@ -737,48 +1132,59 @@ namespace AutoTOT
                     if (legs != null)
                     {
                         float legFlatSpeed = velKnots * KU * Mathf.Abs(Mathf.Cos(prevPitch * Mathf.Deg2Rad));
+                        // Legs complete against the same intercept point as the stages
+                        // (Missile.cs:2475), and the look-ahead is measured along the line to it.
+                        float legFlat = switchFlat;
                         if (t < initialPhaseDur || legStartFlat < 0f)
                         {
                             // Until guidance starts the game resets _lastWaypointPosition to the
                             // missile every tick, so the first leg is measured from here.
-                            legStartFlat = flatDist;
+                            legStartFlat = legFlat;
                             legStartAlt = pos.y;
                         }
                         else
                         {
                             // A group leader cashes its group in on entering TerminalApproach and
-                            // rebuilds its route (Missile.cs:858-862, MissileGroup.cs:199-200).
-                            // GuardTrack shows the rebuilt route holding only the final leg,
-                            // started from the round's position, on all six rounds flown with it;
-                            // the code path that drops the leg before it is not identified. The
-                            // entry distance is TermDist, the seeker search after the terminal
-                            // boundary, which is where those six entered to within a tick.
-                            if (i.GroupLeader && !legCashedIn && flatDist <= termDist &&
+                            // rebuilds its route (Missile.cs:858-862, MissileGroup.cs:199-201):
+                            // CreateWaypoints builds every leg from the launch point and ends with
+                            // FastForwardWaypoints (Missile.cs:2769-2835), which drops each leg whose
+                            // distance the round is already inside. So only the final leg survives,
+                            // started from the round's position, unless another leg's boundary lies
+                            // inside the entry distance, and no groupable ammunition declares a
+                            // terminal pop-up. GuardTrack showed exactly this on all six rounds flown
+                            // with it. The entry distance is TermDist, the seeker search after the
+                            // terminal boundary, which is where those six entered to within a tick.
+#if AUTOTOT_OFFLINE
+                            if (i.GroupLeader && !legCashedIn && legFlat <= termDist &&
+                                legIdx < legs.Length - 1 && (!OfflineTerminalDelayGate || t >= terminalDelaySec))
+#else
+                            if (i.GroupLeader && !legCashedIn && legFlat <= termDist &&
                                 legIdx < legs.Length - 1)
+#endif
                             {
                                 legCashedIn = true;
                                 legIdx = legs.Length - 1;
                                 legEff = legs[legIdx];
-                                legStartFlat = flatDist;
+                                legStartFlat = legFlat;
                                 legStartAlt = pos.y;
                                 legProgress = 0f;
                             }
                             // Waypoint.UpdateAndGetActiveWaypoint: complete every leg passed.
-                            while (legIdx < legs.Length - 1 && flatDist <= legEff.EndDist)
+                            while (legIdx < legs.Length - 1 && legFlat <= legEff.EndDist)
                             {
                                 bool copy = legProgress > LegSkipCopyProgress && legEff.SkipNext;
                                 WaypointLeg done = legEff;
                                 legIdx++;
                                 legEff = copy ? legs[legIdx].WithSettingsOf(in done) : legs[legIdx];
-                                legStartFlat = flatDist;
+                                legStartFlat = legFlat;
                                 legStartAlt = pos.y;
                                 legProgress = 0f;
                             }
                             // Waypoint.UpdateWaypoint's progress: geometric, caught up by at most
                             // 2.5x this tick's flat motion (Waypoint.cs:372-385).
-                            float travelled = Mathf.Max(legStartFlat - flatDist, 0f);
+                            float travelled = Mathf.Max(legStartFlat - legFlat, 0f);
                             float legTotal = Mathf.Max(travelled +
-                                Mathf.Max(flatDist - legEff.EndDist, 0f), WaypointDistanceEpsilonU);
+                                Mathf.Max(legFlat - legEff.EndDist, 0f), WaypointDistanceEpsilonU);
                             legProgress = Mathf.Max(legProgress, Mathf.Min(travelled / legTotal,
                                 legProgress + WaypointProgressCatchupMultiplier * legFlatSpeed * dt / legTotal));
 
@@ -787,11 +1193,13 @@ namespace AutoTOT
                             {
                                 float legVerticalSpeed = velKnots * KU * Mathf.Sin(prevPitch * Mathf.Deg2Rad);
                                 Vector2 desired = WaypointPointAtTime(legs, legIdx, in legEff,
-                                    legProgress, legStartAlt, WaypointSteeringLookaheadSim, flatDist,
-                                    pos.y, legFlatSpeed, legVerticalSpeed);
+                                    legProgress, legStartAlt, WaypointSteeringLookaheadSim, legFlat,
+                                    pos.y, legFlatSpeed, legVerticalSpeed,
+                                    targetAlt0, popUpLookHeight, terminalPopUpAngle);
                                 Vector2 future = WaypointPointAtTime(legs, legIdx, in legEff,
-                                    legProgress, legStartAlt, WaypointFutureLookaheadSim, flatDist,
-                                    pos.y, legFlatSpeed, legVerticalSpeed);
+                                    legProgress, legStartAlt, WaypointFutureLookaheadSim, legFlat,
+                                    pos.y, legFlatSpeed, legVerticalSpeed,
+                                    targetAlt0, popUpLookHeight, terminalPopUpAngle);
                                 float desiredAlt = desired.y;
 
                                 // The guard, term for term. rate is the raw ini value, or the
@@ -816,12 +1224,31 @@ namespace AutoTOT
                                     desiredAlt = pos.y;
 
                                 targetPitch = Mathf.Atan2(desiredAlt - pos.y,
-                                    Mathf.Max(flatDist - desired.x, WaypointDistanceEpsilonU)) *
+                                    Mathf.Max(legFlat - desired.x, WaypointDistanceEpsilonU)) *
                                     Mathf.Rad2Deg;
                             }
                         }
                     }
 
+                    if (KinematicLineLookAhead && KinematicTerminalLine && terminalLinear && !nonKin && phase == 1 &&
+                        !terminalKappaActive && termDist > 0f && switchFlat > termDist)
+                    {
+                        // CalculateFuturePointRecursive: the time to the boundary at the flat speed; past it, the next
+                        // leg from the boundary at the height the round's vertical speed projects there.
+                        float ylFlatV = velKnots * KU * Mathf.Abs(Mathf.Cos(prevPitch * Mathf.Deg2Rad));
+                        float ylRemaining = switchFlat - termDist;
+                        float ylTimeToEnd = ylFlatV > 1e-3f ? ylRemaining / ylFlatV : float.MaxValue;
+                        if (WaypointSteeringLookaheadSim > ylTimeToEnd)
+                        {
+                            float ylVy = velKnots * KU * Mathf.Sin(prevPitch * Mathf.Deg2Rad);
+                            float ylBoundaryY = pos.y + ylTimeToEnd * ylVy;
+                            float ylRun = Mathf.Min(ylFlatV * (WaypointSteeringLookaheadSim - ylTimeToEnd), termDist);
+                            float ylAlt = ylBoundaryY + ylRun / Mathf.Max(termDist, WaypointDistanceEpsilonU) *
+                                          (termAlt - ylBoundaryY);
+                            targetPitch = Mathf.Atan2(ylAlt - pos.y,
+                                Mathf.Max(ylRemaining + ylRun, WaypointDistanceEpsilonU)) * Mathf.Rad2Deg;
+                        }
+                    }
                     // Kinematic terminal waypoints use Linear pitch and allow exceeding their
                     // configured altitude-angle constraints. Latch the line when the waypoint
                     // becomes active, exactly as the game fixes lastWaypoint at the transition.
@@ -832,8 +1259,22 @@ namespace AutoTOT
                             terminalLinePitch = Mathf.Atan2(termAlt - pos.y,
                                 Mathf.Max(flatDist, WaypointDistanceEpsilonU)) * Mathf.Rad2Deg;
                             terminalLineStarted = true;
+                            lineStartY = pos.y;
+                            lineStartFlat = Mathf.Max(flatDist, WaypointDistanceEpsilonU);
                         }
-                        targetPitch = terminalLinePitch;
+                        if (KinematicTerminalLine)
+                        {
+                            // Waypoint.CalculatePointAtTime on a Linear leg: the point 1.5 s ahead, at
+                            // the height the line from the leg's start to its end has there.
+                            float lineLook = Mathf.Clamp(velKnots * KU * Mathf.Abs(Mathf.Cos(prevPitch * Mathf.Deg2Rad)) *
+                                                         WaypointSteeringLookaheadSim,
+                                                         WaypointDistanceEpsilonU, Mathf.Max(flatDist, WaypointDistanceEpsilonU));
+                            float lineProgress = Mathf.Clamp01(1f - (flatDist - lineLook) / lineStartFlat);
+                            float lineAlt = lineStartY + lineProgress * (termAlt - lineStartY);
+                            targetPitch = Mathf.Atan2(lineAlt - pos.y, lineLook) * Mathf.Rad2Deg;
+                        }
+                        else
+                            targetPitch = terminalLinePitch;
                     }
 
                     // Reproduce Waypoint.UpdateWaypoint/GetKappaLoftAltitude. A non-terminal
@@ -883,6 +1324,55 @@ namespace AutoTOT
                         targetPitch = Mathf.Clamp(
                             Mathf.Atan2(commandAlt - pos.y, look) * Mathf.Rad2Deg,
                             -descentDeg, altitudeClimbCommandDeg);
+                        if (LiveKappaLoft)
+                        {
+                            // The waypoint's start point is where the missile is when its initial phase ends
+                            // (_lastWaypointPosition follows it until then); its end point lies on the line to
+                            // the target, the leg's distance short of it, at the target's height.
+                            if (!kappaStartSet && t >= initialPhaseDur)
+                            {
+                                kappaStartSet = true;
+                                kappaStartY = pos.y;
+                                kappaStartFlat = flatDist;
+                            }
+                            float kStartY = kappaStartSet ? kappaStartY : pos.y;
+                            float kStartFlat = kappaStartSet ? kappaStartFlat : flatDist;
+                            float kBoundary = kappaEndFlat > 0f ? Mathf.Max(flatDistTotal - kappaEndFlat, 0f) : 0f;
+                            float kMagnitude = Mathf.Max(kStartFlat - kBoundary, 1f);
+                            float kEndY = targetAlt0;
+                            float invC = 1f / Mathf.Max(loftClimbTan, 1e-6f), invD = 1f / Mathf.Max(loftDescentTan, 1e-6f);
+                            float kGeo = (kMagnitude + kStartY * invC + kEndY * invD) / (invC + invD);
+                            float kPeak = Mathf.Max(Mathf.Max(Mathf.Min(loftAlt, kGeo), kStartY), kEndY);
+                            float kClimbRun = (kPeak - kStartY) * invC, kDescentRun = (kPeak - kEndY) * invD;
+                            float kMidA = MathF.Min(0.95f, kClimbRun / kMagnitude);
+                            float kMidB = MathF.Min(0.95f, kClimbRun / MathF.Max(0.1f, kClimbRun + kDescentRun));
+                            float kSpan = kEndY - kStartY;
+                            float kMid = loftAlt > kEndY ? kMidA
+                                : Mathf.Lerp(kMidB, kMidA, kSpan > 0.001f ? Mathf.Clamp01((loftAlt - kStartY) / kSpan) : 1f);
+                            float kClimbDeg = Mathf.Atan(1f / invC) * Mathf.Rad2Deg;
+                            float kStartAngle = Mathf.Max(0f, Mathf.Min(launchPitch, kClimbDeg));
+                            float kSlope = kStartAngle > 0.001f && kClimbDeg > 0.001f
+                                ? Mathf.Clamp01(MathF.Tan(kStartAngle * Mathf.Deg2Rad) /
+                                                MathF.Tan(Mathf.Clamp(kClimbDeg, 0.001f, 89f) * Mathf.Deg2Rad))
+                                : 0f;
+                            float kLead = flatSpeed * WaypointSteeringLookaheadSim;
+                            if (kLead > flatDist) kLead = flatDist;
+                            float kPct = Mathf.Clamp01(kappaProgress);
+                            float kProg = Mathf.Min(kPct + (1f - kPct) * kLead / Mathf.Max(flatDist, WaypointDistanceEpsilonU), 1f);
+                            float kD = kProg - kPct;
+                            float kH0 = LoftCurve(kPct, kStartY, kPeak, kEndY, kMid, kSlope);
+                            float kRun = Mathf.Max(kD * kMagnitude, 0.001f);
+                            float kChord = kH0 + kRun * Mathf.Tan(Mathf.Atan2(
+                                LoftCurve(kPct + kD, kStartY, kPeak, kEndY, kMid, kSlope) - kH0, kD * kMagnitude));
+                            float kFloorRun = Mathf.Clamp(flatSpeed * WaypointFutureLookaheadSim, kRun,
+                                                          Mathf.Max((1f - kPct) * kMagnitude, 0.001f));
+                            float kFloorH = LoftCurve(Mathf.Min(kPct + kFloorRun / kMagnitude, 1f),
+                                                             kStartY, kPeak, kEndY, kMid, kSlope);
+                            float kFloorAngle = Mathf.Min(Mathf.Atan2(pos.y - kFloorH, kFloorRun), MathF.PI * 89f / 180f);
+                            float kCommand = Mathf.Max(kChord, pos.y - kRun * Mathf.Tan(kFloorAngle));
+                            targetPitch = Mathf.Clamp(Mathf.Atan2(kCommand - pos.y,
+                                Mathf.Max(kLead, WaypointDistanceEpsilonU)) * Mathf.Rad2Deg, -89f, 89f);
+                        }
                     }
                     else if (isTerminalLoft && lofting)
                     {
@@ -897,7 +1387,7 @@ namespace AutoTOT
 
                     bool terminalPopUpActiveThisStep = terminalPopUpEnabled &&
                         terminalPopUpDist > 0f && terminalPopUpHeight > 0f &&
-                        flatDist <= terminalPopUpDist;
+                        switchFlat <= terminalPopUpDist;
                     if (terminalPopUpActiveThisStep)
                     {
                         if (!terminalPopUpStarted)
@@ -948,9 +1438,14 @@ namespace AutoTOT
                             terminalPopUpAngle, terminalPopUpRouteDist);
                         float floorAlt = pos.y + look *
                             (correctionAlt - pos.y) / correctionRun;
+                        // A cruise missile's pop-up waypoint does not allow exceeding its angle limits, so
+                        // the steering point is held to TerminalPopUpAngle until 0.95 progress.
+                        float popUpLimit = PopUpAngleClamp && nonKin &&
+                                           terminalPopUpProgress < WaypointClampProgressLimit
+                            ? Mathf.Clamp(terminalPopUpAngle, 0.01f, 89f) : 89f;
                         targetPitch = Mathf.Clamp(Mathf.Atan2(
                             Mathf.Max(tangentAlt, floorAlt) - pos.y, look) * Mathf.Rad2Deg,
-                            -89f, 89f);
+                            -popUpLimit, popUpLimit);
                     }
 
                     if (launchPitch >= 0f && t < initialPhaseDur)
@@ -964,9 +1459,18 @@ namespace AutoTOT
                             : launchPitch;
                     }
 
-                    bool splitTerminalTurn = terminalPopUpActiveThisStep &&
-                        terminalVerticalRate > 0f &&
-                        Mathf.Abs(terminalVerticalRate - stepTurnRate) > 1f;
+                    // Both movers take the pitch rate from TerminalVerticalTurnRate for the whole
+                    // TerminalApproach stage, not only inside a pop-up leg. MaintainHeight.takeAction
+                    // refuses TerminalApproach until the flight is older than the terminal delay. The
+                    // legacy mover tests the terminal rate against the raw MaxTurnRate, the kinematic mover
+                    // against the derated rate.
+                    bool terminalStage = termDist > 0f && t >= terminalDelaySec &&
+                                         (switchFlat <= termDist || terminalLatched);
+                    bool splitTerminalTurn = TerminalTurnWholeStage
+                        ? terminalStage && terminalVerticalRate > 0f &&
+                          Mathf.Abs(terminalVerticalRate - (nonKin ? turnRateBase : stepTurnRate)) > 1f
+                        : terminalPopUpActiveThisStep && terminalVerticalRate > 0f &&
+                          Mathf.Abs(terminalVerticalRate - stepTurnRate) > 1f;
                     // The ballistic launch rotation is performed directly on pitch. When ordinary
                     // guidance resumes, SetMissileCourse restores that pitch at MaxTurnRate; the
                     // separate banking/roll budget must not snap the nose back to the climb command.
@@ -985,7 +1489,9 @@ namespace AutoTOT
                         // Unity's euler x is nose-DOWN positive, so climb-positive pitch is
                         // negated going in and read back off the forward vector coming out.
                         Quaternion tgt = GameMath.QEuler(-targetPitch, YawOf(horizDirTarget), 0f);
-                        att = GameMath.QRotateTowards(att, tgt, stepTurnRate * dt);
+                        if (!RotateHolds(nonKin, targetPos.y, terminalStage, terminalVerticalRate,
+                                         stepTurnRate, att * Vector3.forward, tgt * Vector3.forward))
+                            att = GameMath.QRotateTowards(att, tgt, stepTurnRate * dt);
                         Vector3 fwd = att * Vector3.forward;
                         pitchDeg = Mathf.Asin(Mathf.Clamp(fwd.y, -1f, 1f)) * Mathf.Rad2Deg;
                         Vector3 fh = new Vector3(fwd.x, 0f, fwd.z);
@@ -999,7 +1505,13 @@ namespace AutoTOT
                     {
                         float pitchTurnRate = splitTerminalTurn ? terminalVerticalRate :
                             splitLaunchRecovery ? turnRateBase : stepTurnRate;
-                        pitchDeg = Mathf.MoveTowards(prevPitch, targetPitch, pitchTurnRate * dt);
+                        pitchDeg = !splitTerminalTurn && !splitLaunchRecovery && t >= initialPhaseDur &&
+                                   RotateHolds(nonKin, targetPos.y, terminalStage,
+                                       terminalVerticalRate, stepTurnRate,
+                                       GameMath.QEuler(-prevPitch, YawOf(horizDir), 0f) * Vector3.forward,
+                                       GameMath.QEuler(-targetPitch, YawOf(horizDirTarget), 0f) * Vector3.forward)
+                            ? prevPitch
+                            : Mathf.MoveTowards(prevPitch, targetPitch, pitchTurnRate * dt);
                         if ((splitTerminalTurn || splitLaunchRecovery) &&
                             launchHeading.sqrMagnitude > 0.5f)
                         {
@@ -1018,6 +1530,16 @@ namespace AutoTOT
                 float pitchRate = (pitchDeg - prevPitch) / dt;
 
                 float thrust;
+#if AUTOTOT_OFFLINE
+                float thrustClock = OfflineThrustClock(t);
+                if (_thrustFn != null) thrust = _thrustFn(ap, isAir, thrustClock, dt);
+                else
+                {
+                    if (thrustArgs == null) thrustArgs = new object[4];
+                    thrustArgs[0] = ap; thrustArgs[1] = isAir; thrustArgs[2] = thrustClock; thrustArgs[3] = dt;
+                    thrust = (float)_thrustMethod.Invoke(null, thrustArgs);
+                }
+#else
                 if (_thrustFn != null) thrust = _thrustFn(ap, isAir, t, dt);
                 else
                 {
@@ -1025,12 +1547,16 @@ namespace AutoTOT
                     thrustArgs[0] = ap; thrustArgs[1] = isAir; thrustArgs[2] = t; thrustArgs[3] = dt;
                     thrust = (float)_thrustMethod.Invoke(null, thrustArgs);
                 }
+#endif
 #if AUTOTOT_OFFLINE
                 thrust *= OfflineMotorScale;
 #endif
                 bool motorBurning = thrust > 0f;
 
                 float dragThisStep = 0f;
+#if AUTOTOT_OFFLINE
+                float offlineStepKn = -1f;
+#endif
                 if (nonKin)
                 {
                     if (velKnots > stageTgt)
@@ -1041,18 +1567,53 @@ namespace AutoTOT
                 else
                 {
                     velKnots += thrust;
-                    // The altitude gate stands in for a window whose real terms are now measured
-                    // and recorded in SolveInput.SeekerBrakeRangeU: the game feeds the round's own
-                    // altitude only while CurrentTarget is null, between the seeker activating on
-                    // FLAT range and detecting on SLANT range. Flying those terms instead was
-                    // measured on 2026-09-13 and NOT adopted: with the descent onset corrected in
-                    // the same change it moves plan_yj-20's short band from -4.63 to -0.16 s and its
-                    // long band from +0.22 to +5.78 s, leaving the within-band spread at 2.8 to
-                    // 3.3 s. A third, range-dependent term is missing and correcting these two
-                    // without it only moves the bias around. See yj-20-motor-sensitivity.md.
-                    bool inVacuumDive = phase == 2 && pos.y > ZeroDensityAltU &&
-                                        pitchDeg < VacuumDivePitchThreshold;
+                    // The brake holds over the seeker window (SeekerWindowBrake): flat range inside the seeker
+                    // range, slant range still outside it. Tried on 2026-09-13 it only moved plan_yj-20's bias
+                    // between launch-range bands; the band dependence was the old geometric dive onset, and with
+                    // the terminal line and its look-ahead the window takes that family's common apex mode from
+                    // +2.18 to -0.21 s (max-solo-error-below-1s.md, "YL result").
+                    bool inVacuumDive = SeekerWindowBrake && seekerBrakeRangeU != 0f
+                        ? seekerBrakeRangeU > 0f && flatDist < seekerBrakeRangeU && slantDist > seekerBrakeRangeU
+                        : phase == 2 && pos.y > ZeroDensityAltU && pitchDeg < VacuumDivePitchThreshold;
                     float dragTargetAlt = inVacuumDive ? pos.y : predTgt.y;
+#if AUTOTOT_OFFLINE
+                    float offlineDragRate = -pitchRate * OfflineDragPitchRateScale;
+                    // M4: the step in which the motor burns out, found with the game's own thrust function, which returns
+                    // exactly 0 once both burns are over (a partial-kinematics sustain phase returns a negative value).
+                    bool offlineBurnoutStep = OfflineBurnoutSubsteps && motorBurning && _thrustFn != null &&
+                                              OfflineGameStep > 0f &&
+                                              _thrustFn(ap, isAir, OfflineThrustClock(t + dt), OfflineGameStep) == 0f;
+                    int offlineSub = (OfflineMotorSubsteps && motorBurning || offlineBurnoutStep) &&
+                                     _dragFn != null && _thrustFn != null && OfflineGameStep > 0f
+                        ? Mathf.Max(1, Mathf.RoundToInt(dt / OfflineGameStep)) : 1;
+                    if (offlineSub > 1)
+                    {
+                        velKnots -= thrust;
+                        float sdt = dt / offlineSub, sumKn = 0f;
+                        for (int k = 0; k < offlineSub; k++)
+                        {
+                            float subThrust = _thrustFn(ap, isAir, OfflineThrustClock(t + k * sdt), sdt) * OfflineMotorScale;
+                            velKnots += subThrust;
+                            velKnots -= _dragFn(pos.y, velKnots * KU, sdt, -pitchDeg, dragFactor, subThrust > 0f,
+                                                dragTargetAlt, ap.LiftFactor, ap.MinVelocity, offlineDragRate);
+                            sumKn += velKnots;
+                        }
+                        offlineStepKn = sumKn / offlineSub;
+                    }
+                    else if (_dragFn != null)
+                        dragThisStep = _dragFn(pos.y, velKnots * KU, dt, -pitchDeg, dragFactor,
+                                               motorBurning, dragTargetAlt, ap.LiftFactor,
+                                               ap.MinVelocity, offlineDragRate);
+                    else
+                    {
+                        if (dragArgs == null) dragArgs = new object[10];
+                        dragArgs[0] = pos.y; dragArgs[1] = velKnots * KU; dragArgs[2] = dt; dragArgs[3] = -pitchDeg;
+                        dragArgs[4] = dragFactor; dragArgs[5] = motorBurning;
+                        dragArgs[6] = dragTargetAlt;
+                        dragArgs[7] = ap.LiftFactor; dragArgs[8] = ap.MinVelocity; dragArgs[9] = offlineDragRate;
+                        dragThisStep = (float)_dragMethod.Invoke(null, dragArgs);
+                    }
+#else
                     if (_dragFn != null)
                         dragThisStep = _dragFn(pos.y, velKnots * KU, dt, -pitchDeg, dragFactor,
                                                motorBurning, dragTargetAlt, ap.LiftFactor,
@@ -1066,6 +1627,7 @@ namespace AutoTOT
                         dragArgs[7] = ap.LiftFactor; dragArgs[8] = ap.MinVelocity; dragArgs[9] = -pitchRate;
                         dragThisStep = (float)_dragMethod.Invoke(null, dragArgs);
                     }
+#endif
                     velKnots -= dragThisStep;
                     // No stage-speed clamp here: kinematic ammo is thrust minus drag, uncapped.
                     // The live mover adds thrust unconditionally for Kinematics != None
@@ -1076,7 +1638,24 @@ namespace AutoTOT
 
                 float pr = pitchDeg * Mathf.Deg2Rad;
                 Vector3 dir = horizDir * Mathf.Cos(pr) + Vector3.up * Mathf.Sin(pr);
+#if AUTOTOT_OFFLINE
+                OfflineGeom?.Add((t, dx, dz, horizDir.x, horizDir.z, horizDirTarget.x, horizDirTarget.z));
+                float offlineMoveKn = offlineStepKn >= 0f ? offlineStepKn : velKnots;
+                if (OfflineGameRounding && OfflineGameStep > 0f)
+                {
+                    Vector3 realised = GameMath.TranslateRoundedVelocity(pos, offlineMoveKn * KU * dir, OfflineGameStep);
+                    offlinePosX += (double)realised.x * dt;
+                    offlinePosY += (double)realised.y * dt;
+                    offlinePosZ += (double)realised.z * dt;
+                    pos = new Vector3((float)offlinePosX, (float)offlinePosY, (float)offlinePosZ);
+                }
+                else
+                    pos += offlineMoveKn * KU * dt * dir;
+#else
                 pos += velKnots * KU * dt * dir;
+#endif
+                // _traveledDistance: the flat part of each tick's motion (Missile.cs:2114-2118).
+                travelledFlat += velKnots * KU * dt * Mathf.Abs(Mathf.Cos(pr));
 
                 if (phase == 0) { phases.ClimbTime += dt; phases.VClimbExit = velKnots; }
                 else if (phase == 1) { phases.CruiseTime += dt; phases.VCruiseExit = velKnots; }
@@ -1088,6 +1667,9 @@ namespace AutoTOT
                     // distance from `stage-obs`.
                     if (phases.DiveStartU < 0f) phases.DiveStartU = flatDist;
                 }
+                if (phase == 2) terminalEntered = true;
+                if (phases.FinalFlightStartU < 0f && finalFlightDist > 0f && switchFlat <= finalFlightDist)
+                    phases.FinalFlightStartU = flatDist;
                 phases.VTerm = velKnots;
                 if (pos.y > phases.PeakAltU) phases.PeakAltU = pos.y;
 
@@ -1103,7 +1685,9 @@ namespace AutoTOT
                         $"[AutoTOT] sim-track {ammoLabel}: t+{t:0.0}s spd {velKnots:0}kn alt {pos.y:0.0} " +
                         $"pitch {pitchDeg:0} hdgErr {hdgErr:0} roll {rollDeg:0} " +
                         $"drag {dragThisStep / dt:0}kn/s phase {phase} " +
-                        $"dist {flatDist * GameUnits.MetersPerUnity / 1000f:0.0}km slant {slantKm:0.0}km");
+                        $"dist {flatDist * GameUnits.MetersPerUnity / 1000f:0.0}km slant {slantKm:0.0}km" +
+                        (switchTarget != SwitchTarget.ShipCentre
+                            ? $" switchOff {(switchFlat - flatDist) * GameUnits.MetersPerUnity:0}m" : ""));
                     nextSample += (t < NoseOverWindowSim) ? NoseOverIntervalSim
                                 : (t < LaunchBurstWindowSim) ? LaunchBurstIntervalSim
                                 : TelemetrySampleIntervalSim;
@@ -1111,6 +1695,7 @@ namespace AutoTOT
 
                 prevPitch = pitchDeg;
                 t += dt;
+                clock += dt;
             }
             ModelStats.LoopDone(steps);
             return -1f;

@@ -70,15 +70,24 @@ while the seeker holds lock (dense air, divisor ≈ 0.816, the term is negligibl
 *own* altitude once lock drops. A round coasting through near-vacuum after lock loss therefore
 decelerates hard, and any model that ignores this arrives far too fast.
 
-The integrator mirrors it with a physical gate rather than a seeker model:
+`CurrentTarget` is null in exactly one case (`WeaponBase.cs:362`): the seeker is on, holds no echo,
+and the ammunition declares no `TargetMemory`. For an ammunition whose mid-course correction allows
+launcher guidance, the seeker switches on when the flat range, measured on a vector flattened to the
+missile's height, falls inside `SeekerActiveRange`, and it detects when the plain 3-D range does. A
+round high above its target therefore brakes from the first to the second, and a sea-skimmer crosses
+both at once and never brakes. The integrator flies that window:
 
 ```
-inVacuumDive = phase == 2 && alt > 613.5 u && pitch < −40°
+brakeRange   = !TargetMemory && launcher guidance ? SeekerActiveRange : none
+inVacuumDive = brakeRange ? flatDist < brakeRange && slantDist > brakeRange : false
 targetAltArg = inVacuumDive ? alt : predictedTarget.y
 ```
 
-This is the model's one deliberate heuristic. It describes a class: steeply diving, post-burnout,
-above the atmosphere.
+A capture from before the range was recorded keeps the older stand-in,
+`phase == 2 && alt > 613.5 u && pitch < −40°`. On `plan_yj-20` the window, together with the
+terminal line's look-ahead ([§3.3](03-trajectory.md)), puts the model within 0.2 s of the recorded
+arrival on the apex mode the round takes most often; the other mode is float noise in the game's
+climb and cannot be predicted.
 
 **Worked example.** A Mach-10 lofter at own altitude 708 u (vacuum), pitch 59°, `dragFactor` 2.4,
 `liftFactor` 0.005, lock dropped so `targetAlt` = 708 u ⇒ `ρ(708) = 0` ⇒ divisor 0.001:

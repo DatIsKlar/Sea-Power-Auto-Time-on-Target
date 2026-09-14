@@ -68,7 +68,8 @@ import re
 import shutil
 import sys
 
-POS = re.compile(r'^(RelativePositionInNM\s*=\s*)(-?[\d.]+)\s*,\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)\s*$', re.I)
+# The height is feet for a ship or aircraft and may be a depth word for a submarine ("belowlayer").
+POS = re.compile(r'^(RelativePositionInNM\s*=\s*)(-?[\d.]+)\s*,\s*([^,\s]+)\s*,\s*(-?[\d.]+)\s*$', re.I)
 WPT = re.compile(r'^(Waypoints\s*=\s*)(.*)$', re.I)
 HDG = re.compile(r'^(Heading\s*=\s*)(-?[\d.]+)\s*$', re.I)
 TLG = re.compile(r'^(Telegraph\s*=\s*)(\d+)\s*$', re.I)
@@ -188,7 +189,7 @@ def shift_waypoints(text, dx, dz):
     def one(m):
         x, y, z = float(m.group(1)), m.group(2), float(m.group(3))
         return f"{x + dx:.4f},{y},{z + dz:.4f}"
-    return re.sub(r'(-?[\d.]+),(-?[\d.]+),(-?[\d.]+)', one, text)
+    return re.sub(r'(-?[\d.]+),([^,/;\s]+),(-?[\d.]+)', one, text)
 
 
 def move(lines, bounds, section, dx=None, dz=None, absolute=None):
