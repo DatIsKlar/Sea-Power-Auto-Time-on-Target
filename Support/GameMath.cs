@@ -3,45 +3,26 @@ using UnityEngine;
 namespace AutoTOT
 {
     /// <summary>
-    /// Small geometry helpers the flight-time setup paths repeat: flattening a vector into the
-    /// horizontal plane, and reading an elevation angle off a direction.
-    ///
-    /// Worker-safe. Everything here is pure <c>Mathf</c> and <c>Vector3</c> arithmetic with no
-    /// Unity object access, no <c>Time</c> read and no game state, so it may be called from the
-    /// solve workers as well as the main thread. (Contrast <see cref="TtlCache{TKey,TValue}"/>,
-    /// which reads <c>Time.unscaledTime</c> and is main-thread only. See docs/ARCHITECTURE.md,
-    /// "Threading contract".)
-    ///
-    /// Not called from the integrator's step loop, deliberately: that loop's generated code is kept
-    /// unchanged across clean-ups, because its per-step cost is tracked from build to build and a
-    /// float expression moved into a helper can change an estimate.
+    /// Small geometry helpers the flight-time setup paths repeat: flattening a vector into the horizontal plane and
+    /// reading an elevation angle off a direction. Worker-safe: pure Mathf and Vector3 arithmetic with no Unity object,
+    /// Time or game-state access (unlike <see cref="TtlCache{TKey,TValue}"/>; see docs/ARCHITECTURE.md "Threading
+    /// contract"). The flattening helpers stay out of the integrator's step loop, because a float expression moved into
+    /// a helper can change an estimate.
     /// </summary>
     internal static class GameMath
     {
         /// <summary>
-        /// Squared-length floor for treating a flattened vector as having a BEARING.
-        ///
-        /// 1e-4, which is what every call site asking this question already used. The case it exists
-        /// for is a near-vertical launch rail, whose flattened forward vector is small but not
-        /// denormal.
-        ///
-        /// <see cref="TryFlatDirection"/> rejects at or below it, matching the launch-heading seed's
-        /// original strict-greater test, which is the one site where this threshold can move a
-        /// flight time. The launcher-selection guard tested `&lt; 1e-4` instead, so it keeps its own
-        /// comparison against this constant rather than going through the helper. The two differ
-        /// only at exactly 1e-4.
-        ///
-        /// Distinct from the 1e-6 guards elsewhere in the integrator, which are deliberately not
-        /// routed through here: those ask whether there is a line to the target at all, which is a
-        /// different question with a different answer, and folding them in would be a change of
-        /// meaning rather than a deduplication.
+        /// Squared-length floor for treating a flattened vector as having a bearing; the case is a
+        /// near-vertical launch rail, whose flattened forward vector is small but not denormal.
+        /// <see cref="TryFlatDirection"/> rejects at or below it, matching the launch-heading seed; the
+        /// launcher-selection guard tests `&lt;` against it directly. The integrator's 1e-6 guards ask a
+        /// different question (is there a line to the target at all) and stay separate.
         /// </summary>
         internal const float MinFlatSqrMagnitude = 1e-4f;
 
         /// <summary>
-        /// True when <paramref name="v"/> is a real number. The ascent and descent solvers both
-        /// guard their reflected game reads with this before feeding them into a step loop, where a
-        /// NaN would propagate silently through every subsequent step.
+        /// True when <paramref name="v"/> is a real number. The ascent and descent solvers check their
+        /// reflected game reads with it, since a NaN would propagate silently through every later step.
         /// </summary>
         internal static bool IsFinite(float v) => !float.IsNaN(v) && !float.IsInfinity(v);
 
@@ -66,15 +47,8 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// Horizontal distance between two points, ignoring altitude.
-        ///
-        /// The body is <c>WaypointSim.Flat</c> verbatim. The integrator's setup half spelled the same
-        /// thing a third way, as <c>new Vector2(dx, dz).magnitude</c>, which is the identical
-        /// computation because Unity's <c>Vector2.magnitude</c> is <c>Mathf.Sqrt(x*x + y*y)</c>.
-        ///
-        /// The step loop in FlightTime.Solve.cs has a fourth copy and keeps it: it needs the
-        /// intermediate dx and dz to build the heading vector on the next line, so a call that
-        /// returned only the distance would make it recompute them.
+        /// Horizontal distance between two points, ignoring altitude. The step loop in FlightTime.Solve.cs
+        /// keeps its own copy, because it needs the intermediate dx and dz for the heading vector.
         /// </summary>
         internal static float FlatDistance(Vector3 a, Vector3 b)
         {
@@ -87,9 +61,8 @@ namespace AutoTOT
             => Mathf.Sqrt(flat * flat + altDelta * altDelta);
 
         /// <summary>
-        /// The inverse: horizontal distance from a slant range and an altitude difference. Clamped at
-        /// zero, because a near-overhead sample can put the subtraction slightly negative through
-        /// float error.
+        /// Horizontal distance from a slant range and an altitude difference, clamped at zero because float
+        /// error can push a near-overhead sample slightly negative.
         /// </summary>
         internal static float FlatFromSlant(float slant, float altDelta)
             => Mathf.Sqrt(Mathf.Max(slant * slant - altDelta * altDelta, 0f));
@@ -97,20 +70,17 @@ namespace AutoTOT
         /// <summary>
         /// The velocity a transform actually crosses the map at when the game moves it with
         /// <c>transform.Translate(vel * step, Space.World)</c> once per physics tick, as
-        /// <c>Vessel.applyMainThrust</c> does (decompiled-beta-new Vessel.cs:438-443).
+        /// <c>Vessel.applyMainThrust</c> does (Vessel.cs:438-443).
         ///
-        /// A Unity position is float32. Every tick adds the same increment, and the add rounds the
-        /// sum to the nearest representable value. Within one power of two those values are evenly
-        /// spaced, <c>ulp(p) = 2^(floor(log2 |p|) - 23)</c>, so each tick moves the coordinate by the
-        /// same whole number of spacings, <c>round(v * step / ulp(p))</c>, and the realised rate is
-        /// that number times <c>ulp(p) / step</c>. A 6.6 kn ship 2,285 u from the origin at a 1/60 s
-        /// step adds 3.45 spacings a tick, which rounds to 3: it moves at 0.870 of its speed. Far
-        /// enough out a slow ship's increment rounds to zero and it does not move at all.
+        /// A Unity position is float32, so each tick's add rounds to the nearest representable value. Within
+        /// one power of two those are evenly spaced, <c>ulp(p) = 2^(floor(log2 |p|) - 23)</c>, so each tick
+        /// moves the coordinate by <c>round(v * step / ulp(p))</c> spacings and the realised rate is that
+        /// times <c>ulp(p) / step</c>. Far enough out, a slow ship's increment rounds to zero and it does not
+        /// move at all.
         ///
-        /// Computed the way the game computes it, one float32 add with the difference taken back, so
-        /// the result carries the game's rounding rather than an approximation of it. It holds while
-        /// the coordinate stays inside one power of two; one that crosses a boundary mid-flight
-        /// changes spacing there. Returns <paramref name="vel"/> unchanged for a non-positive step.
+        /// Computed as the game computes it, one float32 add with the difference taken back, so the result carries the
+        /// game's rounding. It holds while the coordinate stays inside one power of two. Returns <paramref name="vel"/>
+        /// unchanged for a non-positive step.
         /// </summary>
         internal static Vector3 TranslateRoundedVelocity(Vector3 pos, Vector3 vel, float step)
         {
@@ -122,22 +92,17 @@ namespace AutoTOT
 
         private static float TranslateRoundedRate(float p, float v, float step)
         {
-            // The casts pin each intermediate to float32, which the C# specification otherwise lets
-            // a runtime hold at higher precision. The subtraction is exact: both operands are within
-            // a factor of two of each other.
+            // The casts pin each intermediate to float32, which C# otherwise lets a runtime hold at higher
+            // precision. The subtraction is exact: both operands are within a factor of two.
             float inc = (float)(v * step);
             float moved = (float)(p + inc);
             return (float)(moved - p) / step;
         }
 
         /// <summary>
-        /// Pitch read off a transform's local euler angles, normalized from Unity's 0..360 range
-        /// into -180..180 so a nose-down attitude reads negative.
-        ///
-        /// Note the sign convention this inherits from the game: for aircraft the game's pitch is
-        /// NEGATIVE in a climb. Callers that want a hull-relative pitch for a submarine want
-        /// <c>Submarine.getPitch()</c> instead, which is a different quantity; see the
-        /// specialisation in VerticalProfiler.
+        /// Pitch from a transform's local euler angles, normalized from 0..360 into -180..180. The game's
+        /// convention makes a climb negative (nose-down positive); callers flip it where they need
+        /// climb-positive. A submarine's hull pitch is <c>Submarine.getPitch()</c>, a different quantity.
         /// </summary>
         internal static float PitchDeg(Transform t)
         {
@@ -146,26 +111,16 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// Elevation of a direction above the horizontal, in degrees. Clamps before the asin, so a
-        /// float-error component slightly outside [-1, 1] returns +/-90 rather than NaN. The vector
-        /// is assumed normalized; pass <c>.normalized</c> if it is not.
+        /// Elevation of a unit direction above the horizontal, in degrees. Clamped before the asin, so float
+        /// error outside [-1, 1] gives +/-90 rather than NaN.
         /// </summary>
         internal static float ElevationDeg(Vector3 unitDir)
             => Mathf.Asin(Mathf.Clamp(unitDir.y, -1f, 1f)) * Mathf.Rad2Deg;
         /// <summary>
-        /// <c>Quaternion.Euler</c> and <c>Quaternion.RotateTowards</c>, routed through here so the
-        /// step loop can run outside a live Unity engine.
-        ///
-        /// Unity implements both as engine-native calls. Outside the player they raise
-        /// SecurityException ("ECall methods must be packaged into a system module"), which would
-        /// otherwise make the integrator impossible to replay in a test harness. The
-        /// <c>AUTOTOT_OFFLINE</c> build defines managed equivalents; the shipped mod keeps calling
-        /// Unity, so production behaviour is exactly what it always was.
-        ///
-        /// The <c>Quaternion</c> STRUCT is ordinary managed code and needs no substitute: its
-        /// constructor, <c>identity</c>, <c>normalized</c>, <c>Dot</c>, <c>Angle</c> and the
-        /// vector-rotation operator all run fine outside the engine. Only these two factories do
-        /// not.
+        /// <c>Quaternion.Euler</c> and <c>Quaternion.RotateTowards</c>, routed through here so the step loop
+        /// can run outside a live Unity engine, where both engine-native calls raise SecurityException. The
+        /// <c>AUTOTOT_OFFLINE</c> build defines managed equivalents; the shipped mod calls Unity. The rest of
+        /// the <c>Quaternion</c> struct is managed code and needs no substitute.
         /// </summary>
         internal static Quaternion QEuler(float xDeg, float yDeg, float zDeg)
         {
@@ -196,9 +151,8 @@ namespace AutoTOT
         internal static Vector3 QEulerAngles(Quaternion q)
         {
 #if AUTOTOT_OFFLINE
-            // Inverse of the Z, X, Y composition QEuler builds, in the same 0..360 range Unity
-            // reports. Diagnostic only: the step loop reads this for the roll column of its trace
-            // and never for a decision.
+            // Inverse of QEuler's Z, X, Y composition, in Unity's 0..360 range. Diagnostic only: the step
+            // loop's trace reads it for the roll column.
             float sinX = 2f * (q.w * q.x - q.y * q.z);
             float x, y, z;
             if (Mathf.Abs(sinX) > 0.9999f)

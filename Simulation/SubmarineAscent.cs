@@ -20,9 +20,8 @@ namespace AutoTOT
         private const float InterlockNormSpeed = 0.1f;
         private const float InterlockPitchDeg = 5f;
 
-        // No-progress bail. A boat that cannot make its ordered depth (too slow to hold a bow-up
-        // angle, or held down by the interlock) never arrives, and the honest answer is "never",
-        // not a large number.
+        // No-progress bail: a boat that cannot make its ordered depth (too slow to hold a bow-up angle, or
+        // held down by the interlock) never arrives, and the answer is "never", not a large number.
         private const float MinProgressUnity = 1e-5f;
         private const int NoProgressSteps = 50;         // 5s of sim making no headway
 
@@ -78,16 +77,11 @@ namespace AutoTOT
                 if (pitch < tgtPitch) pitch = Math.Min(pitch + s.PitchRateDeg * StepSim, tgtPitch);
                 else if (pitch > tgtPitch) pitch = Math.Max(pitch - s.PitchRateDeg * StepSim, tgtPitch);
 
-                // The interlock: under way and pitched, the boat flies its planes and blows no tanks.
-                //
-                // This ZEROES THE STATE, not just this step's contribution, exactly as the game does
-                // (`_currentDepthChangeUsingTanks = 0f`). The distinction is worth a comment because
-                // getting it wrong is invisible in steady state and costs ~10% on the total: with the
-                // state left charging in the background, ballast is released fully wound up at its
-                // 5 ft/s cap the instant pitch drops below the threshold near the target, and the
-                // boat finishes far too fast. It must ramp again from zero at _ballastTankChangeRate,
-                // which on a deep run is a minute of the approach. Measured against 13 real
-                // manoeuvres this single behaviour moved mean error from 4.5% to 1.4%.
+                // The interlock: under way and pitched, the boat flies its planes and blows no tanks. This
+                // zeroes the state, not just this step's contribution, as the game does
+                // (`_currentDepthChangeUsingTanks = 0f`): left charging, ballast would be released fully
+                // wound up at its 5 ft/s cap the moment pitch drops below the threshold near the target, and
+                // the boat would finish far too fast. It must ramp again from zero at _ballastTankChangeRate.
                 if (normSpd > InterlockNormSpeed && Math.Abs(pitch) > InterlockPitchDeg) ballast = 0f;
 
                 float rate = ballast + speedU * (float)Math.Sin(pitch * Math.PI / 180.0);

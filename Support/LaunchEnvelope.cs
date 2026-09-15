@@ -5,38 +5,26 @@ using UnityEngine;
 namespace AutoTOT
 {
     /// <summary>
-    /// How long a shooter needs before it can fire at all, as opposed to how long its round then
-    /// flies. A surface ship is ready where it stands; a submerged submarine must rise to the
-    /// weapon's launch depth; an aircraft must descend into its launch envelope. The coordinator
-    /// needs one number for all three, because that delay belongs in the enroute estimate that
-    /// decides both anchor selection and follower release.
+    /// How long a shooter needs before it can fire at all, as opposed to how long its round then flies: a
+    /// surface ship is ready where it stands, a submerged submarine must rise to launch depth
+    /// (<see cref="SubmarineFacts.EstimateLaunchDelay"/>, <see cref="SubmarineAscent"/>), and an aircraft
+    /// must descend into its launch band (<see cref="AircraftDelay"/>, <see cref="AircraftDescent"/>). The
+    /// coordinator needs one number for all three, because the delay belongs in the enroute estimate behind
+    /// anchor selection and follower release.
     ///
-    /// Named for the question rather than the platform. Both platforms are implemented: a
-    /// submarine's ascent through <see cref="SubmarineFacts.EstimateLaunchDelay"/> and
-    /// <see cref="SubmarineAscent"/>, an aircraft's descent through <see cref="AircraftDelay"/>
-    /// and <see cref="AircraftDescent"/>.
-    ///
-    /// The two share a gate shape as well as a seam. The game runs aircraft through the same
-    /// engage-state machinery, setting <c>EngageState.LauncherTooHigh</c> from
-    /// <c>_ap._minDepthUnity</c> beside the <c>LauncherTooLow</c> path submarines take, and
-    /// <c>AmmunitionParameters._launchAltitudesInUnity</c> carries the launch altitude band that
-    /// <c>WeaponSystemHardpoint</c> tests. Only the descent DYNAMICS differ, and an aircraft that
-    /// is too LOW is deliberately not modelled: see <see cref="AircraftDelay"/>.
+    /// The game runs both through the same engage-state machinery: <c>EngageState.LauncherTooHigh</c> from
+    /// <c>_ap._minDepthUnity</c> beside the submarine's <c>LauncherTooLow</c>, with
+    /// <c>AmmunitionParameters._launchAltitudesInUnity</c> as the band <c>WeaponSystemHardpoint</c> tests. An aircraft
+    /// that is too low is not modelled; see <see cref="AircraftDelay"/>.
     /// </summary>
     internal static class LaunchEnvelope
     {
         /// <summary>
-        /// How far apart the game considers a shooter and its target when it tests launch range.
-        /// Unity units, so it can be compared straight against <c>_launchRangesInUnity</c> without
-        /// a conversion that could disagree at the boundary.
-        ///
-        /// The two weapon systems measure this differently and the answers must match theirs.
-        /// <c>WeaponSystemHardpoint</c>, which serves aircraft, projects onto the horizontal plane
-        /// (<c>Vector3.ProjectOnPlane(..., Vector3.up).magnitude</c>);
-        /// <c>WeaponSystemLauncher</c>, which serves ships and submarines, uses the slant distance
-        /// (<c>Vector3.Distance</c>). At a 30 nm minimum and 30,000 ft the two differ by about
-        /// 0.4%, which only matters within that margin of the limit, which is exactly where a
-        /// range test is read.
+        /// How far apart the game considers a shooter and its target when testing launch range, in Unity
+        /// units to compare straight against <c>_launchRangesInUnity</c>. It must match each weapon system:
+        /// <c>WeaponSystemHardpoint</c> (aircraft) projects onto the horizontal plane,
+        /// <c>WeaponSystemLauncher</c> (ships and submarines) uses the slant distance. They differ by about
+        /// 0.4% at a 30 nm minimum and 30,000 ft, which matters exactly where a range test is read.
         /// </summary>
         internal static float LaunchDistanceUnity(ObjectBase unit, ObjectBase target)
         {
@@ -47,31 +35,25 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// The weapon's minimum launch range in Unity units, or 0 when it has none. 147 of the
-        /// game's 437 ammunition files leave this at 0; the other 290 carry one, and the largest
-        /// belong to the weapons this mod is most used with (SS-N-19 and SS-N-12 at 30 nm,
-        /// RGM-109B at 20 nm, AS-4 at 100 nm).
+        /// The weapon's minimum launch range in Unity units, or 0 when it has none (290 of the game's 437
+        /// ammunition files carry one, up to 100 nm for AS-4).
         /// </summary>
         internal static float MinRangeUnity(AmmunitionParameters ap)
             => ap == null ? 0f : Mathf.Max(0f, ap._launchRangesInUnity.x);
 
         /// <summary>
-        /// True when the target is inside the weapon's minimum launch range, so the game will not
-        /// fire this order and will not give it up either.
+        /// True when the target is inside the weapon's minimum launch range, so the game will neither fire
+        /// this order nor give it up.
         ///
-        /// <para>Every platform type refuses: the aircraft hardpoint sets
-        /// <c>EngageState.TargetTooClose</c> and returns false
-        /// (WeaponSystemHardpoint.cs:1217), a submarine below launch depth does the same
-        /// (WeaponSystemLauncher.cs:405), and so does a surface launcher against ANY target type
-        /// (WeaponSystemLauncher.cs:495-501). The abort path that would end such a task
-        /// (WeaponSystemLauncher.cs:535-542) is gated on <c>!IsPlayerObject</c>, so a player's
-        /// order holds forever. Worse, the launcher reaches <c>AligningLauncher</c> BEFORE the
-        /// range test, so the shooter first turns to unmask and only then discovers it cannot
-        /// shoot.</para>
+        /// <para>Every platform refuses: the aircraft hardpoint sets <c>EngageState.TargetTooClose</c>
+        /// (WeaponSystemHardpoint.cs:1217), as does a submarine below launch depth
+        /// (WeaponSystemLauncher.cs:405) and a surface launcher against any target type
+        /// (WeaponSystemLauncher.cs:495-501). The abort path (WeaponSystemLauncher.cs:535-542) is gated on
+        /// <c>!IsPlayerObject</c>, so a player's order holds forever, and the
+        /// launcher reaches <c>AligningLauncher</c> before the range test, so the ship turns to unmask first.</para>
         ///
-        /// <para>That is why this is refused rather than warned about: the order cannot produce a
-        /// round, it makes the ship manoeuvre for nothing, and if it were to win the anchor role
-        /// the whole strike would be timed against a launch that never comes.</para>
+        /// <para>So it is refused rather than warned about: the order cannot produce a round, makes the ship
+        /// manoeuvre for nothing, and as anchor would time the whole strike against a launch that never comes.</para>
         /// </summary>
         internal static bool IsInsideMinimumRange(ObjectBase unit, AmmunitionParameters ap,
                                                   ObjectBase target, out float rangeNm, out float minNm)
@@ -98,14 +80,10 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// Seconds an aircraft needs to descend into its weapon's launch-altitude band. 0 when it is
-        /// already inside the band, which is the usual case.
-        ///
-        /// Only the ABOVE-the-band case is modelled. An aircraft that is too LOW must climb, and
-        /// climb is energy-limited through <c>GetMaxClimbPitch</c> whose <c>_dragPower</c> is private;
-        /// that returns 0 here rather than a fabricated number, so a too-low aircraft is treated as
-        /// ready and the coordinator's launch-state hold handles it as it would any other shooter
-        /// that has not started firing.
+        /// Seconds an aircraft needs to descend into its weapon's launch-altitude band; 0 when already inside
+        /// it, the usual case. Only above the band is modelled: a too-low aircraft must climb, which is
+        /// energy-limited through <c>GetMaxClimbPitch</c> with a private <c>_dragPower</c>, so it returns 0
+        /// and the coordinator's launch-state hold treats it like any shooter that has not started firing.
         /// </summary>
         private static float AircraftDelay(Aircraft air, string ammoId, StringBuilder trace)
         {
@@ -118,8 +96,7 @@ namespace AutoTOT
             float alt = air.transform.position.y;
             if (hi <= lo || alt <= hi)
             {
-                // Already able to fire. Say so, because a silent 0 here is indistinguishable from a
-                // model that declined, and that cost a test run once.
+                // Already able to fire. Say so: a silent 0 is indistinguishable from a model that declined.
                 trace?.Append($" in band: {alt * GameUnits.UnityToFeet:0}ft is at or below " +
                               $"gate {hi * GameUnits.UnityToFeet:0}ft, no descent needed |");
                 return 0f;
@@ -128,17 +105,12 @@ namespace AutoTOT
             float mach = MachOf(air);
             if (mach <= 0f) return 0f;
 
-            // What the aircraft is actually flying to. The hardpoint clamps this to the launch band
-            // only OUTSIDE EngageSurfaceContact (WeaponSystemHardpoint.cs:1147), so on an anti-ship
-            // strike it is the attack altitude, well below the ceiling, and that is what the pitch
-            // taper is computed against.
-            // ASSUMPTION, not read from source: an aircraft ordered onto a surface contact ends up
-            // at or below the band's lower edge to attack, so the taper stays saturated through the
-            // gate crossing. The exact attack altitude cannot be known here, because the commanded
-            // altitude is still the cruise value at commit; the aircraft has not entered
-            // EngageSurfaceContact yet. Reading DesiredAltitude alone made this return 0 every time,
-            // since a cruising aircraft is commanded ABOVE the gate it is about to descend through.
-            // Only the taper near the gate is sensitive to this, so the band floor is a safe proxy.
+            // What the aircraft flies to. The hardpoint clamps this to the launch band only outside
+            // EngageSurfaceContact (WeaponSystemHardpoint.cs:1147), so on an anti-ship strike it is the
+            // attack altitude, which the pitch taper is computed against. Assumed, not read from source: an
+            // aircraft ordered onto a surface contact ends at or below the band's lower edge, so the taper
+            // stays saturated through the gate. At commit the commanded altitude is still the cruise value,
+            // above the gate; only the taper near the gate is sensitive to this, so the band floor is a safe proxy.
             float cmdAlt = Mathf.Min(air.DesiredAltitude.Value, lo);
 
             AircraftDescent.State st = new AircraftDescent.State
@@ -149,23 +121,17 @@ namespace AutoTOT
                 Mach = mach,
                 PitchDeg = -GameMath.PitchDeg(air.transform),            // euler is nose-down positive; the model is climb positive
                 PitchRateDeg = p._maxTurnRates.x,
-                // The COMBAT pair, deliberately, even though air._inCombat reads false right here.
-                // GetDesiredPitch selects on _inCombat, and the aircraft is not in combat at commit:
-                // the order being planned is what puts it there, and by the time it is descending to
-                // release it flies the combat limit. Both measured airframes held exactly -60 deg,
-                // matching _maxCombatDescentPitch, against the 40 deg out-of-combat value that was
-                // seeded here before. Same trap as reading DesiredAltitude at commit and getting the
-                // cruise altitude: a field read BEFORE the descent does not describe the state
-                // DURING it.
+                // The combat pair, even though air._inCombat reads false here: GetDesiredPitch selects on
+                // _inCombat, and the order being planned is what puts the aircraft in combat, so it descends
+                // at the combat limit. A field read at commit does not describe the descent.
                 DescentLimitDeg = Mathf.Abs(p._maxCombatDescentPitch),
                 ThresholdAltU = p._inCombatThresholdAltitude,
                 MinG = p._minG,
                 MaxG = p._maxG,
             };
-            // Seed description, in the same shape the submarine writes, so envelope-sim reads the
-            // same for both platforms. The in-combat flag is here because GetDesiredPitch selects
-            // BOTH the pitch limit and the taper threshold on it, while this model always seeds the
-            // out-of-combat pair; a run that logs inCombat True is telling us the seed is wrong.
+            // Seed description in the submarine's shape, so envelope-sim reads alike for both. inCombat is
+            // logged because GetDesiredPitch selects both the pitch limit and the taper threshold on it, and
+            // the seed assumes combat.
             trace?.Append($" from {alt * GameUnits.UnityToFeet:0}ft to gate {hi * GameUnits.UnityToFeet:0}ft " +
                           $"(taper ref {cmdAlt * GameUnits.UnityToFeet:0}ft, " +
                           $"desired {air.DesiredAltitude.Value * GameUnits.UnityToFeet:0}ft, " +
@@ -177,10 +143,9 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// Live vertical state of an aircraft shooter, for the envelope-track trace. Mirrors what
-        /// <see cref="SubmarineFacts.Snapshot"/> does for a boat: the ground truth the prediction is
-        /// scored against. Mach is carried alongside TAS because the model holds Mach constant and
-        /// a dive that gains speed is the leading suspect for the residual.
+        /// Live vertical state of an aircraft shooter for the envelope-track trace: the ground truth the
+        /// prediction is scored against, as <see cref="SubmarineFacts.Snapshot"/> is for a boat. Mach is
+        /// carried beside TAS because the model holds Mach constant.
         /// </summary>
         internal struct AirSnapshot
         {
@@ -192,32 +157,23 @@ namespace AutoTOT
             public float PitchDeg;     // positive = climb, matching GetDesiredPitch
             public bool AboveGate;     // still held out of its launch band
 
-            // The launcher sat in WaitingForRoll for the
-            // whole of a 296s wait and roll was the one quantity nothing recorded, so a state named
-            // after the aircraft's attitude could not be checked against that attitude.
+            // Attitude and target geometry, so a launcher waiting in WaitingForRoll can be checked against the roll.
             public float RollDeg;      // bank, positive = right wing down
             public float HeadingDeg;   // true heading
             public float BearingDeg;   // bearing to target, same reference as HeadingDeg
             public float OffBoreDeg;   // target relative to the nose, signed, -180..180
             public float RangeKm;      // slant range to target
 
-            // The game's OWN pitch terms, read from
-            // MotionController rather than derived from the transform, because these are the exact
-            // values EngageSurfaceContact tests to decide whether the aircraft may fire. Logging
-            // them beside our own PitchDeg is also what pins down the sign convention between the
-            // two, which no run has established and which any pitch-aware fix depends on.
+            // The game's own pitch terms from MotionController, the values EngageSurfaceContact tests before
+            // the aircraft may fire; logged beside PitchDeg to pin down the sign convention between the two.
             public bool  HasMotion;      // false when the controller could not be read
             public float McPitchAngle;   // MotionController.PitchAngle
             public float McPitchRate;    // MotionController.PitchRate
             public float McPitchError;   // MotionController.PitchError
             public bool  McDirectPoint;  // MotionController._directPoint
 
-            // A recorded trace shows the aircraft
-            // level at its commanded mach and then pitching up 38 degrees IMMEDIATELY AFTER its first
-            // round, which is a manoeuvre the engagement triggers rather than a climb toward a cruise
-            // altitude. The user reports that at 20,000ft it does none of this and fires both rounds
-            // together. These two fields are what the game's own attack state machine drives, so they
-            // are what says whether the climb is commanded and by what.
+            // What the game's attack state machine drives, to tell whether a climb after a release is
+            // commanded and by what.
             public float DesiredAltFt;   // ObjectBase.DesiredAltitude, the commanded altitude
             public bool  InDiveAttack;   // Aircraft._inDiveAttackMode
         }
@@ -249,8 +205,8 @@ namespace AutoTOT
             s.AboveGate = altU > hi;
             s.RollDeg = RollDeg(air);
             s.HeadingDeg = air.transform.eulerAngles.y;
-            // Guarded rather than trusted: Motioncontroller is swapped out at runtime
-            // (SetFlightPhysicsModel) and is null on an aircraft that is not yet flying.
+            // Guarded: MotionController is swapped at runtime (SetFlightPhysicsModel) and null on an aircraft
+            // not yet flying.
             try
             {
                 MotionController mc = air.Motioncontroller;
@@ -277,9 +233,8 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// Fills the target-relative half of <see cref="AirSnapshot"/>, which the snapshot itself
-        /// cannot do because it does not take a target. Separate so the existing single-argument
-        /// callers keep working and pay nothing.
+        /// Fills the target-relative half of <see cref="AirSnapshot"/>, which the snapshot cannot, since it
+        /// takes no target.
         /// </summary>
         internal static void AddTargetGeometry(ref AirSnapshot s, ObjectBase unit, ObjectBase target)
         {
@@ -313,11 +268,10 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// Seconds from the fire order until this shooter can put its first round away. 0 when it
-        /// is ready now, which is the common case and the only EXACT answer: everything else is a
-        /// model. Also 0 when the shooter can never get there, so callers must not read 0 as
-        /// "ready" without checking the engage state; the no-launch hold in
-        /// <see cref="Coordinator"/> is what terminates an order that will never fire.
+        /// Seconds from the fire order until this shooter can put its first round away: 0 when ready now, the
+        /// common case and the only exact answer. Also 0 when it can never get there, so 0 is not "ready"
+        /// without the engage state; the no-launch hold in <see cref="Coordinator"/> ends an order that will
+        /// never fire.
         /// </summary>
         internal static float TimeToReady(ObjectBase unit, string ammoId)
             => TimeToReady(unit, ammoId, null);

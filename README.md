@@ -303,9 +303,6 @@ Sources live in five folders by concern: `Core/` (pipeline + lifecycle),
 | `Diagnostics/TelemetryCadence.cs` | Sampling offsets shared by the model and live-flight traces |
 | `Diagnostics/CoordinatorProfiler.cs` | Per-frame timing report behind the `Profiling` switch |
 | `Diagnostics/SolveInputDump.cs` | Research corpus writer behind `TraceFlightModel`: each traced round's solver input and flight result |
-| `Diagnostics/TargetMotionProbe.cs`, `Diagnostics/GuidanceStateProbe.cs` | Research traces behind `TraceFlightModel`: how a target ship moves across the map, and the inputs a missile's intercept point is built from |
-| `Diagnostics/VerticalProfiler.cs` | The `VerticalProfile` trace of submarine depth and aircraft altitude changes |
-| `Diagnostics/AlignmentProbe.cs` | The `AlignmentTrace` trace of a ship turning to bring a launcher to bear |
 | `Diagnostics/LiveTestRunner.cs`, `Diagnostics/LiveTestRunner.Plan.cs` | Unattended in-game test driver, compiled into the live test build only (see [Build](#build)) |
 | `Support/GameClock.cs` | Version-agnostic sim clock + launch-timestamp access (float/double beta drift) |
 | `Support/GameUnits.cs` | Shared unit conversions (Unity units ↔ metres/nm/knots) |
@@ -344,8 +341,6 @@ read once when the game starts and need a restart: `Enabled`, `AutoModeOnStart` 
 | Timing | `MaxCollectSeconds` | `6.0` | Hard cap (real s) on how long one target collects orders. |
 | Debug | `VerboseLogging` | `false` | Log what the coordinator decided and why: every queued, committed and released order, the anchor trace, launch crediting and the impact residual. The flight-model internals are `TraceFlightModel`. Leave it off unless you are investigating something. |
 | Debug | `TraceFlightModel` | `false` | Log the flight-model internals behind every estimate: the integrator step trace, the waypoint sim, launch geometry, stage transitions and the estimate-versus-actual gap. Roughly ten times the volume of `VerboseLogging` and it runs extra simulations per round, so use it only when a flight time looks wrong. |
-| Debug | `VerticalProfile` | `false` | Log a 1 s trace of every submarine depth change and every aircraft altitude change, with the hull parameters each model uses. Order a depth or altitude change with no engagement and one manoeuvre becomes one labelled block in the log. |
-| Debug | `AlignmentTrace` | `false` | Log each time a surface ship starts or stops turning to bring a launcher to bear on an order, what ended the turn, and once a second the ship's heading, rudder, firing arcs and launcher states while it turns. For a ship that turns to fire and leaves some of its rounds aboard. |
 | Debug | `Profiling` | `false` | Log a timing report every 60 frames: the mod's share of the frame, worst frame, where the time went, and how many flight simulations ran. |
 | Debug | `VerifySolve` | `false` | Run every threaded flight simulation a second time on the main thread and warn if the answers differ. Doubles the simulation work, so use it to check correctness rather than to measure speed. |
 | Performance | `EstimatorThreads` | `-1` | Worker threads for flight simulation. `-1` takes a quarter of the logical cores, at least 1 and at most 4. `0` runs everything on the main thread. Raise it only if the profiling line shows the queue backing up. Read at game start. |

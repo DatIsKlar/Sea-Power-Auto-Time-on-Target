@@ -7,30 +7,23 @@ namespace AutoTOT
     internal static partial class FlightTime
     {
         /// <summary>
-        /// Everything the step loop needs, as plain values.
-        ///
-        /// The loop reads no Unity API and no mutable game state: every <c>transform</c> read, and
-        /// the one <c>AmmunitionParameters</c> field the game writes at runtime
-        /// (<c>_finalFlightPhaseAltUnity</c>, read in <c>ResolveStageProfile</c>), happens during
-        /// setup on the main thread. Capturing that setup here makes <see cref="Solve"/> a pure
-        /// function of its input, which is what lets it run off the main thread.
-        ///
-        /// Fields that the loop mutates are carried as their INITIAL values and unpacked into locals.
+        /// Everything the step loop needs, as plain values. The loop reads no Unity API and no mutable game
+        /// state: every <c>transform</c> read, and the one <c>AmmunitionParameters</c> field the game writes
+        /// at runtime (<c>_finalFlightPhaseAltUnity</c>, read in <c>ResolveStageProfile</c>), happens in
+        /// setup on the main thread, so <see cref="Solve"/> is a pure function of its input and can run off
+        /// the main thread. Fields the loop mutates are carried as their initial values and unpacked into locals.
         /// </summary>
         internal readonly struct SolveInput
         {
             internal Vector2[] AltNodes { get; init; }
             internal string AmmoLabel { get; init; }
             internal float BoostClimbDeg { get; init; }
-            /// <summary>Deceleration in knots per SECOND. Held as a rate rather than a
-            /// per-step amount so the step size stays a parameter of the loop.</summary>
+            /// <summary>Deceleration in knots per second, a rate so the step size stays a parameter of the
+            /// loop.</summary>
             internal float DecelRate { get; init; }
-            /// <summary>Seeker range that opens and closes the drag brake window, in Unity units.
-            /// Positive is that range; NEGATIVE means no window can exist for this ammunition; and
-            /// ZERO means it is not known, which is what an object initializer that omits it gives
-            /// and what a capture predating the field gives, and it falls back to the older
-            /// altitude gate. The unknown case is the struct default deliberately, so the safe
-            /// reading is the one you get by forgetting.</summary>
+            /// <summary>Seeker range that opens and closes the drag brake window, in Unity units. Negative:
+            /// no window can exist. Zero: not known (an initializer that omits it, or an older capture),
+            /// which falls back to the altitude gate; the safe reading is the default one.</summary>
             internal float SeekerBrakeRangeU { get; init; }
             internal float DescentDeg { get; init; }
             internal float DescentOnsetDeg { get; init; }
@@ -80,9 +73,9 @@ namespace AutoTOT
             internal Vector3 TargetPos { get; init; }
             internal Vector3 TargetVel { get; init; }
             /// <summary>The target's own <c>_velocityVecInUnity</c>, before
-            /// <see cref="FlightTime.TargetMapVelocity(SeaPower.ObjectBase, out float)"/> rounded it and
-            /// before the evasive boost. It is the velocity the round itself believes in, so the step
-            /// loop leads and dead-reckons the switch point with it; see FlightTime.Lead.cs.</summary>
+            /// <see cref="FlightTime.TargetMapVelocity(SeaPower.ObjectBase, out float)"/> rounding and the
+            /// evasive boost: the velocity the round believes in, which the step loop leads and dead-reckons
+            /// the switch point with (FlightTime.Lead.cs).</summary>
             internal Vector3 TargetVelReported { get; init; }
             /// <summary>What the distance-keyed stage and waypoint switches are measured to. The
             /// default, <see cref="SwitchTarget.ShipCentre"/>, is the older law.</summary>
@@ -125,9 +118,8 @@ namespace AutoTOT
             /// <summary>The rate every ordinary turn is budgeted at: the ammunition's
             /// <c>MaxTurnRate</c>, plus the banking roll addend where that applies.</summary>
             internal float TurnRate { get; init; }
-            /// <summary>Turn-rate FLOOR for the ToBearing window only, from the ammunition's
-            /// <c>LaunchTurnRate</c>, unclamped. 0 when the ini leaves it at the default, which is
-            /// all but three shipped ammunition, and 0 means the step loop applies no floor. See
+            /// <summary>Turn-rate floor for the ToBearing window only, the ammunition's <c>LaunchTurnRate</c>
+            /// unclamped; 0 (the default, all but three shipped ammunition) applies no floor. See
             /// FlightTime.Integrator.ResolveToBearingTurnRate.</summary>
             internal float ToBearingTurnRate { get; init; }
             /// <summary>The <c>MaxTurnRate</c> part of <see cref="TurnRate"/>, without the banking
@@ -166,11 +158,9 @@ namespace AutoTOT
 
 #if AUTOTOT_OFFLINE
         /// <summary>
-        /// Per-round thrust multiplier for a replay. The game rolls one of these per missile
-        /// (Missile.cs:62) and multiplies thrust by it; the estimator cannot know it in advance and
-        /// correctly assumes 1.0. A replay being scored against ONE recorded flight can set the
-        /// value that flight actually used, which removes the +/-2% that otherwise dominates any
-        /// single kinematic round. Offline only: the shipped mod has no such field.
+        /// Per-round thrust multiplier for a replay. The game rolls one per missile (Missile.cs:62); the
+        /// estimator cannot know it and assumes 1.0, but a replay scored against one recorded flight can set
+        /// that flight's value. Offline only.
         /// </summary>
         internal static float OfflineMotorScale = 1f;
 
@@ -200,18 +190,11 @@ namespace AutoTOT
         internal static float OfflineDragPitchRateScale = 1f;
 
         /// <summary>
-        /// A round's recorded physics-step timeline, so a replay can fly the steps the round
-        /// actually flew instead of one average of them.
-        ///
-        /// The game adapts its step between 60 Hz and 30 Hz on frame rate, and a round whose step
-        /// moved mid-flight used to be unscoreable: no single step describes it. That is the single
-        /// largest reason the corpus discards a round. The outcome writer records every change as
-        /// "t:step", and this replays them.
-        ///
-        /// Times are flight seconds since launch, ascending, and each entry's step holds until the
-        /// next one. The first recorded entry is the step at the first sighting a few tenths of a
-        /// second after launch, and it is treated as holding from t = 0, which is the best estimate
-        /// available for the frames before the tracker opened.
+        /// A round's recorded physics-step timeline, so a replay flies the steps the round flew instead of
+        /// their average. The game adapts its step between 60 Hz and 30 Hz on frame rate; the outcome writer
+        /// records every change as "t:step". Times are flight seconds since launch, ascending, each step
+        /// holding until the next; the first entry, recorded a few tenths of a second after launch, is taken
+        /// to hold from t = 0.
         /// </summary>
         internal sealed class OfflineStepSchedule
         {
@@ -225,9 +208,7 @@ namespace AutoTOT
                 At = at; Dt = dt;
             }
 
-            /// <summary>Time-weighted mean step over a flight of the given length, for reporting.
-            /// A round that spent most of its flight at 30 Hz should not read as a 60 Hz round.
-            /// </summary>
+            /// <summary>Time-weighted mean step over a flight of the given length, for reporting.</summary>
             internal float MeanStep(float flightSeconds)
             {
                 if (flightSeconds <= 0f) return Dt[0];
@@ -243,20 +224,16 @@ namespace AutoTOT
             }
         }
 
-        /// <summary>
-        /// Set for one replay and cleared afterwards, exactly as <see cref="OfflineMotorScale"/> is.
-        /// Null means fly a constant step, which is every shipped solve and most replays.
-        /// </summary>
+        /// <summary>Set for one replay and cleared afterwards, like <see cref="OfflineMotorScale"/>; null
+        /// flies a constant step.</summary>
         internal static OfflineStepSchedule OfflineSteps;
 
-        /// <summary>Variant B of the hull counterfactual, defined after reading variant A: a round still above
-        /// the hull's top when it comes within 3 u keeps the older stop, so only a round already down at
-        /// hull height ends at the hull.</summary>
+        /// <summary>Hull counterfactual variant B: a round still above the hull's top within 3 u keeps the
+        /// older stop, so only a round already down at hull height ends at the hull.</summary>
         internal static bool OfflineHullOnlyWhenLow;
 
-        /// <summary>Counterfactual Q of "PL2 revised" (production-step lateness): the arrival time is
-        /// interpolated inside the step, from the hull's slab entry fraction or the 3 u crossing, instead of
-        /// the start of the first step found inside.</summary>
+        /// <summary>Counterfactual Q: the arrival time is interpolated inside the step (the hull's slab entry
+        /// fraction or the 3 u crossing) instead of taking the start of the first step inside.</summary>
         internal static bool OfflineArrivalInterp;
 
         /// <summary>Counterfactual R: each step moves by the velocity the game realises when it adds the
@@ -268,10 +245,10 @@ namespace AutoTOT
         /// <see cref="OfflineGameStep"/> substeps inside each step, and the step moves at their mean speed.</summary>
         internal static bool OfflineMotorSubsteps;
 
-        /// <summary>Offline counterfactual: substep only the step in which the motor
-        /// burns out. On that step MissileSimulator.CalculateThrustOverTime returns remainingTime * timeWindow instead of
-        /// remainingTime times the sustainer acceleration, so a 0.1 s window loses up to six times what the game's 1/60 s tick
-        /// loses.</summary>
+        /// <summary>Offline counterfactual: substep only the step in which the motor burns out, where
+        /// MissileSimulator.CalculateThrustOverTime returns remainingTime * timeWindow instead of
+        /// remainingTime times the sustainer acceleration, so a 0.1 s window loses up to six times what the
+        /// game's 1/60 s tick loses.</summary>
         internal static bool OfflineBurnoutSubsteps;
 
 
@@ -286,18 +263,18 @@ namespace AutoTOT
         /// older arrival test ends a flight; NaN when it never got there.</summary>
         internal static float OfflineHeightAtCloseU = float.NaN;
 
-        /// <summary>Offline counterfactual: the round leaves ToBearing for good on
-        /// the first step it is inside the cone or past the time cap (Missile.cs:343; only the Launch and GoToSurface states
-        /// enter ToBearing, :188 and :253), instead of re-entering whenever the step's own test reads true again.</summary>
+        /// <summary>Offline counterfactual: the round leaves ToBearing for good on the first step inside the
+        /// cone or past the time cap (Missile.cs:343; only Launch and GoToSurface enter ToBearing, :188 and
+        /// :253), instead of re-entering whenever the step's own test reads true.</summary>
         internal static bool OfflineToBearingLatch;
 
         /// <summary>Steps of the last replay on which the step's ToBearing test read true after the round had left
         /// ToBearing. Reset by <see cref="SolveOffline"/>.</summary>
         internal static int OfflineToBearingReentrySteps;
 
-        /// <summary>Counterfactual M2: TerminalApproach waits for TerminalDelay (Missile.cs:485-538) in every consumer, not
-        /// only the terminal turn split: the terminal stage's speed and altitude, its latch, and the group leader's
-        /// cash-in.</summary>
+        /// <summary>Counterfactual M2: TerminalApproach waits for TerminalDelay (Missile.cs:485-538) in every
+        /// consumer, not only the terminal turn split: the terminal stage's speed and altitude, its latch,
+        /// and the group leader's cash-in.</summary>
         internal static bool OfflineTerminalDelayGate;
 
         /// <summary>Steps of the last replay flown in the terminal stage before TerminalDelay had passed. Reset by
@@ -332,13 +309,11 @@ namespace AutoTOT
         }
 #endif
 
-        // The upstream corrections of max-solo-error-below-1s.md ("Variant A build", step S2), on in the
-        // mod. Plain statics so the offline lab can turn each off for an A/B; nothing in game writes them,
-        // so the worker threads only ever read them.
+        // Upstream corrections, on in the mod. Plain statics so the offline lab can turn each off for an A/B;
+        // nothing in game writes them, so the worker threads only read them.
 
         /// <summary>A steering look-ahead that reaches a terminal pop-up leg takes that leg's own KappaLoft
-        /// height and climb limit, as Waypoint.CalculateFuturePointRecursive does, instead of its end
-        /// height.</summary>
+        /// height and climb limit, as Waypoint.CalculateFuturePointRecursive does, instead of its end height.</summary>
         internal static bool PopUpLookAhead = true;
 
         /// <summary>A cruise missile's active pop-up leg holds its steering point to TerminalPopUpAngle below
@@ -368,20 +343,18 @@ namespace AutoTOT
         /// on the line from where the round entered it to the terminal height.</summary>
         internal static bool KinematicTerminalLine = true;
 
-        /// <summary>The flight time returned is a double sum of the steps taken. The loop's own clock
-        /// <c>t</c> is float32, and adding the same step to it rounds every sum the same way within a power of
-        /// two: at 0.1 s steps the sum is 0.015 s long by 400 s, at 1/60 s it is 0.05 s short by 400 s and 0.1 s
-        /// short by 600 s. Motion already uses the step itself, so only the reported time carried the error.
-        /// The comparisons inside the loop keep <c>t</c>; their error is far below a step.</summary>
+        /// <summary>The flight time returned is a double sum of the steps taken. The loop's clock <c>t</c> is
+        /// float32, and adding the same step rounds every sum the same way within a power of two (0.05 s
+        /// short by 400 s at 1/60 s). Motion uses the step itself, so only the reported time carried the
+        /// error; comparisons inside the loop keep <c>t</c>.</summary>
         internal static bool DoubleClock = true;
 
-        /// <summary>The drag brake (CalculateDrag handed the round's own height) holds over the seeker window the
-        /// game actually has: the missile's CurrentTarget is null from the seeker's activation, tested on a vector
-        /// flattened to the missile's height, until its detection, a plain 3-D range, both against
-        /// SeekerActiveRange, and only for an ammunition without TargetMemory whose mid-course correction allows
-        /// launcher guidance (SolveInput.SeekerBrakeRangeU, negative when it can never open). Measured to the tick
-        /// on 24 rounds (done/2026-09-13-yj-20-motor-sensitivity.md). A capture without the range keeps the older
-        /// altitude and pitch gate.</summary>
+        /// <summary>The drag brake (CalculateDrag handed the round's own height) holds over the seeker window
+        /// the game has: the missile's CurrentTarget is null from seeker activation, tested on a vector
+        /// flattened to the missile's height, until detection, a 3-D range, both against SeekerActiveRange,
+        /// and only for an ammunition without TargetMemory whose mid-course correction allows launcher
+        /// guidance (SolveInput.SeekerBrakeRangeU, negative when it can never open). A capture without the
+        /// range keeps the older altitude and pitch gate.</summary>
         internal static bool SeekerWindowBrake = true;
 
         /// <summary>A kinematic terminal-linear round whose 1.5 s look-ahead crosses the terminal boundary steers at
@@ -543,21 +516,18 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// The integration loop, as a pure function of <paramref name="i"/>.
-        ///
-        /// <paramref name="ap"/> is passed by reference rather than copied because the game's
-        /// thrust helpers take it directly, but every field reached through it is written once at
-        /// ini load: LiftFactor and MinVelocity here, and _acceleration, _accelerationTime,
+        /// The integration loop, as a pure function of <paramref name="i"/>. <paramref name="ap"/> is passed
+        /// because the game's thrust helpers take it, but every field reached through it is written once at
+        /// ini load (LiftFactor and MinVelocity here; _acceleration, _accelerationTime,
         /// _sustainerBurnAcceleration, _sustainerBurnTime, _maxVelocityInKnots and Kinematics inside
-        /// CalculateThrustOverTime. Concurrent reads of those are safe.
+        /// CalculateThrustOverTime), so concurrent reads are safe.
         /// </summary>
         private static float Solve(in SolveInput i, AmmunitionParameters ap,
                                    ref IntegratedPhases phases, float dt = IntegrationStepSim)
         {
             const float KU = GameUnits.KnotsToUnityPerSecond;
-            // Argument arrays for the MethodInfo fallback, which only runs when the delegate fast
-            // path failed to bind. Allocated on first use: beta always binds, and these were two
-            // allocations on every solve for a branch it never took.
+            // Argument arrays for the MethodInfo fallback, which runs only when the delegate fast path failed
+            // to bind; allocated on first use.
             object[] thrustArgs = null;
             object[] dragArgs = null;
 
@@ -651,17 +621,10 @@ namespace AutoTOT
             float       terminalPopUpProgress  = 0f;
             bool        launchRecoveryDone     = false;
             // The waypoint route. legEff is the active leg with any skip-copied settings applied;
-            // legStartFlat and legStartAlt are the game's _lastWaypointPosition, which follows the
-            // missile until the initial phase ends (Missile.cs:2469-2480).
-            //
-            // 2026-09-13: air-launched rounds fly the route too. The gate that held them out was
-            // written when none had been flown with it; twenty have now, across four ranges, and
-            // the route is worth +0.07 to +1.16 s against the older altitude law's 2.98 s mean. It
-            // could not be lifted before the closest-approach guard above learned about diving
-            // rounds, which is what made it look four times worse. The drop phase that gate's
-            // comment worried about is 1.0 s for usn_agm-84d and does not show above this noise.
-            // `nonKin` and `!isTerminalLoft` are defensive: setup, and the lab's rebuild, only make
-            // a route for such a round.
+            // legStartFlat and legStartAlt are the game's _lastWaypointPosition, which follows the missile
+            // until the initial phase ends (Missile.cs:2469-2480). Air-launched rounds fly the route too.
+            // `nonKin` and `!isTerminalLoft` are defensive: setup, and the lab's rebuild, only make a route
+            // for such a round.
             WaypointLeg[] legs                 = WaypointLegSteering && nonKin &&
                                                  !isTerminalLoft ? i.Legs : null;
             int         legIdx                 = 0;
@@ -671,48 +634,25 @@ namespace AutoTOT
             float       legProgress            = 0f;
             bool        legCashedIn            = false;
 
-            // When launch begins inside the loft/sea-skimming boundary, FastForwardWaypoints
-            // removes the leading Kappa waypoint. The remaining kinematic altitude waypoint is
-            // Immediate with AllowExceedingAngleLimits=true: it aims directly at its fixed-height
-            // look-ahead point instead of clamping the command to MaxLoftAngle. For a VLS round
-            // far below that height this is effectively a 90-degree climb. The finite turn rate
-            // still owns the later nose-over and its resulting altitude overshoot.
+            // Launched inside the loft/sea-skimming boundary, FastForwardWaypoints removes the leading Kappa
+            // waypoint; the remaining kinematic altitude waypoint is Immediate with
+            // AllowExceedingAngleLimits=true, so it aims straight at its fixed-height look-ahead point
+            // instead of clamping to MaxLoftAngle (effectively a 90-degree climb for a VLS round far below
+            // it). The finite turn rate still owns the nose-over and its overshoot.
             bool immediateAltitudeWaypoint = ImmediateAltitudeWaypointOwns(
                 nonKin, lofting, loftEntryDist, flatDistTotal);
             float altitudeClimbCommandDeg = immediateAltitudeWaypoint
                 ? BoostClimbDeg
                 : boostClimbDeg;
 
-            // The receding test below is a closest-approach guard: it ends the flight when the
-            // round stops closing, which is how an overflight terminates. It must not fire
-            // BEFORE the round has ever closed, because a fixed-rail launch deliberately flies
-            // the rail's bearing first (see the launch-heading block a few lines down) and then
-            // turns onto the target. With the rail more than ~90 degrees off, distance grows
-            // from the first step, the guard fired at t = 2*dt, and the estimate came back as
-            // exactly 0.2s for a real 700s shot. Ships never produced it because a trainable
-            // launcher is already pointed at the target; an aircraft's hardpoint points wherever
-            // the nose does, so any turn hit it.
-            //
-            // 2026-09-07: the latch as first written armed on the SEED step. `prevFlat` starts
-            // at float.MaxValue, so the very first `flatDist < prevFlat` is true no matter which
-            // way the round is pointing, and the guard was live again by t = 2*dt. The run that
-            // day still produced 0.20s eleven times; only the plausibility floor caught them.
-            // `havePrev` makes the first real step the first comparison.
-            //
-            // 2026-09-09: one step of closing is still not closing. A Chandler's Harpoon sits on a
-            // canister that cannot train (`fixedRail True, containersRotatable False`), and with the
-            // target 89 degrees off the rail the round flies almost square to the line of sight. The
-            // TARGET's own motion then shortens the range for a step or two, which armed the latch,
-            // and the next step receded and ended the flight: 2.00s returned for a shot whose
-            // straight-line floor was 337.2s, eleven times across two runs. The comment above
-            // predicted this only past 90 degrees, and believed ships immune because a trainable
-            // launcher already points at the target; this launcher does not train.
-            //
-            // So the latch now needs the range to have fallen MEANINGFULLY below where it started,
-            // by more than a wobble of that kind can produce. Overflight, which is what the guard is
-            // for, clears the margin by kilometres long before the round arrives. A round that can
-            // never catch its target now runs to maxFlight and is answered by another tier, which is
-            // the honest outcome; before, it returned a fabricated 2 seconds.
+            // The receding test below is a closest-approach guard: it ends the flight when the round stops
+            // closing, which is how an overflight terminates. It must not fire before the round has
+            // meaningfully closed. A fixed rail flies its own bearing first (an aircraft hardpoint points
+            // wherever the nose does, a non-training canister can sit 90 degrees off the line of sight), so
+            // the range can grow from the first step, and the target's own motion can shorten it for a step
+            // or two. So the latch needs the range to fall below its start by more than such a wobble,
+            // compared from the first real step (`havePrev`). Overflight clears the margin by kilometres; a
+            // round that can never catch its target runs to maxFlight and another tier answers.
             bool hasClosed = false;
             float prevSlant = float.MaxValue;
             bool havePrev = false;
@@ -729,8 +669,7 @@ namespace AutoTOT
             bool kappaStartSet = false;
             float kappaStartY = 0f, kappaStartFlat = 0f;
             float lineStartY = 0f, lineStartFlat = 0f;
-            // The round's position relative to the ship's centre on the previous step, for the hull's
-            // swept test.
+            // The round's position relative to the ship's centre on the previous step, for the hull's swept test.
             Vector3 prevRel = Vector3.zero;
             bool havePrevRel = false;
             double clock = t;
@@ -745,9 +684,8 @@ namespace AutoTOT
             while (t < maxFlight)
             {
 #if AUTOTOT_OFFLINE
-                // Fly the steps this round actually flew. Guarded rather than branch-free because
-                // the shipped mod always integrates at a constant step and must not pay for a test
-                // it can never take; the motor multiplier above is offline-only for the same reason.
+                // Fly the steps this round actually flew. Guarded, since the shipped mod always integrates at
+                // a constant step and must not pay for the test.
                 if (sched != null)
                 {
                     while (schedIdx + 1 < sched.At.Length && t >= sched.At[schedIdx + 1]) schedIdx++;
@@ -775,16 +713,11 @@ namespace AutoTOT
                     closeMargin = Mathf.Max(CloseEnoughDistU, startFlat * RecedeCloseFraction);
                 }
 
-                // 2026-09-13: flat range alone is the wrong test for closest approach when the
-                // round is diving. A terminal waypoint with AllowExceedingAngleLimits left at its
-                // default true and PitchMode Immediate commands a round straight down, and the game
-                // flies it: usn_agm-84d launched 10.8 km out from 20,000 ft holds -90 degrees for
-                // eleven seconds with its x and z frozen. Flat range then stops shrinking, and a
-                // target under way pushes it back up, so the guard fired at 7.1 s of a 56.8 s
-                // flight. Requiring slant range to recede too cannot strand the solve: the guard is
-                // only deferred while the round is trading altitude for nothing, and there is a
-                // finite amount of that to trade, so once it levels out dy goes to zero and slant
-                // recedes exactly when flat does.
+                // Flat range alone is the wrong closest-approach test for a diving round: a terminal waypoint
+                // with AllowExceedingAngleLimits left true and PitchMode Immediate commands a round straight
+                // down, and the game flies it with x and z frozen while a target under way pushes flat range
+                // back up. Requiring slant range to recede too cannot strand the solve: the guard waits only
+                // while the round trades altitude, and once it levels out slant recedes exactly when flat does.
                 float slantDy = pos.y - predTgt.y;
                 float slantDist = Mathf.Sqrt(flatDist * flatDist + slantDy * slantDy);
                 // Arrival: the step that passes through the target's hull, or 3 u from the centre of a
@@ -875,16 +808,11 @@ namespace AutoTOT
                 Vector3 horizDir = flatDist > 1e-4f
                     ? new Vector3(dx / flatDist, 0f, dz / flatDist) : Vector3.forward;
                 Vector3 horizDirTarget = horizDir;   // where the round wants to point
-                // Dropping `nonKin` here is deliberate. The gate was written believing the single
-                // combined rotation budget was reached only on the legacy path, but the
-                // Kinematics == Full path spends one budget too: a surface target with the default
-                // TerminalVerticalTurnRate takes one Vector3.RotateTowards covering yaw and pitch
-                // together (WeaponBase.setCourseTowardsPosition, the else of the
-                // |terminalRate - rate| > 1 split), and an air target takes a single 3-D cone
-                // rotation. Modelling the axes independently for kinematic ammo spent the budget
-                // twice, exactly the error this gate removes for non-kinematic ammo. What stays
-                // nonKin-only is BankingAddsRollBudgetToPitch: only the legacy path folds roll into
-                // the same quaternion.
+                // Not gated on `nonKin`: the Kinematics == Full path spends one budget too. A surface target
+                // with the default TerminalVerticalTurnRate takes one Vector3.RotateTowards covering yaw and
+                // pitch (WeaponBase.setCourseTowardsPosition, the else of the |terminalRate - rate| > 1
+                // split), and an air target a single 3-D cone rotation. What stays nonKin-only is
+                // BankingAddsRollBudgetToPitch: only the legacy path folds roll into the same quaternion.
                 bool coupledTurn = CoupledPitchYawRateLimit
                                 && launchHeading.sqrMagnitude > 0.5f && t >= initialPhaseDur;
 
@@ -929,11 +857,10 @@ namespace AutoTOT
                                          toBearingTurnRate > stepTurnRate;
                 if (toBearingOverride)
                     stepTurnRate = toBearingTurnRate;
-                // The roll addend reaches pitch only where the mover spends one combined rotation.
-                // With the override in force the rate differs from MaxTurnRate, so the legacy mover
-                // takes its three-rotation branch and pitch is its own RotateTowards at the override
-                // rate: plan_yj-18a pitches over at 50.0 deg/s through ToBearing at 0.167 s sampling,
-                // its LaunchTurnRate, where the addend made the model fly 110.
+                // The roll addend reaches pitch only where the mover spends one combined rotation. With the
+                // override in force the rate differs from MaxTurnRate, so the legacy mover takes its
+                // three-rotation branch and pitch turns at the override rate (plan_yj-18a pitches over at its
+                // LaunchTurnRate, 50 deg/s).
                 if (!(ToBearingOverrideOwnsPitch && toBearingOverride))
                     stepTurnRate += bankingRollAddend;
 
@@ -993,30 +920,21 @@ namespace AutoTOT
                         stageTgt = (loftSpeedHoldDist > 0f && switchFlat > loftSpeedHoldDist)
                                  ? loftVelKn : maxVelKn;
                     }
-                    // A round only enters the loft if it was LAUNCHED outside the sea-skimming
-                    // boundary. Coming out of ToBearing the stage is not MaintainLoftAlt, so the
-                    // `_loftToSkim || stage != MaintainLoftAlt` clause at Missile.cs:641 is true for
-                    // every ammunition and the sea-skimming branch wins; once there, `num` is 2 and
-                    // the loft branch (`num <= 1`) is unreachable for the rest of the flight.
-                    // `lofting` alone is a property of the AMMUNITION (loftAlt > launchAlt) and is
-                    // true at every range, so it says the round CAN loft, not that it WILL.
-                    //
-                    // Tested on the launch RANGE rather than the running distance: entry is decided
-                    // once, at ToBearing, and cannot be re-entered later.
-                    //
-                    // Measured 2026-09-08 inside the band where the two disagree: ss-n-12 at 90.6nmi
-                    // +11.6s and ss-n-19 at 91.5nmi -4.8s, the model climbing to 44300 and 50000ft
-                    // while both rounds sea-skimmed. The signs differ because a long spurious loft
-                    // repays its climb at loft speed and a short one does not.
+                    // A round enters the loft only if launched outside the sea-skimming boundary. Coming out
+                    // of ToBearing the stage is not MaintainLoftAlt, so the `_loftToSkim || stage !=
+                    // MaintainLoftAlt` clause at Missile.cs:641 is true for every ammunition and the
+                    // sea-skimming branch wins; `num` is then 2 and the loft branch (`num <= 1`) is
+                    // unreachable for the rest of the flight. `lofting` alone is a property of the ammunition
+                    // and says the round can loft, not that it will. Tested on the launch range, since entry
+                    // is decided once, at ToBearing.
                     else if (loftPath)
                     {
                         stageTgt = loftVelKn;
-                        // The live kinematic path flies a KappaLoft waypoint whose ceiling has
-                        // already been replaced by TuneWaypoints. Setup stores the game's sampled
-                        // Kappa curve in altNodes. LoftProfileAltU remains for old captures which
-                        // predate those resolved nodes, and in game only where the sample is not
-                        // there: a leg too short to sample, or a failed bind or sample, which setup
-                        // now warns about. Cruise missiles still hold the configured ceiling.
+                        // The live kinematic path flies a KappaLoft waypoint whose ceiling TuneWaypoints
+                        // already replaced; setup stores the game's sampled Kappa curve in altNodes.
+                        // LoftProfileAltU remains for older captures and where no sample exists (a leg too
+                        // short to sample, or a failed bind or sample, which setup warns about). Cruise
+                        // missiles hold the configured ceiling.
                         stageAlt = (!nonKin && altNodes != null)
                             ? InterpNodeAlt(altNodes, xNow)
                             : (!nonKin && loftClimbTan > 0f)
@@ -1029,12 +947,10 @@ namespace AutoTOT
                     else
                     {
                         phase = 1;
-                        // A kinematic Kappa waypoint whose tuned loft height is at the launch
-                        // floor stays on the target-level path. Do not reuse the ammunition's
-                        // defaulted cruise ceiling here: that field can alias MaxLoftAlt when the
-                        // ammunition does not define a separate cruise altitude.
-                        // Explicit final/sea-skimming stages were handled by the branch above and
-                        // deliberately keep their configured altitude.
+                        // A kinematic Kappa waypoint whose tuned loft height is at the launch floor stays on
+                        // the target-level path. The ammunition's defaulted cruise ceiling must not be reused
+                        // here: it can alias MaxLoftAlt. Explicit final and sea-skimming stages were handled
+                        // above and keep their altitude.
                         stageAlt = ResolveUnstagedAltitude(
                             nonKin, lofting, targetAlt0, switchFlat, finalFlightDist,
                             finalFlightAlt, cruiseAlt);
@@ -1045,11 +961,10 @@ namespace AutoTOT
                     float targetPitch = 0f;
                     float diveDeg = isHighBallisticLofter ? descentOnsetDeg : descentDeg;
 
-                    // The game's ToBearing test: angle between the missile's attitude and the
-                    // line to its aim point, against a 5 deg cone, with a 10.0s cap
-                    // inToBearing is resolved at the top of the step, because the launch turn
-                    // rate it selects has to reach the heading slew as well as the pitch step.
-                    // Launch and ToBearing both command _maxVelocityInKnots (Missile.cs:3142).
+                    // The game's ToBearing test: the angle between the missile's attitude and the line to its
+                    // aim point, against a 5 deg cone with a 10.0 s cap; inToBearing is resolved at the top
+                    // of the step, since its turn rate reaches the heading slew too. Launch and ToBearing
+                    // both command _maxVelocityInKnots (Missile.cs:3142).
                     if (LaunchStageSpeed && (t < initialPhaseDur || inToBearing))
                         stageTgt = maxVelKn;
 
@@ -1079,10 +994,9 @@ namespace AutoTOT
                     else if (altErr > AltToleranceU) targetPitch = altitudeClimbCommandDeg;
                     else if (altErr < -AltToleranceU) targetPitch = -diveDeg;
 
-                    // Missile.SetMissileCourse's pre-apex guard, approximated with unstretched
-                    // look-ahead points. Only for rounds that fly without a waypoint route (air-
-                    // launched, or replayed from a capture older than rich-flight-v3); the route
-                    // block below runs the exact guard on the real points.
+                    // Missile.SetMissileCourse's pre-apex guard, approximated with unstretched look-ahead
+                    // points, for rounds without a waypoint route (an air target, or a capture older than
+                    // rich-flight-v3); the route block below runs the exact guard on the real points.
                     bool nonKappaImmediate = phase == 0 && nonKin;
                     if (legs == null && nonKappaImmediate && !holdingAlt && t >= initialPhaseDur)
                     {
@@ -1142,16 +1056,14 @@ namespace AutoTOT
                         }
                         else
                         {
-                            // A group leader cashes its group in on entering TerminalApproach and
-                            // rebuilds its route (Missile.cs:858-862, MissileGroup.cs:199-201):
-                            // CreateWaypoints builds every leg from the launch point and ends with
-                            // FastForwardWaypoints (Missile.cs:2769-2835), which drops each leg whose
-                            // distance the round is already inside. So only the final leg survives,
-                            // started from the round's position, unless another leg's boundary lies
-                            // inside the entry distance, and no groupable ammunition declares a
-                            // terminal pop-up. GuardTrack showed exactly this on all six rounds flown
-                            // with it. The entry distance is TermDist, the seeker search after the
-                            // terminal boundary, which is where those six entered to within a tick.
+                            // A group leader cashes its group in on entering TerminalApproach and rebuilds
+                            // its route (Missile.cs:858-862, MissileGroup.cs:199-201): CreateWaypoints builds
+                            // every leg from the launch point and ends with FastForwardWaypoints
+                            // (Missile.cs:2769-2835), dropping each leg the round is already inside. So only
+                            // the final leg survives, started from the round's position, unless another leg's
+                            // boundary lies inside the entry distance (no groupable ammunition declares a
+                            // terminal pop-up). The entry distance is TermDist, the seeker search past the
+                            // terminal boundary.
 #if AUTOTOT_OFFLINE
                             if (i.GroupLeader && !legCashedIn && legFlat <= termDist &&
                                 legIdx < legs.Length - 1 && (!OfflineTerminalDelayGate || t >= terminalDelaySec))
@@ -1448,10 +1360,9 @@ namespace AutoTOT
 
                     if (launchPitch >= 0f && t < initialPhaseDur)
                     {
-                        // Missile.Launch rotates a nose-high round down at a fixed 6 deg/s when
-                        // this ammunition flag is set. This is a controller law, not an empirical
-                        // offset: RGM-109B's 3 s launch therefore leaves at 72 degrees, while an
-                        // SS-N-19 launched at 45 degrees for 5 s leaves at 15 degrees.
+                        // Missile.Launch rotates a nose-high round down at a fixed 6 deg/s when this
+                        // ammunition flag is set: a controller law, not an empirical offset (a 3 s launch
+                        // leaves RGM-109B at 72 degrees).
                         targetPitch = slightBallisticLaunch
                             ? Mathf.Max(10f, launchPitch - 6f * (t + dt))
                             : launchPitch;
@@ -1469,13 +1380,11 @@ namespace AutoTOT
                           Mathf.Abs(terminalVerticalRate - (nonKin ? turnRateBase : stepTurnRate)) > 1f
                         : terminalPopUpActiveThisStep && terminalVerticalRate > 0f &&
                           Mathf.Abs(terminalVerticalRate - stepTurnRate) > 1f;
-                    // The ballistic launch rotation is performed directly on pitch. When ordinary
-                    // guidance resumes, SetMissileCourse restores that pitch at MaxTurnRate; the
-                    // separate banking/roll budget must not snap the nose back to the climb command.
-                    // The game reads the flag only in the Launch and GoToSurface states
-                    // (Missile.cs:163, :246), so this ends the first time the nose reaches its
-                    // command. Left open, it re-armed on every later pull-up, including dive
-                    // pull-outs, and flew SS-N-3B's terminal level-off 5u below the sea.
+                    // The ballistic launch rotation acts directly on pitch. When ordinary guidance resumes,
+                    // SetMissileCourse restores that pitch at MaxTurnRate, and the separate banking/roll
+                    // budget must not snap the nose back to the climb command. The game reads the flag only
+                    // in Launch and GoToSurface (Missile.cs:163, :246), so this ends the first time the nose
+                    // reaches its command; left open, it would re-arm on every later pull-up.
                     bool splitLaunchRecovery = slightBallisticLaunch && !launchRecoveryDone &&
                         t >= initialPhaseDur && targetPitch > prevPitch + 0.01f &&
                         turnRateBase > 0f;
@@ -1565,19 +1474,17 @@ namespace AutoTOT
                 else
                 {
                     velKnots += thrust;
-                    // The brake holds over the seeker window (SeekerWindowBrake): flat range inside the seeker
-                    // range, slant range still outside it. Tried on 2026-09-13 it only moved plan_yj-20's bias
-                    // between launch-range bands; the band dependence was the old geometric dive onset, and with
-                    // the terminal line and its look-ahead the window takes that family's common apex mode from
-                    // +2.18 to -0.21 s (max-solo-error-below-1s.md, "YL result").
+                    // The brake holds over the seeker window (SeekerWindowBrake): flat range inside the
+                    // seeker range, slant range still outside it.
                     bool inVacuumDive = SeekerWindowBrake && seekerBrakeRangeU != 0f
                         ? seekerBrakeRangeU > 0f && flatDist < seekerBrakeRangeU && slantDist > seekerBrakeRangeU
                         : phase == 2 && pos.y > ZeroDensityAltU && pitchDeg < VacuumDivePitchThreshold;
                     float dragTargetAlt = inVacuumDive ? pos.y : predTgt.y;
 #if AUTOTOT_OFFLINE
                     float offlineDragRate = -pitchRate * OfflineDragPitchRateScale;
-                    // M4: the step in which the motor burns out, found with the game's own thrust function, which returns
-                    // exactly 0 once both burns are over (a partial-kinematics sustain phase returns a negative value).
+                    // M4: the step in which the motor burns out, found with the game's own thrust function,
+                    // which returns exactly 0 once both burns are over (a partial-kinematics sustain phase
+                    // returns a negative value).
                     bool offlineBurnoutStep = OfflineBurnoutSubsteps && motorBurning && _thrustFn != null &&
                                               OfflineGameStep > 0f &&
                                               _thrustFn(ap, isAir, OfflineThrustClock(t + dt), OfflineGameStep) == 0f;

@@ -3,14 +3,8 @@ using SeaPower;
 namespace AutoTOT
 {
     /// <summary>
-    /// The one way this mod turns a game object into a name for a log line or a panel row.
-    ///
-    /// Three near-copies of this used to exist (in Coordinator, LaunchDiagnostics and Hud) and they
-    /// disagreed in both directions: two fell back to the Unity object name when
-    /// <c>getUIDAndName</c> threw and one returned "?", and they returned "-" or "?" or threw for a
-    /// null. The panel copy was the one with no null guard, and it labels ship rows, so this is not
-    /// a logging-only helper. The union below is what every caller wanted: never throw, and give up
-    /// the informative name last rather than first.
+    /// The one way this mod turns a game object into a name for a log line or a panel row: it never throws,
+    /// and gives up the informative name last.
     /// </summary>
     internal static class UnitNaming
     {

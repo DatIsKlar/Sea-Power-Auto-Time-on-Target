@@ -19,30 +19,24 @@ namespace AutoTOT
         // declares no _maxFlightTime.
         internal const float EvasiveBoostFraction = 0.8f;
         internal const float MaxFlightTimeFallback = 600f;
-        /// Hard ceiling on the integration loop, for ammunition that declares MaxFlightTime as
-        /// float.MaxValue (most of them). The loop's other exit is the closest-approach test, and a
-        /// round that never closes and never recedes would otherwise spin: past t = 2^24 * dt a
-        /// float t stops advancing at all. Four hours is well clear of anything physical. The
-        /// longest-ranged ammunition on disk, plan_cj-20, needs 11,077 s to fly its 1600 nm at its
-        /// own cruise speed, and the longest flight ever recorded in the corpus is 1,239 s.
+        /// <summary>
+        /// Hard ceiling on the integration loop, for ammunition that declares MaxFlightTime as float.MaxValue
+        /// (most). The loop's other exit is the closest-approach test, and a round that never closes or
+        /// recedes would spin: past t = 2^24 * dt a float t stops advancing. Four hours is well clear of
+        /// anything physical; the longest-ranged ammunition needs about three at cruise speed.
+        /// </summary>
         internal const float SolveLoopCeilingSim = 4f * 3600f;
 
         /// <summary>
-        /// The target velocity every estimator reads: the game's <c>_velocityVecInUnity</c>, with a
-        /// surface ship's float32 rounding applied (<see cref="GameMath.TranslateRoundedVelocity"/>).
+        /// The target velocity every estimator reads: the game's <c>_velocityVecInUnity</c>, with a surface
+        /// ship's float32 rounding applied (<see cref="GameMath.TranslateRoundedVelocity"/>). That field is
+        /// what <c>Vessel.applyMainThrust</c> hands <c>Translate</c> each tick, not what the transform
+        /// realises: a slow ship away from the map origin moves at roughly 0.87 to 1.15 of its speed. Only a
+        /// <c>Vessel</c> is rounded; a submarine's thrust path does not Translate, and an aircraft's per-tick
+        /// move is large enough that rounding is negligible.
         ///
-        /// <c>_velocityVecInUnity</c> is what <c>Vessel.applyMainThrust</c> hands <c>Translate</c>
-        /// each tick, not what the transform does with it. A slow ship away from the map origin
-        /// realises a different rate, roughly 0.87 to 1.15 of its speed at a few thousand units, and
-        /// over a 500 s flight that moves the true aim point by more than 200 m. Only a
-        /// <c>Vessel</c> is rounded: its per-tick move is exactly
-        /// <c>_velocityVecInUnity * fixedDeltaTime</c>. A submarine's ordinary thrust path does not
-        /// Translate, and an aircraft's per-tick move is large enough that rounding changes it by well
-        /// under one percent.
-        ///
-        /// <paramref name="step"/> is the physics step the rounding used, from
-        /// <see cref="PredictedPhysicsStep"/>, and 0 when none was applied.
-        /// Main thread only: reads the target's transform and the game's step.
+        /// <paramref name="step"/> is the physics step the rounding used
+        /// (<see cref="PredictedPhysicsStep"/>), 0 when none was applied. Main thread only.
         /// </summary>
         internal static Vector3 TargetMapVelocity(ObjectBase target, out float step)
         {
@@ -57,8 +51,7 @@ namespace AutoTOT
         internal static Vector3 TargetMapVelocity(ObjectBase target) => TargetMapVelocity(target, out _);
 
         /// <summary>The two values <c>GameTime.SetAdaptiveFixedDeltaTime</c> gives
-        /// <c>Time.fixedDeltaTime</c>: 1/30 s while the frame rate is under 30, 1/60 s once it is
-        /// over 40.</summary>
+        /// <c>Time.fixedDeltaTime</c>: 1/30 s while the frame rate is under 30, 1/60 s once it is over 40.</summary>
         internal const float BaseStep60Hz = 0.0166667f, BaseStep30Hz = 0.0333333f;
 
         /// <summary>Time constant of the step history, and the history needed before it is trusted
@@ -95,17 +88,12 @@ namespace AutoTOT
 
         /// <summary>
         /// The physics step a ship will move at over a flight, for
-        /// <see cref="TargetMapVelocity(ObjectBase, out float)"/>.
-        ///
-        /// Not the live step. The game drops to 1/30 s whenever the frame rate dips under 30 and
-        /// returns to 1/60 s once it recovers, which every mission load and any busy moment does for a
-        /// few seconds, and the rounding differs completely between the two: the same ship moves at
-        /// 0.870 of its speed at one and 1.014 at the other. A solve made inside such a stretch would
-        /// carry the wrong rate for the whole flight. So the base step is the one the game has held for
-        /// most of the last minute of sim time, and 1/60 s until 20 s have been seen, which covers the
-        /// load. The compression scaling GameTime applies above its physics cap
-        /// (<c>Time.fixedDeltaTime * TimeCompression / cap</c>) is taken from the live values, since
-        /// compression is a setting rather than a transient.
+        /// <see cref="TargetMapVelocity(ObjectBase, out float)"/>. Not the live step: the game drops to 1/30
+        /// s whenever the frame rate dips under 30 (every mission load, any busy moment), and the rounding
+        /// differs completely between the two steps. So the base step is the one held for most of the last
+        /// minute of sim time, 1/60 s until 20 s have been seen. The compression scaling above the physics
+        /// cap (<c>Time.fixedDeltaTime * TimeCompression / cap</c>) comes from the live values, since
+        /// compression is a setting.
         /// </summary>
         internal static float PredictedPhysicsStep()
         {
@@ -117,13 +105,10 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// The evasive-target speed boost the game applies before simulating a shot: push the
-        /// target's velocity away from the shooter by <see cref="EvasiveBoostFraction"/> of its own
-        /// speed, then renormalize so the boost changes direction without adding speed. No-op when
-        /// the target is stationary or the ammo does not assume evasion.
-        ///
-        /// Main thread only: reads <c>ap.AssumeEvasiveTarget</c>, which touches game state. Both
-        /// callers (the integrator's setup half and WaypointSim.EndTime) are on that path.
+        /// The evasive-target speed boost the game applies before simulating a shot: push the target's
+        /// velocity away from the shooter by <see cref="EvasiveBoostFraction"/> of its own speed, then
+        /// renormalize, so it turns without adding speed. No-op for a stationary target or ammo that does not
+        /// assume evasion. Main thread only (reads <c>ap.AssumeEvasiveTarget</c>).
         /// </summary>
         internal static void ApplyEvasiveBoost(AmmunitionParameters ap, ObjectBase target,
             Vector3 launchPos, Vector3 targetPos, ref Vector3 targetVel)
@@ -174,8 +159,8 @@ namespace AutoTOT
             return true;
         }
 
-        // Every order of a strike holds an entry at once, keyed by shooter, ammunition and target. A
-        // 522-order strike overflowed the old 512, so the room is sized well past any strike.
+        // Every order of a strike holds an entry at once, keyed by shooter, ammunition and target, so the
+        // room is sized well past any strike.
         private const int EstimateCacheCapacity = 4096;
         private static readonly TtlCache<TofKey, float> _cache =
             new TtlCache<TofKey, float>(CacheTtlSeconds, EstimateCacheCapacity);
@@ -184,15 +169,10 @@ namespace AutoTOT
         private static readonly TtlCache<TofKey, float> _fallbackCache =
             new TtlCache<TofKey, float>(CacheTtlSeconds, EstimateCacheCapacity);
 
-        // Display-only memo in front of Estimate. The panel asks for an ETA per visible row per
-        // frame, ~90 calls, and at the 0.5s firing TTL a couple of those fell through to a full
-        // 4300-step integration EVERY FRAME purely to draw a text label: 4.2ms/frame, 20% of a frame,
-        // even with nothing in flight.
-        //
-        // This does not introduce a second estimator. It returns exactly what Estimate returns, just
-        // recomputed less often, so a label can be up to DisplayCacheTtlSeconds stale -- about 1% of
-        // a 500s flight, invisible in text rounded to the second. Firing decisions never read this
-        // cache and are unaffected.
+        // Display-only memo in front of Estimate: the panel asks for an ETA per visible row per frame, and at
+        // the 0.5 s firing TTL some of those would run a full integration every frame to draw a label. It
+        // returns exactly what Estimate returns, up to DisplayCacheTtlSeconds stale (invisible in text
+        // rounded to the second); firing decisions never read it.
         private const float DisplayCacheTtlSeconds = 5f;
         private static readonly TtlCache<TofKey, float> _displayCache =
             new TtlCache<TofKey, float>(DisplayCacheTtlSeconds);
@@ -222,10 +202,9 @@ namespace AutoTOT
             float kinematic = Kinematic(unit, ap, target);
             if (kinematic > MinValidSeconds) return kinematic;
 
-            // The kinematic tier ran and declined, so this call paid for a full integration whatever
-            // the straight-line cache does next. Leave _lastCallWasHit false (Kinematic set it on
-            // its way through): raising it here charged that integration to the profiler's cache-hit
-            // bucket, which is the accounting error CoordinatorProfiler.CountCachedHit documents.
+            // The kinematic tier ran and declined, so this call paid for a full integration. Leave
+            // _lastCallWasHit false (Kinematic set it) so the profiler does not count that integration as a
+            // cache hit; see CoordinatorProfiler.CountCachedHit.
             if (_fallbackCache.TryGet(key, out float cachedFallback)) return cachedFallback;
 
             float speedMs = ap._maxVelocityInKnots * GameUnits.KnotsToMs;
@@ -239,17 +218,12 @@ namespace AutoTOT
         /// The state of a shooter at the instant a round left its rail: everything
         /// <see cref="TryBuildSolveInput"/> would otherwise read live from the platform.
         ///
-        /// One rule produces every timing correction for a moving shooter: <b>pair a launch time with a flight
-        /// estimate valid AT that launch time</b>. <see cref="Estimate"/> cannot express it, because
-        /// it takes the shooter as an <see cref="ObjectBase"/> and reads <c>transform.position</c>,
-        /// so it can only ever answer "from where the shooter is now". For a ship the two readings
-        /// describe the same place; for an aircraft closing at 540kn the answer walks earlier by the
-        /// distance flown, and the shared impact of a strike walks with it.
-        ///
-        /// The rail heading is carried because the launch bearing is the actual geometry the round
-        /// flew, and by the time the
-        /// prediction re-runs the aircraft has turned. Pitch is still read from the live rail: it is
-        /// an elevation in the platform's own frame and does not drift as the platform manoeuvres.
+        /// One rule produces every timing correction for a moving shooter: <b>pair a launch time with a
+        /// flight estimate valid at that launch time</b>. <see cref="Estimate"/> reads the shooter's current
+        /// <c>transform.position</c>; for an aircraft closing at 540 kn that answer walks earlier by the
+        /// distance flown, and a strike's shared impact with it. The rail heading is carried because the
+        /// platform turns before the prediction re-runs; pitch is read from the live rail, since an elevation
+        /// in the platform's own frame does not drift.
         /// </summary>
         internal readonly struct LaunchState
         {
@@ -258,15 +232,10 @@ namespace AutoTOT
             internal readonly float   VelKnots;     // shooter speed at launch
             internal readonly Vector3 HeadingFlat;  // rail bearing at launch, flat; zero = unknown
             /// <summary>
-            /// Where the TARGET was when this shot was taken. Zero = use the target's live position,
-            /// which is the normal case and every existing caller.
-            ///
-            /// Only set by the retargeting diagnostic, which asks "what would the model have
-            /// predicted for a shot at the ship this round actually hit". That ship's position at
-            /// launch was never recorded, because nobody knows in advance which ship a seeker will
-            /// pick, so it is back-projected from where the ship was at impact. Passing the live
-            /// position instead would bias the answer long by the whole distance the ship covered
-            /// during the flight.
+            /// Where the target was when this shot was taken; zero means its live position, the normal case.
+            /// Set only by the retargeting diagnostic, which back-projects the position of the ship a round
+            /// actually hit from where it was at impact; the live position would bias the answer long by the
+            /// ship's whole travel.
             /// </summary>
             internal readonly Vector3 TargetPosU;
 
@@ -284,18 +253,12 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// <see cref="Estimate"/> for a round that has ALREADY launched: the same integrator, run
-        /// from the recorded launch state instead of from wherever the shooter is now.
-        ///
-        /// Deliberately uncached. The answer is a constant of one launch, so the caller memoises it
-        /// against the launch observation and this runs once per round, where the shared TTL cache
-        /// is keyed on the live shooter and would be wrong for this question.
-        ///
-        /// The lower tiers cannot take an origin override, so this DECLINES (-1) rather than
-        /// answering from a cruder model. The caller then falls back to the live estimate, which is
-        /// a real integration of the wrong launch point and beats a straight-line floor from the
-        /// right one. The plausibility floor is applied from the recorded position, since that is
-        /// where this shot actually started.
+        /// <see cref="Estimate"/> for a round that has already launched: the same integrator, run from the
+        /// recorded launch state. Uncached: the answer is a constant of one launch, which the caller
+        /// memoises, and the shared cache is keyed on the live shooter. The lower tiers take no origin
+        /// override, so this declines (-1) rather than answer from a cruder model; the caller's live
+        /// estimate, a real integration from the wrong point, beats a straight-line floor from the right one.
+        /// The plausibility floor is measured from the recorded position.
         /// </summary>
         internal static float EstimateFromLaunch(ObjectBase unit, string ammoId, ObjectBase target,
                                                  in LaunchState launch)
@@ -476,9 +439,9 @@ namespace AutoTOT
         private static bool _interceptTimeLookedUp;   // the result type is fixed per session, so is a miss
 
         /// <summary>
-        /// Fraction of the straight-line, top-speed flight time below which a result is not
-        /// slow-but-wrong, it is broken. A real shot is always SLOWER than range over max speed and
-        /// never faster, so this is a bound the physics guarantees rather than a tuned number.
+        /// Fraction of the straight-line, top-speed flight time below which a result is broken rather than
+        /// slow: a real shot is never faster than range over max speed, so this bound comes from the physics,
+        /// not tuning.
         /// </summary>
         private const float PlausibleFloorFraction = 0.5f;
 
@@ -508,11 +471,9 @@ namespace AutoTOT
 
         /// <summary>
         /// True when a candidate estimate is physically impossible for this shot.
-        ///
-        /// <see cref="MinValidSeconds"/> is 0.01s and exists to mean "the model declined", not "the
-        /// model answered absurdly". A 0.2s answer for a 195 km shot passed it, was cached, and
-        /// reached the coordinator as a real flight time, where it either stole the anchor role or
-        /// set the shared impact in the past.
+        /// <see cref="MinValidSeconds"/> (0.01 s) only means "the model declined", so an absurdly short
+        /// answer would otherwise reach the coordinator as a flight time and steal the anchor role or set the
+        /// shared impact in the past.
         /// </summary>
         internal static bool IsImplausible(float seconds, ObjectBase unit, AmmunitionParameters ap,
                                            ObjectBase target)

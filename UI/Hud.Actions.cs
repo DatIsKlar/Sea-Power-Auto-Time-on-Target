@@ -6,16 +6,14 @@ using UnityEngine;
 namespace AutoTOT
 {
     /// <summary>
-    /// Hud (partial) ; actions: firing and arming the strike, adding the selection to the strike
-    /// or the shooter roster, and the strike's target and collected-order lists.
+    /// Hud (partial): actions, meaning firing and arming the strike, adding the selection to the strike or
+    /// the shooter roster, and the strike's target and collected-order lists.
     /// </summary>
     internal sealed partial class Hud
     {
         /// <summary>
-        /// Fire whatever the strike holds, from the hotkey. Same commit the panel's FIRE STRIKE
-        /// button makes, so a strike built earlier can be launched with the panel hidden; a hidden
-        /// panel is a normal way to play, and having to open one to press a button you already
-        /// decided on is a delay the shot cannot always afford.
+        /// Fire whatever the strike holds, from the hotkey: the same commit as the panel's FIRE STRIKE
+        /// button, so a strike can be launched with the panel hidden.
         /// </summary>
         private void FireStrikeNow()
         {
@@ -26,8 +24,8 @@ namespace AutoTOT
                 return;
             }
             Bootstrap.Log.LogInfo($"[AutoTOT] firing strike from hotkey: {held} order(s).");
-            // Cleared even if the fire throws: a pick left staged would be fired again by the next
-            // press, and a duplicate launch cannot be taken back where a lost pick can be re-staged.
+            // Cleared even if the fire throws: a pick left staged would fire again on the next press, and a
+            // duplicate launch cannot be taken back where a lost pick can be re-staged.
             try { Coordinator.FireStrike(_strike); }
             finally { _strike.Clear(); }
         }
@@ -39,13 +37,10 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// Stage the currently checked rows against the current target. Rows already staged for the
-        /// same shooter, ammo and target are replaced rather than doubled up.
-        ///
-        /// The ticks stay as they are. A tick belongs to a ship and a missile type, not to a target,
-        /// so a strike across several targets is built by picking each target in turn and pressing
-        /// + TARGET. Clearing them here made every new target a row-by-row re-tick. To leave a
-        /// shooter out of the next target, untick it or take it off the roster.
+        /// Stage the checked rows against the current target, replacing rows already staged for the same
+        /// shooter, ammo and target. The ticks stay: a tick belongs to a ship and missile type, not a target,
+        /// so a multi-target strike is built by picking each target and pressing + TARGET. To leave a shooter
+        /// out, untick it or take it off the roster.
         /// </summary>
         private void AddSelectionToStrike(List<ObjectBase> shooters)
         {
@@ -54,9 +49,8 @@ namespace AutoTOT
             foreach (ObjectBase ship in shooters)
                 foreach (Row r in CachedEngageRows(ship))
                 {
-                    // Count 0 means every guidance channel is already staged at another target.
-                    // Without this the row would stage a Salvo of 0, which the coordinator floors
-                    // back up to 1 and orders a round the ship cannot guide.
+                    // Count 0 means every guidance channel is staged at another target; the coordinator would
+                    // floor a Salvo of 0 to 1 and order a round the ship cannot guide.
                     if (!r.InRange || r.Count <= 0) continue;
                     string key = Key(ship, r.AmmoId);
                     if (!_checked.TryGetValue(key, out bool on) || !on) continue;
@@ -72,10 +66,9 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// Add the current selection to the shooter roster: just the selected ship, or every
-        /// missile-armed ship in its formation. Which one is the caller's choice, not a mode read
-        /// off the panel. No target is needed, which is the point: the roster is what you assemble
-        /// first, then aim, and it is not limited to one formation.
+        /// Add the selection to the shooter roster: the selected ship, or every missile-armed ship in its
+        /// formation, as the caller chooses. No target is needed: the roster is assembled first, then aimed,
+        /// and may span formations.
         /// </summary>
         private void AddSelectionToGroup(bool wholeFormation)
         {
@@ -101,10 +94,8 @@ namespace AutoTOT
         private bool _formationHeld;
 
         /// <summary>
-        /// True when every ship + FORMATION would add is already in the roster. Tested against
-        /// IsMissileShip for the same reason AddSelectionToGroup filters on it: a formation's
-        /// non-missile hulls are never added, so counting them would leave the button reading
-        /// "+ FORMATION" forever with nothing left to add.
+        /// True when every ship + FORMATION would add is already in the roster. Tested with IsMissileShip, as
+        /// AddSelectionToGroup filters, or non-missile hulls would keep the button reading "+ FORMATION" forever.
         /// </summary>
         private bool FormationFullyHeld(ObjectBase anchor)
         {
@@ -135,10 +126,11 @@ namespace AutoTOT
             return any;
         }
 
-        /// <summary>Distinct targets in the staged strike, in the order they were first staged.</summary>
-        // Targets in the whole strike: the panel's staged rows first, then any target that only the
-        // collected in-game orders name. Both halves fire together, so both belong in the list and
-        // in the counts on the commit button.
+        /// <summary>
+        /// Distinct targets in the whole strike, in first-staged order: the panel's staged rows, then targets
+        /// only the collected in-game orders name. Both fire together, so both belong in the list and the
+        /// commit button's counts.
+        /// </summary>
         private void CollectStrikeTargets(List<ObjectBase> into)
         {
             into.Clear();

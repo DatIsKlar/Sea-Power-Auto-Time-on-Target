@@ -4,12 +4,8 @@ using UnityEngine;
 namespace AutoTOT
 {
     /// <summary>
-    /// Per-frame timing for the coordinator, reported every 60 frames when the profiling config key
-    /// is on. Off by default and costs one bool test per call when off.
-    ///
-    /// Kept out of Coordinator so a measured call is written once. The instrumentation used to wrap
-    /// each call in `if (ProfilingEnabled) { time it } else { call it }`, which meant every measured
-    /// call appeared twice and could drift between the two copies.
+    /// Per-frame timing for the coordinator, reported every 60 frames when Profiling is on; one bool test per
+    /// call when off.
     /// </summary>
     internal static class CoordinatorProfiler
     {
@@ -18,10 +14,8 @@ namespace AutoTOT
         {
             Tick, Diag, Pending, Commit, Anchor, Release,
             FlightEstimate, GroupDelay, AnchorPredict, PredictFlight, PredictGroupDelay,
-            // Model runs driven by the HUD, which happen in OnGUI and are therefore OUTSIDE the tick
-            // entirely. Reported separately so they cannot be mistaken for tick cost, or hidden by it.
-            // UiEnvelope is the panel's launch-envelope query, a step-integrated submarine ascent or
-            // aircraft descent per row, which was untimed before.
+            // HUD-driven model runs happen in OnGUI, outside the tick, so they are reported separately.
+            // UiEnvelope is the panel's launch-envelope query (a submarine ascent or aircraft descent per row).
             UiEstimate, UiEnvelope,
         }
 
@@ -38,36 +32,25 @@ namespace AutoTOT
         private static readonly int StageCount = System.Enum.GetValues(typeof(Stage)).Length;
         private static readonly int CounterCount = System.Enum.GetValues(typeof(Counter)).Length;
 
-        // Raw timestamps rather than Stopwatch instances: no allocation, and each stage keeps its own
-        // start so a nested section does not disturb the one enclosing it.
+        // Raw timestamps: no allocation, and each stage keeps its own start, so nesting works.
         private static readonly long[] _startTicks = new long[StageCount];
         private static readonly double[] _accMs = new double[StageCount];
         private static readonly int[] _counts = new int[CounterCount];
-        /// <summary>
-        /// Milliseconds per Stopwatch tick. Shared with <see cref="ModelStats"/>, which times the
-        /// estimator on the same clock: two copies of this would silently disagree if one were ever
-        /// converted differently.
-        /// </summary>
+        /// <summary>Milliseconds per Stopwatch tick, shared with <see cref="ModelStats"/> so both convert alike.</summary>
         internal static readonly double MsPerTick = 1000.0 / Stopwatch.Frequency;
 
         private static int _frameCount;
         private static float _accScanLoopMs, _accEngageStateMs, _accFinalizeMs, _accCleanupMs, _accRetireMs;
         private static int _accScheduled;
-        // Split of FlightEstimate time by cache outcome. Timed here rather than counted, because the
-        // cost of a hit and a miss differ by orders of magnitude and the average of the two is not
-        // a useful number on its own.
+        // FlightEstimate time split by cache outcome, since hit and miss costs differ by orders of magnitude.
         private static double _accFlightHitMs, _accFlightMissMs;
         private static double _lastFlightCallMs;
-        // Worst single frame in the window, and what the release stage cost on it. An average hides
-        // the spike that actually drops a frame: 60 quiet ticks and one 20ms tick average to 0.33ms.
+        // Worst single frame in the window and its release-stage cost: an average hides the spike that drops a frame.
         private static double _maxTickMs, _maxTickReleaseMs;
         private static double _frameTickMs, _frameReleaseMs;
-        // Real frame time, so the tick figure can be read as a SHARE of a frame. Without it, "21.7ms"
-        // is unanswerable: it could be a third of a frame or more than all of one, and the per-frame
-        // sim cap cannot be set sensibly on any machine but the one it was tuned on.
+        // Real frame time, so the tick cost reads as a share of a frame.
         private static double _accFrameMs, _maxFrameMs;
-        // How stale the flight estimate was, in sim seconds, at the moment an order actually fired.
-        // The per-frame cap trades freshness for frame time; this is what that trade costs.
+        // How stale the flight estimate was (sim s) when an order fired: the cost of the per-frame sim cap.
         private static double _accReleaseStaleness, _maxReleaseStaleness;
         private static int _releaseCount;
 
@@ -94,13 +77,9 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// Record a cache hit that was NOT wrapped in a Begin/End pair, because it was served from
-        /// the cache without running the estimator at all.
-        ///
-        /// Separate from <see cref="CountEstimate"/> on purpose: that one attributes the duration of
-        /// the call just timed, and calling it without a matching Begin/End charges the PREVIOUS
-        /// call's time to this one. That read as 792 hits costing 1.3 ms each with a negative
-        /// unaccounted total, which is how it was found.
+        /// Record a cache hit served without running the estimator, so not wrapped in Begin/End. Separate
+        /// from <see cref="CountEstimate"/>, which attributes the call just timed and would charge the
+        /// previous call's time.
         /// </summary>
         internal static void CountCachedHit()
         {
@@ -121,10 +100,7 @@ namespace AutoTOT
             else { _counts[(int)Counter.FlightMisses]++; _accFlightMissMs += _lastFlightCallMs; }
         }
 
-        /// <summary>
-        /// Record how old the flight estimate was when an order was released, in sim seconds. Zero
-        /// means it was computed on this very frame.
-        /// </summary>
+        /// <summary>How old the flight estimate was when an order was released, in sim seconds; 0 = this frame.</summary>
         internal static void ReleaseStaleness(float ageSim)
         {
             if (!Enabled || ageSim < 0f) return;
@@ -177,18 +153,13 @@ namespace AutoTOT
             double unaccountedMs = Ms(Stage.FlightEstimate) - _accFlightHitMs - _accFlightMissMs;
 
             long stepsPerSim = ModelStats.Sims > 0 ? ModelStats.Steps / ModelStats.Sims : 0;
-            // Microseconds per thousand steps: the number to watch when changing anything inside the
-            // integration loop, and the only figure here that is comparable between builds.
+            // Microseconds per thousand steps: the figure comparable between builds after an integration-loop change.
             double usPerKStep = ModelStats.Steps > 0 ? ModelStats.LoopMs * 1e6 / ModelStats.Steps : 0d;
 
-            // Window TOTALS lead, per-frame averages follow in parentheses. This work arrives in rare
-            // bursts (a few flight estimates across thousands of frames), so a per-frame average of a
-            // one-off 0.5ms call is 0.008ms and rounds to nothing. The total is what says whether a
-            // stage cost anything at all; the tick line already answers the per-frame question.
+            // Window totals lead and per-frame averages follow: the work arrives in rare bursts, so a
+            // per-frame average of a one-off call rounds to nothing.
             double frameAvg = _accFrameMs * perFrame;
-            // Tick PLUS the UI stage. UiEstimate runs in OnGUI, outside the tick by construction, so
-            // a share computed from the tick alone understates the mod's real cost (it read 9.3%
-            // where the honest figure was 26.8%).
+            // Tick plus the UI stages, which run in OnGUI outside the tick; the tick alone understates the mod's cost.
             double autoTotMs = (Ms(Stage.Tick) + Ms(Stage.UiEstimate) + Ms(Stage.UiEnvelope)) * perFrame;
             double share = frameAvg > 0.001 ? 100.0 * autoTotMs / frameAvg : 0d;
             double staleAvg = _releaseCount > 0 ? _accReleaseStaleness / _releaseCount : 0d;

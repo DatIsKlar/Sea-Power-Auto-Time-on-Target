@@ -7,11 +7,10 @@ using UnityEngine;
 
 namespace AutoTOT
 {
-    // NOTE: the file is named for the nested Facts type; the class itself is LauncherFactsSource.
+    // The file is named for the nested Facts type; the class itself is LauncherFactsSource.
     /// <summary>
-    /// Launcher timing/capacity facts for one ship + ammo type: per-round interval, reload gap,
-    /// ready rounds, magazine reserve. Cached for the per-frame UI path.
-    /// See docs/ARCHITECTURE.md "Launcher facts timing".
+    /// Launcher timing and capacity facts for one ship and ammo type: per-round interval, reload gap, ready rounds and
+    /// magazine reserve, cached for the per-frame UI path. See docs/ARCHITECTURE.md "Launcher facts timing".
     /// </summary>
     internal static class LauncherFactsSource
     {
@@ -24,10 +23,8 @@ namespace AutoTOT
         private const float SecondsPerMinute = 60f;
 
         /// <summary>
-        /// Upper sanity bound on the hatch-animation cadence floor below. Same number as
-        /// <see cref="SecondsPerMinute"/> and deliberately a separate constant: this one is a
-        /// duration nobody would design a launcher around, not a unit conversion, and the two would
-        /// need to move independently.
+        /// Upper sanity bound on the hatch-animation cadence floor. Equal to <see cref="SecondsPerMinute"/>,
+        /// but a duration rather than a unit conversion, so kept separate.
         /// </summary>
         private const float MaxPlausibleHatchSeconds = 60f;
 
@@ -40,18 +37,16 @@ namespace AutoTOT
             /// <summary>The shot interval, or <see cref="FallbackShotInterval"/> when there is none.</summary>
             public float ShotIntervalOrFallback => (Valid && ShotInterval > 0f) ? ShotInterval : FallbackShotInterval;
 
-            public float StartupDelay;   // S: fixed fire-to-first-launch offset the engage cycle pays
-                                         // before round 1 leaves: PreLaunchDelay + the EXPECTED
-                                         // reaction draw (MaxReactiontime/2, a uniform [0,max] roll)
-                                         // + the acquisition gate + LauncherCycle below.
+            // S: fixed fire-to-first-launch offset paid before round 1: PreLaunchDelay, the expected reaction draw
+            // (MaxReactiontime/2 of a uniform [0,max] roll), the acquisition gate, LauncherCycle and ColdStart.
+            public float StartupDelay;
             public float ReloadGap;      // R: magazine reload (s); 0 for per-container (VLS) reload
             public int ReadyRounds;      // X: rounds ready to fire before a reload (logical tally)
             public int Reserve;          // rounds behind the rails that a reload would pull from
             public bool PerContainer;    // cells reload in parallel -> no whole-launcher gap
 
-            // Guidance facts. A radio-command weapon holds a fire-control channel for its whole
-            // flight, so a launcher with more rounds than channels physically cannot put them all
-            // up at once. See GuidanceChannelCap.
+            // Guidance facts: a radio-command weapon holds a fire-control channel for its whole flight, so a
+            // launcher with more rounds than channels cannot put them all up at once. See GuidanceChannelCap.
             public bool RequiresGuidance;     // ap._requiresGuidance: needs a launcher-side channel
             public bool CanGroup;             // ap._maxGroupSize > 1: rounds share one channel
             public int MaxGroupSize;          // ap._maxGroupSize: members one group can ever hold
@@ -59,45 +54,34 @@ namespace AutoTOT
             public bool HasGuidanceSensors;   // the serving launchers declare associated sensors
             public bool GuidanceSensorReady;  // at least one of them is operable and can guide this
             public int FreeGuidanceChannels;  // int.MaxValue when the cap does not apply
-            // The sensors that actually guide this ammunition. The channel budget belongs to the
-            // SENSOR, so two ammunition types served by one radar draw on one pool; the coordinator
-            // compares these to decide whether a reservation for one competes with an order for the
-            // other. Held by reference rather than by id, because SensorSystem is not a
-            // UnityEngine.Object and has no instance id. Null when nothing guides it.
+            // The sensors that guide this ammunition. The channel budget belongs to the sensor, so two
+            // ammunition types served by one radar draw on one pool. Held by reference, since SensorSystem is
+            // not a UnityEngine.Object and has no instance id. Null when nothing guides it.
             public SensorSystem[] GuidanceSensors;
 
             // A launcher serving this ammo is mid launch cycle. See IsPreparingToFire.
             public bool PreparingToFire;
 
-            // Longest open-hatch animation across the containers (s). Already used as a cadence
-            // floor below; also one half of LauncherCycle.
+            // Longest open-hatch animation across the containers (s): a cadence floor, and half of LauncherCycle.
             public float HatchCycleSeconds;
 
-            // C: what one round costs the launcher's own state machine, declared OnRailWarmup plus
-            // the hatch animation. Paid before round 1 (hence its place in StartupDelay) and again
-            // before every later round, because WeaponSystemLauncher.cs:842 clears _onRail after
-            // every launch, measured per state from recorded engage-state traces.
+            // C: what one round costs the launcher's own state machine, declared OnRailWarmup plus the hatch
+            // animation. Paid before round 1 (so it is in StartupDelay) and before every later round, because
+            // WeaponSystemLauncher.cs:842 clears _onRail after every launch.
             public float LauncherCycle;
 
-            // D: what a launcher that has never fired owes before its first round, over and above
-            // LauncherCycle: the magazine hoist plus the two fixed states after it. Zero for a
-            // parallel-reload (VLS) mount and zero once the ship's launchers have all fired.
+            // D: what a launcher that has never fired owes before its first round beyond LauncherCycle: the
+            // magazine hoist of the game's warm-up reload. Zero for a parallel-reload (VLS) mount and while
+            // every serving launcher is hot.
             public float ColdStart;  // the game's warm-up reload, when a cold launcher will run it
         }
 
-
-
         /// <summary>
-        /// Engage states that mean "a launch is under way", as opposed to idle, blocked or refused.
-        /// Matched BY NAME, not by enum member: the mod ships one DLL for two game branches, and a
-        /// branch that renumbers or renames the enum then degrades to "not preparing" instead of
-        /// throwing or, worse, silently matching the wrong state.
-        ///
-        /// LauncherTooLow and LauncherTooHigh are deliberately absent. They are what a submarine
-        /// reports for the whole of an ascent to launch depth, which for every guided weapon in the
-        /// game means all the way to the surface, and that ascent is minutes long. Counting it as
-        /// progress would hold an order open for the full NoLaunchMaxHoldSim on a boat that has not
-        /// started a launcher cycle yet; the panel's launch-depth estimate covers the wait instead.
+        /// Engage states that mean a launch is under way, as opposed to idle, blocked or refused. Matched by
+        /// name, so a branch that renumbers or renames the enum degrades to "not preparing" instead of
+        /// matching the wrong state. LauncherTooLow and LauncherTooHigh are absent: a submarine reports them
+        /// for its whole ascent to launch depth, minutes long, which would hold an order for the full
+        /// NoLaunchMaxHoldSim before any launcher cycle starts.
         /// </summary>
         private static readonly HashSet<string> PreparingStates = new HashSet<string>(StringComparer.Ordinal)
         {
@@ -108,27 +92,19 @@ namespace AutoTOT
         };
 
         /// <summary>
-        /// The engage state a trainable-launcher ship reports while it TURNS to bring its launcher
-        /// onto the target. Not in <see cref="PreparingStates"/> because, on its own, it is also
-        /// what a ship reports when it will never get the target into arc.
+        /// The engage state a trainable-launcher ship reports while turning its launcher onto the target. Not
+        /// in <see cref="PreparingStates"/>: on its own it is also what a ship reports when it will never get
+        /// the target into arc.
         /// </summary>
         private const string OutOfArcState = "TargetIsNotInFiringArcs";
 
         /// <summary>
-        /// True while the ship is out of firing arc AND actively turning to fix that, which is
-        /// progress toward a launch even though no launcher timer is running.
-        ///
-        /// A Kynda firing SS-N-3b does this mid-salvo: it heels to one side, fires the rounds that
-        /// bear, then turns the other way for the rest. The turn is far longer than any launcher
-        /// cycle and it is not a launcher cycle at all, so the salvo looked stalled and an 8-round
-        /// order was closed out at 2/8 while the ship was doing exactly what it was told.
-        ///
-        /// The alignment-task test is what keeps this from hanging an impossible order: the game
-        /// only holds an <c>AlignUnitToTarget</c> while it is actually steering the ship for an
-        /// engagement (<c>ObjectBase.Aligning</c>, ObjectBase.cs:1064), and the launcher's
-        /// out-of-arc branch creates one through <c>alignToTarget</c> right where it sets this state
-        /// (WeaponSystemLauncher.cs:709-716). A ship that is not turning does not qualify, and
-        /// callers still bound the whole thing by NoLaunchMaxHoldSim.
+        /// True while the ship is out of firing arc and actively turning to fix that: progress toward a
+        /// launch with no launcher timer running. A Kynda firing SS-N-3b heels to fire the rounds that bear,
+        /// then turns for the rest, far longer than any launcher cycle. The alignment-task test keeps an
+        /// impossible order from hanging: the game holds an <c>AlignUnitToTarget</c> only while steering for
+        /// an engagement (<c>ObjectBase.Aligning</c>, ObjectBase.cs:1064), created by the launcher's
+        /// out-of-arc branch (WeaponSystemLauncher.cs:709-716), and callers still bound the wait by NoLaunchMaxHoldSim.
         /// </summary>
         private static bool IsUnmasking(ObjectBase ship, string state)
             => state == OutOfArcState && ship != null && ship.Aligning;
@@ -136,11 +112,10 @@ namespace AutoTOT
         private static readonly TtlCache<ShipAmmoKey, Facts> _cache = new TtlCache<ShipAmmoKey, Facts>(CacheTtlSeconds);
 
         /// <summary>
-        /// Reads the firing ship's launcher cadence and ready-round count for <paramref name="ammoId"/>.
-        /// Ready rounds use the game's LOGICAL seated tally (getLoadedAmmoCount), not the count of
-        /// spawned missile objects on the rails ; SpawnWhenNeeded launchers keep the latter near 0
-        /// even when fully loaded. Reserve is what a reload would pull from the magazine. Cached
-        /// for <see cref="CacheTtlSeconds"/> real seconds because this sits on the per-frame UI path.
+        /// The firing ship's launcher cadence and ready-round count for <paramref name="ammoId"/>. Ready
+        /// rounds use the game's logical seated tally (getLoadedAmmoCount), not spawned missile objects,
+        /// which SpawnWhenNeeded launchers keep near 0 when loaded. Cached for <see cref="CacheTtlSeconds"/>
+        /// real seconds for the per-frame UI path.
         /// </summary>
         internal static Facts Get(ObjectBase ship, string ammoId)
         {
@@ -164,20 +139,13 @@ namespace AutoTOT
         internal static int CacheSize => _cache.Count;
         internal static void ResetStats() => _cache.ResetStats();
 
-        /// <summary>Zero for anything a launcher declares that is NaN, infinite or negative.</summary>
-        // The OODA acquisition gate. WeaponSystemLauncher.Update holds the shot at
-        // `if (!AcquisitionComplete(_engageStartTime))` (WeaponSystemLauncher.cs:386), sitting in
-        // EngageState.AligningLauncher until `elapsed >= ReactionTime.Acquisition(unit, vwp)`. It is
-        // a third fixed order-to-first-round cost, separate from PreLaunchDelay and the reaction
-        // draw, and it was measured at a repeatable 2.7 s on a Type 055 whose other two terms are
-        // both zero, which made it the mod's largest single timing error.
-        //
-        // The game does the arithmetic. It reads a crew skill, the unit's reaction band, the
-        // datalink tier and three Globals scale factors, and reimplementing that here would be a
-        // second copy to keep in step. Ask the game what it intends.
-        //
-        // ReactionTime exists ONLY on the beta branch, hence reflection: on the public branch there
-        // is no such gate and 0 is the correct answer, not a fallback.
+        // The OODA acquisition gate: WeaponSystemLauncher.Update holds the shot at `if
+        // (!AcquisitionComplete(_engageStartTime))` (WeaponSystemLauncher.cs:386), in
+        // EngageState.AligningLauncher, until `elapsed >= ReactionTime.Acquisition(unit, vwp)`: a third fixed
+        // order-to-first-round cost beside PreLaunchDelay and the reaction draw. The game's method is asked
+        // rather than its arithmetic copied (crew skill, reaction band, datalink tier, three Globals
+        // factors). ReactionTime does not exist on the public branch, hence reflection; there the gate does
+        // not exist and 0 is correct.
         private static MethodInfo _acquisitionMethod;
         private static bool _acquisitionResolved;
         private static bool _acquisitionLogged;
@@ -221,12 +189,9 @@ namespace AutoTOT
             }
             catch (Exception e)
             {
-                // Say so. A silent catch here returns the same 0 as a gate that is genuinely off,
-                // and those two need very different fixes.
-                //
-                // Given up only after several failures in a row, which is what a gate broken for every
-                // ship looks like. Giving up on the first one let a single ship's fault remove the
-                // acquisition delay from every later startup lead for the rest of the session.
+                // Say so: a silent catch returns the same 0 as a gate that is off, and the two need different
+                // fixes. Given up only after several failures in a row, so one ship's fault cannot remove the
+                // acquisition delay for every ship.
                 string why = e.InnerException?.Message ?? e.Message;
                 if (!_acquisitionFailureLogged)
                 {
@@ -246,10 +211,9 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// One line per shooter and ammo naming every term of <see cref="Facts.StartupDelay"/> and
-        /// the launcher parameters they come from. The measured order-to-first-round time on some
-        /// mounts is seconds while the modelled total is 0.0 s, and a total of zero says nothing
-        /// about WHICH term is missing. Verbose only, once per launcher per mission.
+        /// One line per shooter and ammo naming every term of <see cref="Facts.StartupDelay"/> and the
+        /// launcher parameters behind them, since a total says nothing about which term is missing. Verbose
+        /// only, once per launcher per mission.
         /// </summary>
         private static readonly HashSet<ShipAmmoKey> _startupLogged = new HashSet<ShipAmmoKey>();
 
@@ -265,9 +229,7 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// Declared OnRailWarmup as a duration to sum: the "no entry in the table" answer (-1) means
-        /// the game skips the gate, which costs nothing, so it collapses to 0 here. Keep
-        /// <see cref="DeclaredWarmupText"/> for the log, where the two must stay distinguishable.
+        /// Declared OnRailWarmup as a duration to sum: absent (-1) means the game skips the gate, so it collapses to 0.
         /// </summary>
         private static float DeclaredWarmup(ObjectBase ship, string ammoId)
             => Mathf.Max(0f, LauncherProbe.DeclaredOnRailWarmup(ship, ammoId));
@@ -285,13 +247,11 @@ namespace AutoTOT
                 $"+ acquisition {acquisition:0.00}s " +
                 $"+ launcherCycle {launcherCycle:0.00}s " +
                 $"+ coldStart {coldStart:0.00}s | " +
-                // The two terms LauncherCycle is made of, kept separate so a residual can be
-                // attributed to one of them. "none" is a launcher position absent from the ammo's
-                // table, where the game skips the gate; 0.00s is a weapon that declares no warm-up.
+                // The two terms of LauncherCycle, kept apart so a residual can be attributed; "none" is a
+                // launcher position absent from the ammo's table, 0.00s a weapon that declares no warm-up.
                 $"onRailWarmup {DeclaredWarmupText(ship, ammoId)}, " +
                 $"hatchCycle {hatchCycle:0.00}s | " +
-                // The cold-start terms, kept separate so a residual can be attributed to one of
-                // them: the hoist is declared, the other two are measured constants.
+                // The cold-start term's input and the flags that gate it.
                 $"magazineReload {vwp._magazineReloadTime:0.00}s, " +
                 $"perContainer {vwp._perContainerReload}, " +
                 $"hasWarmUp {vwp._hasWarmUp}, " +
@@ -303,11 +263,8 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// <c>WeaponParameters._automatic</c> for the log line, or "n/a" where the field does not
-        /// exist. It is declared ONLY on the beta branch, and a compile-time read faults the whole
-        /// method when it is JIT-compiled, not at the read: binding it directly took out
-        /// <see cref="Compute"/> on public and excluded the ship for the mission, over a diagnostic
-        /// string. Same reasoning as GameClock and the guidance members above: one DLL, both branches.
+        /// <c>WeaponParameters._automatic</c> for the log line, or "n/a" where the field does not exist (public). A
+        /// compile-time read would fault the whole method at JIT time there, not at the read, so it is reflected.
         /// </summary>
         private static FieldInfo _automaticField;
         private static bool _automaticResolved;
@@ -325,8 +282,8 @@ namespace AutoTOT
             catch { return "err"; }
         }
 
-        // Diagnostic reads of the game's own OODA switches, so the line above can say whether a zero
-        // acquisition means "stage disabled" or "stage on and genuinely zero for this mount".
+        // The game's own OODA switches, so a zero acquisition reads as "stage disabled" or "on and zero for
+        // this mount".
         private static string ReactionFlag(ObjectBase ship, string method)
         {
             try
@@ -353,6 +310,7 @@ namespace AutoTOT
             catch { return -1f; }
         }
 
+        /// <summary>Zero for anything a launcher declares that is NaN, infinite or negative.</summary>
         private static float NonNegativeFinite(float v)
             => (float.IsNaN(v) || float.IsInfinity(v) || v < 0f) ? 0f : v;
 
@@ -367,38 +325,33 @@ namespace AutoTOT
             if (vwp == null) return f;
 
             f.Valid = true;
-            // Assumes all launchers serving one ammo share a reload style, so the first speaks for
-            // the group; ready/reserve below are summed across all of them. A ship mixing
-            // per-container and whole-launcher reloaders for the SAME ammo would be misclassified.
+            // All launchers serving one ammo are assumed to share a reload style, so the first speaks for the
+            // group; ready and reserve below are summed. A ship mixing both reload styles for the same ammo
+            // would be misclassified.
             f.PerContainer = vwp._perContainerReload;
 
-            // Per-round interval: within-salvo spacing when the launcher ripples a burst, else the
-            // single-shot fire-rate cadence. Guard the divide (0 fire-rate -> +Infinity).
+            // Per-round interval: within-salvo spacing when the launcher ripples a burst, else the fire-rate
+            // cadence (guarded, since a 0 fire rate divides to +Infinity).
             float interval = (vwp._salvoFireAmount > 1)
                 ? vwp._salvoFireTime
                 : ((vwp._fireRatePerMinute > 0f) ? SecondsPerMinute / vwp._fireRatePerMinute : 0f);
             interval = NonNegativeFinite(interval);
 
-            // The game gates each launch on BOTH the fire-rate timer AND a per-SystemName shared
-            // timer (WeaponSystemLauncher.cs:633-642) ; e.g. the Slava's SS-N-12 declares
-            // SharedLaunchInterval=5, shared across its port+starboard launchers. The effective
-            // cadence is the slower of the two; without this the interval reads ~5x too fast and
-            // every span/wave figure on these launchers is far too small.
+            // The game gates each launch on both the fire-rate timer and a per-SystemName shared timer
+            // (WeaponSystemLauncher.cs:633-642), e.g. SharedLaunchInterval=5 across the Slava's two SS-N-12
+            // launchers. The effective cadence is the slower of the two.
             string sysName = vwp._systemName;
             if (sysName != null && ship._sharedLaunchIntervals != null &&
                 ship._sharedLaunchIntervals.TryGetValue(sysName, out float shared) &&
                 shared > interval && !float.IsNaN(shared) && !float.IsInfinity(shared))
                 interval = shared;
 
-            // Cadence FLOOR from the hatch-open animation. Some launchers (the Kirov's SS-N-19: 20
-            // tubes, each its own container and hatch) declare no FireRate, SharedLaunchInterval or
-            // SalvoFireTime, so `interval` falls back to the 1s default while the realized cadence is
-            // dominated by opening each tube's hatch. That duration lives in the animation asset (last
-            // keyframe _time), not in any numeric cadence field. Only ever RAISES the interval, so a
-            // launcher that declares real timing is untouched.
+            // Cadence floor from the hatch-open animation: some launchers (the Kirov's SS-N-19, 20 tubes each
+            // with its own hatch) declare no FireRate, SharedLaunchInterval or SalvoFireTime, so the 1 s
+            // fallback applies while the real cadence is set by the animation's last keyframe _time. Only
+            // ever raises the interval.
             f.HatchCycleSeconds = MaxHatchOpenSeconds(launchers[0]);
-            // Derived here rather than below, because the cadence floor after the hatch floor
-            // needs it. The value is unchanged; only the point of definition moved.
+            // Derived here because the cycle floor below needs it.
             f.LauncherCycle = NonNegativeFinite(DeclaredWarmup(ship, ammoId) + f.HatchCycleSeconds);
             if (vwp._salvoFireAmount <= 1 && launchers[0]._containers != null && launchers[0]._containers.Count > 1)
             {
@@ -406,27 +359,10 @@ namespace AutoTOT
                 if (hatch > interval && hatch < MaxPlausibleHatchSeconds) interval = hatch;
             }
 
-            // Cadence FLOOR from the launcher's own state cycle, shared out across the launchers
-            // that serve this ammunition.
-            //
-            // The hatch floor above accounts for opening a tube and nothing else, but a launcher
-            // pays its WHOLE cycle for every round, warm-up included: OnRailWarmup was established
-            // as a per-round cost by items 1 and 2 of that plan. Where one launcher serves the
-            // ammunition, that cycle IS the cadence. Where several do, they cycle in parallel, so
-            // the fleet of them delivers a round every cycle/count.
-            //
-            // Measured 2026-09-12 on `test aa`, four rounds from each of three launchers:
-            //   usn_rgm-109b, Spruance MK41, 1 launcher, cycle 6.20s (warm-up 5.00 + hatch 1.20):
-            //     modelled 2.0s against 6.8s observed. Rounds arrived 3.0 to 16.2s EARLY and the
-            //     anchor slid +13.7s chasing them. This term gives 6.20s.
-            //   wp_ss-n-19, Granit, 1 launcher, cycle 3.00s (all hatch): the hatch floor already
-            //     stood there, and this term reproduces it exactly. Residuals were +0.5s.
-            //   plan_hhq-9b, Type 055, 5 launchers, cycle 0.50s against a declared 1.00s interval:
-            //     0.50/5 is below the declared value, so the declared value still governs and the
-            //     control is unmoved.
-            //
-            // Only ever RAISES the interval, and the same plausibility ceiling as the hatch floor
-            // guards against nonsense animation data.
+            // Cadence floor from the launcher's own state cycle, shared across the launchers serving this
+            // ammunition. A launcher pays its whole cycle, warm-up included, for every round, so one
+            // launcher's cycle is the cadence and several cycling in parallel deliver a round every
+            // cycle/count. Only ever raises the interval, under the hatch floor's plausibility ceiling.
             if (vwp._salvoFireAmount <= 1)
             {
                 float perRound = f.LauncherCycle / Mathf.Max(1, launchers.Count);
@@ -435,42 +371,24 @@ namespace AutoTOT
 
             f.ShotInterval = interval;
 
-            // Fire-to-first-launch startup offset (WeaponSystemLauncher.cs engage cycle):
-            //   PreLaunchDelay  ; a fixed wait after the hatch opens (INI, default 0)
-            //   MaxReactiontime ; a random reaction delay re-rolled per engage as uniform
-            //                     [0, MaxReactiontime]; we can only take its EXPECTED value (half).
-            // The launcher pays this ONCE before round 1, not between rounds, so it belongs in the
-            // release lead as a fixed offset ; NOT in the per-round ShotInterval span.
-            //   OnRailWarmup   ; a flat declared hold the launcher sits in before the hatch opens
-            //   the hatch cycle ; the open-hatch animation, previously excluded on surface ships
-            // Those last two are LauncherCycle. Excluding them was a deliberate choice made when
-            // every consumer was an anchor, whose startup observation anchoring rewrites away; a
-            // follower pays the whole of it as a late arrival. The 2026-09-06 trace measured the
-            // declared warm-up against the observed hold on 25 launchers and they agree to the
-            // 0.25s trace cadence. The sub-0.3s dispatch tick stays unmodelled: it is below the
-            // resolution that measured it.
+            // Fire-to-first-launch startup offset, paid once before round 1, so it belongs in the release
+            // lead and not in the per-round ShotInterval span:
+            //   PreLaunchDelay   a fixed wait after the hatch opens (INI, default 0)
+            //   MaxReactiontime  a per-engage roll, uniform [0, max]; only its expected value (half) is knowable
+            //   acquisition      the OODA gate, see AcquisitionSeconds
+            //   LauncherCycle    declared OnRailWarmup plus the hatch animation; a follower pays it as a late arrival
+            //   ColdStart        below
+            // The sub-0.3 s dispatch tick stays unmodelled.
             float acquisition = AcquisitionSeconds(ship, vwp);
 
-            // D: what a launcher that has not fired yet owes before its first round.
-            //
-            // A magazine-fed rail launcher lifts its first round from below deck before it can
-            // shoot, then picks a container and trains: WarmingUp, ChoosingContainer,
-            // AligningLauncher. On a Kidd-class MK26 that is the largest startup error on record,
-            // 11.69 s observed against 0.00 s predicted, all of it before round one.
-            //
-            // The gate is the game's own, read from WeaponSystemLauncher.cs:471 rather than
-            // inferred: warm-up runs, and costs _magazineReloadTime, only when the launcher
-            // declares _hasWarmUp, the ammunition sets _requiresWarmUp, the mount is not
-            // _perContainerReload, and the launcher is not already IsHot. That is what keeps the
-            // Spruance Sea Sparrow's 900 s and the Type 055 HQ-10's 600 s out: both fail the flags,
-            // and the field there is an ordinary magazine reload. An earlier build gated on
-            // _perContainerReload alone and would have charged fifteen minutes of startup lead to a
-            // Sea Sparrow. See LauncherProbe.AnyLauncherNeedsWarmup.
-            //
-            // ChoosingContainer and AligningLauncher, the two states after the warm-up, are NOT
-            // charged. They ran 1.67 to 3.00 s and 1.33 s on the MK26 and they run on a warm order
-            // too, so they are a general per-order cost rather than a cold one, and nothing
-            // declared has been found behind either. Deliberately left as residual.
+            // D: what a launcher that has not fired yet owes before its first round. A magazine-fed rail
+            // launcher lifts its first round from below deck (WarmingUp) before it can shoot. The gate is the
+            // game's own (WeaponSystemLauncher.cs:471): warm-up runs, costing _magazineReloadTime, only when
+            // the launcher declares _hasWarmUp, the ammunition sets _requiresWarmUp, the mount is not
+            // _perContainerReload and the launcher is not IsHot. Mounts failing those flags (the Spruance Sea
+            // Sparrow's 900 s, the Type 055 HQ-10's 600 s) carry an ordinary magazine reload there. See
+            // LauncherProbe.AnyLauncherNeedsWarmup. ChoosingContainer and AligningLauncher, the states after
+            // the warm-up, are not charged: they run on warm orders too, and nothing declared lies behind either.
             f.ColdStart = LauncherProbe.AnyLauncherNeedsWarmup(ship, ammoId)
                 ? NonNegativeFinite(vwp._magazineReloadTime)
                 : 0f;
@@ -480,14 +398,11 @@ namespace AutoTOT
             LogStartupTerms(ship, ammoId, vwp, acquisition, f.StartupDelay, f.HatchCycleSeconds,
                             f.LauncherCycle, f.ColdStart);
 
-            // (see AcquisitionSeconds for the third term)
-
             // Reload gap is paid only when loaded rails empty; parallel-reload (VLS) cells have none.
             f.ReloadGap = NonNegativeFinite(f.PerContainer ? 0f : vwp._magazineReloadTime);
 
-            // Ready rounds = the game's logical seated tally (getLoadedAmmoCount, includes
-            // SpawnWhenNeeded + over-slot surplus). Reserve = rounds in the magazine behind the
-            // rails that a reload would pull from. Both are on the WeaponSystem base.
+            // Ready rounds: the game's logical seated tally (getLoadedAmmoCount, including SpawnWhenNeeded
+            // and over-slot surplus). Reserve: magazine rounds a reload would pull. Both are on the WeaponSystem base.
             int ready = 0, reserve = 0;
             for (int i = 0; i < launchers.Count; i++)
             {
@@ -512,18 +427,12 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// Fire-control channel accounting for <paramref name="ammoId"/>.
-        ///
-        /// A weapon whose mid-course correction is radio command (<c>_requiresGuidance</c>) occupies
-        /// one of its guiding sensor's weapon channels for as long as it needs guidance. Rounds that
-        /// can join a group share that, so only UNGROUPABLE guided ammo is capped by CHANNELS: the
-        /// Echo II's SS-N-3 declares no GroupSize and its Front_Door radar declares WeaponChannels=4,
-        /// so an 8-round salvo can only ever put 4 up. Its SS-N-12 fit has GroupSize=16 and is not
-        /// channel-capped, which is exactly the difference observed between the two test runs.
-        ///
-        /// Groupable ammo is not uncapped, though: it is capped by the GROUP instead, and that cap
-        /// is shared across every shooter within GroupJoinRange of the group leader. See
-        /// Coordinator's shared-group check for why that costs a co-located pair half its salvo.
+        /// Fire-control channel accounting for <paramref name="ammoId"/>. A radio-command weapon
+        /// (<c>_requiresGuidance</c>) occupies one of its guiding sensor's weapon channels while it needs
+        /// guidance. Rounds that join a group share one, so only ungroupable guided ammo is capped by
+        /// channels: the Echo II's SS-N-3 declares no GroupSize and its Front_Door radar WeaponChannels=4, so
+        /// an 8-round salvo can only put 4 up. Groupable ammo is capped by the group instead, shared by every
+        /// shooter within GroupJoinRange of the leader; see Hud.RecomputeGroupSharing.
         /// </summary>
         private static void ComputeGuidance(ObjectBase ship, string ammoId, IList<WeaponSystem> launchers, ref Facts f)
         {
@@ -537,8 +446,7 @@ namespace AutoTOT
             f.GroupJoinRangeU = ap._groupJoinRangeUnity;
             if (!f.RequiresGuidance) return;
 
-            // Distinct sensors: port and starboard launchers routinely name the same radar, and
-            // counting it twice would double the apparent channel budget.
+            // Distinct sensors: port and starboard launchers often name the same radar, which must not count twice.
             HashSet<SensorSystem> seen = null;
             int free = 0;
             for (int i = 0; i < launchers.Count; i++)
@@ -569,12 +477,9 @@ namespace AutoTOT
             f.GuidanceSensors = ids;
         }
 
-        // branch-divergent sensor members
-        // _weaponChannels and _associatedWeapons are public on BOTH branches. EffectiveWeaponChannels
-        // (which narrows the count when a datalink FCR is present) and CanGuideAmmo exist ONLY on
-        // beta, so both are reached by cached reflection and fall back to the raw values. Binding
-        // them directly would compile here and throw on the public branch. Same reasoning as
-        // GameClock: one DLL runs on both.
+        // Branch-divergent sensor members. _weaponChannels and _associatedWeapons are public on both
+        // branches; EffectiveWeaponChannels (narrowed when a datalink FCR is present) and CanGuideAmmo do not
+        // exist on public, so both are reached by cached reflection with the raw values as fallback.
 
         private static bool _guidanceReflectionResolved;
         private static PropertyInfo _effectiveChannelsProp;
@@ -617,13 +522,9 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// True when two ammunition types on one ship are guided by at least one shared sensor, so
-        /// rounds of either draw on the same channel pool.
-        ///
-        /// The reason this exists: the coordinator used to reserve channels per AMMUNITION ID, while
-        /// the budget it reserved against is a property of the guiding sensor. A ship carrying two
-        /// radio-command types served by one radar could therefore reserve the pool twice. Same
-        /// ammunition is trivially true, which keeps the old behaviour as the floor.
+        /// True when two ammunition types on one ship share at least one guiding sensor, so their rounds draw
+        /// on one channel pool: the budget belongs to the sensor, not the ammunition. Same ammunition is
+        /// trivially true.
         /// </summary>
         internal static bool SharesGuidanceSensor(ObjectBase ship, string ammoA, string ammoB)
         {
@@ -634,8 +535,8 @@ namespace AutoTOT
             SensorSystem[] b = Get(ship, ammoB).GuidanceSensors;
             if (a == null || b == null || a.Length == 0 || b.Length == 0) return false;
 
-            // One or two entries each in practice, so a nested walk on reference identity. Not
-            // Equals: these are plain objects, and reference identity is exactly the question.
+            // One or two entries each in practice, so a nested walk on reference identity, which is exactly
+            // the question.
             for (int i = 0; i < a.Length; i++)
                 for (int j = 0; j < b.Length; j++)
                     if (ReferenceEquals(a[i], b[j])) return true;
@@ -644,9 +545,8 @@ namespace AutoTOT
 
         /// <summary>
         /// Most rounds of <paramref name="ammoId"/> this ship can have guided at once, or
-        /// <see cref="int.MaxValue"/> when guidance imposes no limit (unguided ammo, groupable ammo,
-        /// or launchers naming no usable guiding sensor). Used to clamp the salvo picker so an
-        /// order that physically cannot fire is never issued.
+        /// <see cref="int.MaxValue"/> when guidance imposes no limit (unguided, groupable, or no usable
+        /// guiding sensor). Clamps the salvo picker.
         /// </summary>
         internal static int GuidanceChannelCap(ObjectBase ship, string ammoId)
         {
@@ -655,15 +555,10 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// A LIVE read of the guiding sensors for
-        /// this ammunition, naming each sensor, its channel count and how many weapons it is
-        /// currently guiding.
-        ///
-        /// Deliberately uncached and deliberately separate from <see cref="ComputeGuidance"/>. The
-        /// cap the coordinator reserves against is a cached snapshot of `channels - occupied`, and
-        /// the finding is that occupancy rises only as rounds LAUNCH while the reservation is
-        /// released at DISPATCH. Reading both halves at the moment of a decision is the only way to
-        /// see the two cross. Returns an empty string when the ammunition is not channel-limited.
+        /// A live read of the guiding sensors for this ammunition: each sensor, its channel count and how
+        /// many weapons it is guiding; empty when the ammunition is not channel-limited. Uncached and
+        /// separate from <see cref="ComputeGuidance"/>: occupancy rises as rounds launch while a reservation
+        /// is released at dispatch, and only a read at the decision shows the two cross.
         /// </summary>
         internal static string GuidanceOccupancyText(ObjectBase ship, string ammoId)
         {
@@ -704,9 +599,8 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// What one round costs the launcher's own state machine (s): declared OnRailWarmup plus the
-        /// hatch animation. Part of <see cref="Facts.StartupDelay"/>; exposed for the diagnostics,
-        /// which report the modelled terms separately from the total.
+        /// What one round costs the launcher's state machine (s): declared OnRailWarmup plus the hatch
+        /// animation. Part of <see cref="Facts.StartupDelay"/>, exposed for the diagnostics.
         /// </summary>
         internal static float LauncherCycleSeconds(ObjectBase ship, string ammoId)
         {
@@ -715,14 +609,10 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// True while a launcher serving this ammo is mid launch cycle: warming up, choosing a
-        /// container, aligning, opening hatches, or inside a fire-rate or pre-launch delay.
-        ///
-        /// This is the game stating its own intent, and it is a far better stall signal than any
-        /// timer. An Oscar ordered up from 350 ft spends over a minute in OpeningHatches cycling 24
-        /// tubes before the first round leaves; a fixed grace window cut that order off and the
-        /// salvo then fired uncoordinated. Not submarine-specific: a surface ship mid hatch cycle
-        /// is equally "working".
+        /// True while a launcher serving this ammo is mid launch cycle: warming up, choosing a container,
+        /// aligning, opening hatches, or inside a fire-rate or pre-launch delay. The game's own intent, a far
+        /// better stall signal than a timer: an Oscar ordered up from 350 ft spends over a minute in
+        /// OpeningHatches before its first round.
         /// </summary>
         internal static bool IsPreparingToFire(ObjectBase ship, string ammoId)
         {
@@ -731,13 +621,10 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// Describes the missile groups this ship could currently feed for <paramref name="ammoId"/>:
-        /// the ones matching the ammo that are within its join range. Empty string when the ammo
-        /// does not group or nothing matches, so it can be appended unconditionally.
-        ///
-        /// This is the field that tells a "group is full" stall apart from an empty magazine, which
-        /// the SHORTFALL line previously could not do. Read live, never cached: occupancy changes
-        /// every time a round joins or a group cashes in.
+        /// The missile groups this ship could feed for <paramref name="ammoId"/>: those matching the ammo
+        /// within its join range; empty when the ammo does not group or nothing matches. Tells a full group
+        /// apart from an empty magazine on the SHORTFALL line. Read live: occupancy changes whenever a round
+        /// joins or a group cashes in.
         /// </summary>
         internal static string DescribeGroups(ObjectBase ship, string ammoId)
         {
@@ -768,29 +655,22 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// True when the ship will MANOEUVRE to fire this ammo, rather than simply shooting when the
-        /// target is inside the launcher's arcs.
+        /// True when the ship will manoeuvre to fire this ammo rather than simply shooting once the target is in arc.
         ///
-        /// A launcher that bears only abeam is steered differently from every other mount. When more
-        /// than one weapon system takes the engage task and their combined arcs cover both beams but
-        /// neither dead ahead nor dead astern, AlignUnitToTarget.CalculateFiringArcs throws the real
-        /// arcs away and steers to two SIX degree windows instead:
+        /// When more than one weapon system takes the engage task and their combined arcs cover both beams
+        /// but neither dead ahead nor dead astern, AlignUnitToTarget.CalculateFiringArcs discards the real
+        /// arcs and steers to two six-degree windows:
         ///
         ///     list.Add(new Vector2(-93f, -87f));
         ///     list.Add(new Vector2(87f, 93f));
         ///
-        /// so the ship keeps turning until the target is within 3 degrees of exactly abeam, long
-        /// after WeaponSystem.targetIsInFiringArc would already let it shoot. A Kynda firing SS-N-3b
-        /// is the case in the base game: two linked mounts at FiringArcs=-105,-75|75,105. It fires a
-        /// fore/aft pair, drifts out of the 3 degree band, turns again, then fires the rest, and
-        /// because both beams qualify the second turn can settle on the opposite side.
+        /// so the ship keeps turning until the target is within 3 degrees of abeam, long after
+        /// WeaponSystem.targetIsInFiringArc would let it shoot. The base-game case is the Kynda's two SS-N-3b mounts at
+        /// FiringArcs=-105,-75|75,105: a pair, a turn, then the rest, possibly on the opposite beam.
         ///
-        /// Deliberately not a function of the current target bearing. The turn happens even when the
-        /// target is already well inside the launcher's own arc, so a bearing test would miss it.
-        ///
-        /// The thresholds below are copied from the game so they can be diffed against it after a
-        /// patch. Vector2.zero arcs (no restriction) fall into the wrapping branch and set the
-        /// astern flag, which clears the verdict, so an unrestricted mount never qualifies.
+        /// Not a function of the current bearing, since the turn happens with the target well inside the
+        /// launcher's arc. The thresholds are copied from the game so they can be diffed after a patch;
+        /// Vector2.zero arcs (no restriction) set the astern flag, so an unrestricted mount never qualifies.
         /// </summary>
         internal static bool WillManoeuvreToFire(ObjectBase ship, string ammoId, out float windowDeg)
         {
@@ -804,10 +684,9 @@ namespace AutoTOT
             List<Vector2> arcs = launchers[0]?._vwp?._firingArcs;
             if (arcs == null || arcs.Count == 0) return false;
 
-            // The game analyses the INTERSECTION of the participating mounts' arcs. Intersecting is
-            // only identity-safe when they all declare the same arcs, which is the real case (the
-            // Kynda's two mounts are identical), so require that rather than reimplementing
-            // IntersectFiringArcs. Mixed arcs decline to warn instead of guessing.
+            // The game analyses the intersection of the participating mounts' arcs. That is identity-safe
+            // only when all declare the same arcs, the real case, so require it; mixed arcs decline to warn
+            // rather than reimplement IntersectFiringArcs.
             for (int i = 1; i < launchers.Count; i++)
             {
                 List<Vector2> other = launchers[i]?._vwp?._firingArcs;
@@ -839,14 +718,10 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// True when this ammo needs launcher guidance and every sensor that could provide it has
-        /// been shot away. <c>WeaponSystemLauncher</c> then parks the engage task in
-        /// <c>ReadyUpWhileWaiting</c> indefinitely, so the order never fires.
-        ///
-        /// This reads <c>Inoperable</c>, which is DAMAGE. It is deliberately not a depth test: no
-        /// ammunition in the game both requires launcher guidance and declares a nonzero MaxDepth
-        /// (0 of 437 screened 2026-09-13), so the launcher's own depth branch surfaces a submerged
-        /// boat before firing and a mast is never the thing standing in the way.
+        /// True when this ammo needs launcher guidance and every sensor that could provide it has been shot away;
+        /// <c>WeaponSystemLauncher</c> then parks the engage task in <c>ReadyUpWhileWaiting</c> indefinitely. Reads
+        /// <c>Inoperable</c> (damage), not depth: no guided ammunition declares a nonzero MaxDepth, so a submerged boat
+        /// surfaces before firing and a mast is never what stands in the way.
         /// </summary>
         internal static bool GuidanceSensorUnavailable(ObjectBase ship, string ammoId)
         {
@@ -855,11 +730,10 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// Longest open-hatch animation duration (seconds) across a launcher's containers ; the last
-        /// keyframe time of each container's <c>_openAnimation</c>. Used as a per-round cadence floor
-        /// for launchers that ripple each round through its own hatch. All fields are public on the
-        /// game types (WeaponSystem._containers → WeaponContainer._openAnimation →
-        /// ObjectCodeAnimation._sequences → …_sequenceData[last]._time). 0 if none.
+        /// Longest open-hatch animation (s) across a launcher's containers: the last keyframe time of each
+        /// <c>_openAnimation</c> (WeaponSystem._containers → WeaponContainer._openAnimation →
+        /// ObjectCodeAnimation._sequences → …_sequenceData[last]._time), all public. A per-round cadence
+        /// floor for launchers that ripple each round through its own hatch; 0 if none.
         /// </summary>
         private static float MaxHatchOpenSeconds(WeaponSystem ws)
         {
@@ -881,11 +755,10 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// Rounds this ship can actually fire for <paramref name="ammoId"/> through the launchers that
-        /// serve it (loaded on the rails + magazine reserve behind them). This can be LESS than the
-        /// ship-wide inventory in <see cref="ObjectBase.AmmunitionAmountDictionary"/> when some rounds
-        /// sit behind a launcher/magazine that can't feed them. Returns int.MaxValue when the launcher
-        /// facts can't be read, so callers don't clamp on missing data.
+        /// Rounds this ship can fire for <paramref name="ammoId"/> through the launchers serving it (loaded
+        /// plus magazine reserve), which can be less than the ship-wide
+        /// <see cref="ObjectBase.AmmunitionAmountDictionary"/>. int.MaxValue when the facts cannot be read,
+        /// so callers do not clamp on missing data.
         /// </summary>
         internal static int AvailableRounds(ObjectBase ship, string ammoId)
         {
@@ -894,9 +767,8 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// UI helper: does firing <paramref name="salvo"/> rounds of this ammo require a
-        /// mid-salvo reload? Only true when the order outruns the ready rounds AND there is a
-        /// magazine reserve to reload from (so all-tubes-ready launchers like the Slava never warn).
+        /// Whether firing <paramref name="salvo"/> rounds needs a mid-salvo reload: the order outruns the
+        /// ready rounds and a magazine reserve exists (so all-tubes-ready launchers like the Slava never warn).
         /// </summary>
         internal static bool WillNeedReload(ObjectBase ship, string ammoId, int salvo, out int readyRounds, out int waves)
         {

@@ -6,22 +6,19 @@ using UnityEngine;
 namespace AutoTOT
 {
     /// <summary>
-    /// On-screen planner. Remembers your last-selected friendly ship (the "anchor") and your
-    /// last-selected enemy as the target. The anchor can be held in a persistent shooter roster,
-    /// one hull or one formation at a time, drawn from as many formations as you like. Lists each shooter's missiles with live flight-time readouts and lets
-    /// you fire a hand-picked set as a coordinated Time-on-Target strike.
+    /// On-screen planner. Tracks your last-selected friendly ship (the anchor) and enemy (the target), holds
+    /// a shooter roster built one hull or one formation at a time, lists each shooter's missiles with live
+    /// flight times, and fires a hand-picked set as a coordinated strike. While the cursor is over the panel
+    /// it sets the game's MouseControlState to UI, so clicks do not reach the camera (Hud.Mouse.cs).
     ///
-    /// Split across seven partial files:
-    ///   Hud.cs          ; lifecycle, selection tracking, window layout
-    ///   Hud.Rows.cs     ; shooter and missile-row data, per-frame row caches, selection prune
-    ///   Hud.Render.cs   ; panel content rendering
-    ///   Hud.Actions.cs  ; strike arm/fire, adding the selection to the strike or the roster
-    ///   Hud.Labels.cs   ; fog-of-war target names, hotkey hints, time formatting
-    ///   Hud.Mouse.cs    ; drag, resize and mouse-over-UI capture
-    ///   Hud.Styles.cs   ; palette, textures, GUIStyle construction, shared-skin push/pop
-    ///
-    /// While the cursor is over the panel it sets the game's MouseControlState to "UI"
-    /// so clicks/drags don't leak into the camera or world selection (see Hud.Mouse.cs).
+    /// Partial files:
+    ///   Hud.cs          lifecycle, selection tracking, window layout
+    ///   Hud.Rows.cs     shooter and missile-row data, per-frame row caches, selection prune
+    ///   Hud.Render.cs   panel content rendering
+    ///   Hud.Actions.cs  strike arm and fire, adding the selection to the strike or the roster
+    ///   Hud.Labels.cs   fog-of-war target names, hotkey hints, time formatting
+    ///   Hud.Mouse.cs    drag, resize and mouse-over-UI capture
+    ///   Hud.Styles.cs   palette, textures, GUIStyle construction, shared-skin push and pop
     /// </summary>
     internal sealed partial class Hud : MonoBehaviour
     {
@@ -30,11 +27,9 @@ namespace AutoTOT
         private ObjectBase _anchor;      // last selected friendly unit
         private ObjectBase _target;      // last selected enemy unit (real object, for firing)
         private Vehicle _targetVehicle;  // the enemy contact, for fog-of-war-correct display
-        // ENGAGEMENTS reports what is already in the air, so it sits below the planning controls and
-        // can be folded away entirely while a strike is being built.
+        // ENGAGEMENTS sits below the planning controls and can be folded away while a strike is built.
         private bool _engagementsOpen = true;
-        // The hotkey list, behind a ? in the title bar: discoverable once rather than shouted every
-        // frame from a hint line.
+        // The hotkey list, behind the ? in the title bar.
         private bool _showHelp;
 
 #if LIVETEST
@@ -42,28 +37,14 @@ namespace AutoTOT
         /// <summary>The live panel, so an automated run can stage it. Set in OnEnable.</summary>
         private static Hud _instance;
 
-        /// <summary>Set by StagePanelFor: hold the staged selection against TrackSelection, which
-        /// otherwise reassigns both fields from the game's own selection every frame.</summary>
+        /// <summary>Set by StagePanelFor: keeps the staged selection from being overwritten by TrackSelection.</summary>
         private bool _stagedLock;
 
         /// <summary>
-        /// Put the panel into the state a player would reach by clicking, so an automated run can
-        /// photograph a label instead of asking someone to set it up. Picks the friendly shooter and
-        /// the enemy target the panel would have taken from the game's selection, ticks one weapon
-        /// row and sets its salvo. False if the panel is not up.
-        ///
-        /// <para>This exists because the live test runner drives the game through method calls and
-        /// never touches the screen, so every warning the panel draws had to be verified by a person.
-        /// Synthetic clicks into the
-        /// Wine window were rejected for the reason the runner avoids them everywhere else: they
-        /// depend on window focus, cursor position and compositor timing, none of which an
-        /// unattended batch can rely on. The panel's state is code in this assembly, so setting it
-        /// is both simpler and deterministic.</para>
-        ///
-        /// <para>It writes the same two fields <see cref="TrackSelection"/> writes, rather than the
-        /// game's selection, because MainGameViewModel.SelectedObject is a
-        /// ReadOnlyReactiveProperty. TrackSelection leaves both alone while nothing is selected,
-        /// which is the state an automated run is in, so the staging holds.</para>
+        /// Put the panel into the state a player reaches by clicking (shooter, target, one ticked row and its
+        /// salvo), so an automated run can screenshot a label. Sets the fields <see cref="TrackSelection"/>
+        /// writes, since the game's selection is read-only; TrackSelection leaves them alone while nothing is
+        /// selected. False if the panel is not up.
         /// </summary>
         internal static bool StagePanelFor(ObjectBase shooter, ObjectBase target, string ammoId, int salvo)
         {
@@ -71,8 +52,7 @@ namespace AutoTOT
             if (h == null || shooter == null || target == null) return false;
             try
             {
-                // The panel defaults to the collapsed tab, which draws a header and nothing else, so
-                // a staged row would be photographed as an empty strip. Open it.
+                // The collapsed tab draws only a header, so open the panel.
                 h._open = true;
                 h._stagedLock = true;
                 h._anchor = shooter;
@@ -91,12 +71,9 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// Stage a shot from more than one hull at one target, the way a player builds it: pick the
-        /// first shooter, press + FORMATION (or + UNIT), then tick each weapon row and set its salvo.
-        /// The roster is the only way the panel fires from several hulls (see GetShooters), so
-        /// StagePanelFor alone would leave just one shooter. A shooter outside the anchor's formation
-        /// is added the way + UNIT adds it. False if the panel is not up or the shots name more than
-        /// one target, which the panel cannot hold.
+        /// Stage a shot from several hulls at one target, as a player builds it: first shooter, + FORMATION
+        /// or + UNIT, then tick each row and set its salvo. False if the panel is not up or the shots name
+        /// more than one target.
         /// </summary>
         internal static bool StagePanelForShots(List<Coordinator.Shot> shots, bool wholeFormation)
         {
@@ -132,11 +109,9 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// Press FIRE THIS TARGET the way a click does: the same shooter list, the same enable test
-        /// DrawWindowInner passes to DrawCommitRow (a live target and a fireable ticked row) and the
-        /// same FireSelected call. Called from the runner's Update, so like a real click it lands
-        /// between OnGUI passes and cannot change state between one frame's Layout and Repaint.
-        /// Returns null when it fired, otherwise the reason the button would have been disabled.
+        /// Press FIRE THIS TARGET as a click does: the same shooter list, enable test and FireSelected call,
+        /// made from the runner's Update so it lands between OnGUI passes. Null when it fired, otherwise the
+        /// reason the button would be disabled.
         /// </summary>
         internal static string PressFireThisTarget()
         {
@@ -162,45 +137,37 @@ namespace AutoTOT
         private readonly Dictionary<string, int> _salvo = new Dictionary<string, int>();
         private readonly List<EngagementBoard.SalvoLine> _salvos = new List<EngagementBoard.SalvoLine>();
 
-        // The persistent strike group: shooters the player has added, kept across selection changes
-        // so the group can be assembled BEFORE any target is picked. Empty means "follow the current
-        // selection", which is the original single-selection behaviour.
+        // The shooter roster: added shooters, kept across selection changes so it can be built before a
+        // target is picked. Empty = follow the current selection.
         private readonly List<ObjectBase> _group = new List<ObjectBase>();
 
-        // Shots staged for a multi-target strike. Each carries its own target, so the panel stays a
-        // single-target editor and a strike is assembled from repeated single-target picks.
+        // Shots staged for a multi-target strike; each carries its own target, so the panel stays a
+        // single-target editor.
         private readonly List<Coordinator.Shot> _strike = new List<Coordinator.Shot>();
-        // The Coordinator reset the staged list was built against. A mission end clears coordinator
-        // state, so anything staged refers to units that no longer exist.
+        // The coordinator reset the staged list was built against; a mission end invalidates it.
         private int _strikeGeneration;
 
-        // Per-frame cache for EngageRows ; avoids recomputing expensive range/guidance
-        // checks 3+ times per ship per OnGUI pass (IsMissileShip, draw loop, AnyChecked, FireSelected).
+        // Per-frame cache for EngageRows, which is otherwise computed several times per ship per OnGUI pass.
         private readonly Dictionary<int, List<Row>> _rowCache = new Dictionary<int, List<Row>>();
         private int _rowCacheFrame = -1;
         private int _pruneCounter;
 
-        // Reusable shooter list ; avoids allocating a new List<ObjectBase> every OnGUI call.
+        // Reused shooter list, so OnGUI does not allocate one per call.
         private readonly List<ObjectBase> _shootersCache = new List<ObjectBase>();
 
         private Vector2 _scroll;
-        // The strike list scrolls on its own, so a long strike cannot push the shooter list off the
-        // panel. Its height is a share of the window (see StrikeListShare), which keeps the two
-        // lists in the same proportion at every window size.
+        // The strike list scrolls on its own, with a share of the window height (StrikeListShare), so it
+        // cannot push the shooter list off the panel.
         private Vector2 _strikeScroll;
-        // The per-order breakdown under each strike target, collapsible: it is the confirmation the
-        // player wants while building a strike and noise once the strike is built.
+        // Collapsible per-order breakdown under each strike target.
         private bool _strikeDetail = true;
-        // Frame-based title-bar drag (see Hud.Mouse.cs). The rects are window-local and are
-        // published by DrawHeader so a press on the chevron or on ? KEYS is a click, not a drag.
+        // Frame-based title-bar drag (Hud.Mouse.cs). DrawHeader publishes the button rects, so a press on the
+        // chevron or ? KEYS is a click, not a drag.
         private bool _dragging;
         private Vector2 _dragOffset;
         private Rect _chevRectWin, _helpRectWin;
-        // Vertical budget shared by the two lists, measured from the panel itself rather than
-        // guessed: _listsTopY is where the shooter list starts and _belowListsH is everything drawn
-        // under the strike section (commit rows, engagements, footer). Both are sampled on Repaint
-        // and used on the NEXT frame, so the Layout and Repaint passes of any one frame always see
-        // the same numbers, which IMGUI requires.
+        // Vertical budget for the two lists, measured on Repaint and used the next frame, so one frame's
+        // Layout and Repaint passes see the same numbers, as IMGUI requires.
         private float _listsTopY, _belowListsH = 180f;
         private float _listsAvailH = 200f;   // last computed budget; the strike section reads it
         private Rect _win = new Rect(0, 0, DefaultWindowW, DefaultWindowH);
@@ -212,23 +179,18 @@ namespace AutoTOT
         private bool _mouseDownOverUi;
 
         private const float CollapsedH = 34f;
-        // Room for the key list under the title bar while the panel is collapsed; measured from the
-        // text itself (see HelpOverlayHeight), because the lines wrap differently at every panel
-        // width and with every set of configured key names.
+        // Room for the key list under the collapsed title bar, measured from the text (HelpOverlayHeight).
         private const float HeaderH = 30f;
 
         // Window geometry.
         private const float DefaultWindowW = 540f, DefaultWindowH = 520f;
-        private const float MinWindowW = 480f, MinWindowH = 320f;   // enforced while resizing;
-                                                            // MinWindowW must hold the three
-                                                            // secondary commit buttons in a row
+        // Enforced while resizing; MinWindowW must fit the three secondary commit buttons in a row.
+        private const float MinWindowW = 480f, MinWindowH = 320f;
         private const float InitialTopMargin = 40f;                  // first-paint placement
         private const float InitialSideMargin = 8f;
         private const float OffscreenMargin = 60f;                   // px the window always keeps on screen
         private const float AutoScaleRefHeight = 1280f;
-        // Bounds for the panel scale. Named here because Bootstrap declares the same numbers as
-        // config AcceptableValueRanges and as the clamp in SetUiScaleMultiplier; three copies of a
-        // range drift the moment one is widened.
+        // Named here so Bootstrap's config ranges and the SetUiScaleMultiplier clamp share one definition.
         internal const float MinUiScale = 0.5f, MaxUiScale = 4f;
         internal const float MinUiScaleMultiplier = 0.5f, MaxUiScaleMultiplier = 2.0f;
         internal const float UiScaleStep = 0.1f;   // one press of the on-panel - / + buttons
@@ -243,13 +205,11 @@ namespace AutoTOT
         internal const float ResizeGripClearance = 18f;             // px kept clear of the corner grip
         private const int SelectionPruneIntervalFrames = 300;        // how often dead ships are pruned from selections
 
-        // Only alive inside a running mission. In the main menu Globals._mainGameViewModel is null,
-        // so the planner neither draws nor eats mouse input there.
+        // Only inside a running mission; in the main menu the planner neither draws nor takes mouse input.
         private static bool InMission() => Globals._mainGameViewModel != null;
 
-        // Uniform UI scale for the whole panel. 0 in config = auto: 1x at 1080p, ~2x at 2160p.
-        // Shared by OnGUI (GUI.matrix) and the Update-path input handlers (Hud.Mouse.cs), which
-        // must divide real screen pixels by this to reach the panel's scaled GUI space.
+        // Uniform UI scale: 0 in config = auto (1x at 1080p, about 2x at 2160p). The Update-path input
+        // handlers (Hud.Mouse.cs) divide screen pixels by it to reach the panel's GUI space.
         private static float EffectiveScale()
         {
             float s = Bootstrap.UiScale;
@@ -268,11 +228,9 @@ namespace AutoTOT
                 return;
             }
 
-            // With the master switch off the mod does nothing at all, and that has to include this
-            // component: OnGUI already refuses to paint, but Update went on running the hotkeys and
-            // the mouse capture, so an invisible panel could still arm a strike and swallow a click
-            // meant for the map. The switch
-            // is startup-only now, so this costs one bool per frame and never flickers.
+            // With the master switch off, Update must also skip the hotkeys and mouse capture, or an
+            // invisible panel could arm a strike and swallow a map click. The switch is startup-only, so this
+            // costs one bool per frame.
             if (!Coordinator.Enabled)
             {
                 _resizing = false;
@@ -293,8 +251,8 @@ namespace AutoTOT
             if (modOk && Input.GetKeyDown(Bootstrap.StrikeArmKey)) ToggleStrikeArmed();
             if (modOk && Input.GetKeyDown(Bootstrap.FireStrikeKey)) FireStrikeNow();
 
-            // A mission end clears the coordinator, and with it every unit the staged strike points
-            // at. Checked here rather than in OnGUI so the list cannot be rendered stale for a frame.
+            // A mission end clears the coordinator and every unit the staged strike points at; checked here
+            // rather than in OnGUI, so the list is never drawn stale.
             if (_strikeGeneration != Coordinator.ResetGeneration)
             {
                 _strikeGeneration = Coordinator.ResetGeneration;
@@ -309,17 +267,12 @@ namespace AutoTOT
                 _checked.Clear();
                 _salvo.Clear();
                 _rowFacts.Clear();
-                // Unity reuses instance IDs after destruction, so a ship that threw while building
-                // its rows in one mission could inherit the ID of a healthy ship in the next and be
-                // silently dropped from the panel. The set exists only to stop one log line per
-                // frame within a mission, so a mission boundary is the right place to forget it.
+                // Unity reuses instance IDs, so a ship that threw in one mission could hide a healthy ship in
+                // the next; the set only dedupes log lines within a mission.
                 _rowErrorLogged.Clear();
             }
 
-            // Prune destroyed ships from the selections and the staged strike on a frame cadence.
-            // Here and not in the draw: the draw path only runs with the panel expanded, so a
-            // collapsed or hidden panel held destroyed ships for the rest of the mission, and when
-            // it did run it counted OnGUI events, 2 to 4 per frame, not frames.
+            // Prune destroyed ships on a frame cadence here, not in the draw, which runs only with the panel expanded.
             if (++_pruneCounter >= SelectionPruneIntervalFrames)
             {
                 _pruneCounter = 0;
@@ -335,9 +288,7 @@ namespace AutoTOT
                 return;
             }
 
-            // Nothing is painted while the indicator is off, so nothing may capture the mouse over
-            // where the panel would have been. The hotkeys stay live: arming a strike still works
-            // through the game's own order interface with the panel hidden.
+            // Nothing is painted with the indicator off, so nothing may capture the mouse; the hotkeys stay live.
             if (!Bootstrap.ShowIndicator)
             {
                 _resizing = false;
@@ -356,8 +307,7 @@ namespace AutoTOT
 #if LIVETEST
             _instance = this;
 #endif
-            // The coordinator needs the panel's staged picks to police its own intake, and only the
-            // panel knows them. Cleared in OnDisable so a torn-down HUD cannot be called into.
+            // The coordinator needs the panel's staged picks for its intake budget; cleared in OnDisable.
             Coordinator.StagedRoundsProvider = StagedRoundsFor;
         }
 
@@ -367,16 +317,15 @@ namespace AutoTOT
             if (ReferenceEquals(_instance, this)) _instance = null;
 #endif
             Coordinator.StagedRoundsProvider = null;
-            // On mission end Unity disables us while the game HUD is already tearing down, so the
-            // over-UI release can hit half-null game state. Reset our own flag unconditionally and
-            // only poke the game when a mission is still live; SetOverUi also catches defensively.
+            // On mission end the game HUD is already tearing down: reset our flag unconditionally and call
+            // into the game only while a mission is live.
             _lastOverUi = false;
             if (InMission()) SetOverUi(false);
         }
 
         private void OnDestroy()
         {
-            // Destroy every texture we created, not just a subset ; otherwise the rest leak.
+            // Destroy every texture we created, or the rest leak.
             foreach (Texture2D t in new[]
             {
                 _panelTex, _headerTex, _fireTex, _btnTex, _btnHoverTex,
@@ -419,13 +368,12 @@ namespace AutoTOT
             if (!Coordinator.Enabled || !Bootstrap.ShowIndicator || !InMission() || !_visible) return;
             EnsureStyles();
 
-            // Everything below works in scaled GUI space (see EffectiveScale). sw/sh are the
-            // screen extents expressed in that space, so placement and clamps stay correct.
+            // Everything below is in scaled GUI space (see EffectiveScale); sw and sh are the screen in that space.
             float s = EffectiveScale();
             float sw = Screen.width / s, sh = Screen.height / s;
 
-            // Keep the panel's on-screen top-left fixed when the scale changes (the matrix
-            // scales about the screen origin, so a bare _win.x would drift as s changes).
+            // Keep the panel's on-screen top-left fixed when the scale changes, since the matrix scales about
+            // the screen origin.
             if (_lastScale > 0f && !Mathf.Approximately(_lastScale, s))
             {
                 float rescale = _lastScale / s;
@@ -445,9 +393,7 @@ namespace AutoTOT
             _win.height = _open ? _expandedH
                                 : CollapsedH + (_showHelp ? HelpOverlayHeight() : 0f);
 
-            // The restore has to survive a throw. DrawWindow deliberately re-throws after logging,
-            // and an escaping exception used to leave GUI.matrix scaled for the rest of the frame,
-            // so every other IMGUI window in the game drew at this panel's scale.
+            // The matrix restore must survive a throw, or every other IMGUI window would draw at this panel's scale.
             Matrix4x4 prevMatrix = GUI.matrix;
             try
             {
@@ -494,8 +440,7 @@ namespace AutoTOT
 
         private void DrawWindowInner(int id)
         {
-            // Reset per-frame caches. OnGUI fires 2+ events per frame (Layout, Repaint, ...), so
-            // recompute the engagement snapshot and per-ship EngageRows once per frame only.
+            // OnGUI fires several events per frame, so the per-frame caches reset once per frame.
             int frame = Time.frameCount;
             if (_rowCacheFrame != frame)
             {
@@ -504,17 +449,15 @@ namespace AutoTOT
                 _rowCacheFrame = frame;
             }
 
-            // Lighter title strip across the top, like the game's own panel headers. The strip runs
-            // from the window's top edge to the bottom of the row the layout reserves for it, and
-            // DrawHeader centres its contents on that same rect, so the bar reads as one box.
+            // Title strip from the window's top edge to the bottom of its layout row; DrawHeader centres on
+            // the same rect.
             Rect headerRow = GUILayoutUtility.GetRect(0f, HeaderH, GUILayout.ExpandWidth(true));
             var strip = new Rect(1f, 1f, _win.width - 2f, headerRow.yMax - 1f);
             GUI.DrawTexture(strip, _headerTex);
             DrawHeader(strip);
             if (!_open)
             {
-                // The key list is the one part of the panel worth reading while it is shut, so the
-                // ? KEYS toggle keeps working here instead of silently doing nothing.
+                // The key list stays toggleable while the panel is collapsed.
                 if (_showHelp) DrawHelpOverlay();
                 return;
             }
@@ -533,10 +476,8 @@ namespace AutoTOT
             DrawDivider();
             DrawStatusLine(shooters, haveTarget);
 
-            // Split the leftover height between the shooter list and the strike list. Both get an
-            // explicit height, so neither can starve the other: an expanding view collapses to one
-            // row the moment the window is short, which is exactly what a fixed-height strike list
-            // beneath it used to cause.
+            // Split the leftover height between the shooter list and the strike list, both with explicit
+            // heights, so neither starves the other.
             Rect topProbe = GUILayoutUtility.GetRect(0f, 0f, GUILayout.ExpandWidth(true));
             if (Event.current.type == EventType.Repaint) _listsTopY = topProbe.y;
             _listsAvailH = Mathf.Max(2f * RowHeight,
@@ -579,22 +520,17 @@ namespace AutoTOT
 
             PopScrollSkin();
 
-            // The staged list sits directly above the button that commits it. Staging needs exactly
-            // what firing needs: a target and at least one checked row.
+            // The staged list sits directly above the button that commits it.
             DrawStagedStrike();
 
             // Everything from here down is the chrome the budget above has to leave room for.
             Rect belowProbe = GUILayoutUtility.GetRect(0f, 0f, GUILayout.ExpandWidth(true));
             DrawCommitRow(shooters, haveTarget && AnyChecked(shooters), haveTarget && AnyFireable(shooters));
 
-            // Live, post-launch state. It reports what is already in the air rather than what is
-            // being built, so it goes below everything that builds.
+            // Live post-launch state, below everything that builds the strike.
             DrawEngagements();
 
-            // The footer is reserved in the flow so the lists' budget leaves room for it, but it is
-            // PAINTED at the window's bottom edge (see DrawFooter). Laid out in the flow it ended
-            // wherever the sections above happened to end, which parked it on the bottom border as
-            // soon as a strike list appeared.
+            // The footer is reserved in the flow but painted at the window's bottom edge (DrawFooter).
             GUILayoutUtility.GetRect(0f, FooterStripH, GUILayout.ExpandWidth(true));
 
             Rect endProbe = GUILayoutUtility.GetRect(0f, 0f, GUILayout.ExpandWidth(true));

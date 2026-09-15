@@ -8,9 +8,8 @@ using HarmonyLib;
 namespace AutoTOT
 {
     /// <summary>
-    /// Defensive shield for a base-game crash on the multiplayer mission-load path.
-    /// The DOTS assembly scan throws on an unnameable assembly; this swallows the throw
-    /// via Harmony finalizers. See docs/ARCHITECTURE.md "DOTS scan hardening".
+    /// Shield for a base-game crash on the multiplayer mission-load path: the DOTS assembly scan throws on an
+    /// unnameable assembly, and Harmony finalizers swallow that throw. See docs/ARCHITECTURE.md "DOTS scan hardening".
     /// </summary>
     internal static class DotsScanHardening
     {
@@ -18,8 +17,7 @@ namespace AutoTOT
         private const string EntitiesAssemblyName = "Unity.Entities";
         private const string ScanMethodPrefix = "IsAssemblyReferencing";
 
-        // Signatures of throws we've already reported, so the log isn't spammed
-        // (the DOTS scan may visit the bad assembly many times across re-inits).
+        // Signatures already reported, since the DOTS scan may visit the bad assembly many times across re-inits.
         private static readonly HashSet<string> _reported = new HashSet<string>(StringComparer.Ordinal);
 
         private static bool _installed;
@@ -37,9 +35,8 @@ namespace AutoTOT
 
                 if (typeManager == null)
                 {
-                    // Unity.Entities isn't in the AppDomain yet. Try to pull it in now (Unity
-                    // probes the Managed folder); if that doesn't work, defer installation to
-                    // the moment the assembly loads ; still before any DOTS code can run.
+                    // Unity.Entities is not loaded yet: try to load it now (Unity probes the Managed folder),
+                    // else install when the assembly loads, still before any DOTS code runs.
                     try
                     {
                         Assembly.Load(EntitiesAssemblyName);
@@ -70,8 +67,8 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// Deferred install: fires when Unity.Entities.dll finally loads. Must never throw ;
-        /// an exception here would leak into whatever game code triggered the load.
+        /// Deferred install when Unity.Entities.dll loads. Must never throw: the exception would leak into
+        /// the game code that triggered the load.
         /// </summary>
         private static void OnAssemblyLoad(object sender, AssemblyLoadEventArgs args)
         {
@@ -84,8 +81,7 @@ namespace AutoTOT
                 }
                 catch
                 {
-                    // An assembly whose very name throws is exactly what we shield against;
-                    // it cannot be Unity.Entities.
+                    // An assembly whose name throws is what this shields against; it cannot be Unity.Entities.
                 }
                 if (name != EntitiesAssemblyName) return;
 
@@ -103,10 +99,9 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// Find and patch every static <c>TypeManager.IsAssemblyReferencing*(Assembly, ...)</c>
-        /// scan filter. The finalizer-only patch works for all known shapes (bool return,
-        /// void with out-bools) because a swallowed throw leaves the caller-side outputs at
-        /// their defaults, which always means "not referencing entities".
+        /// Find and patch every static <c>TypeManager.IsAssemblyReferencing*(Assembly, ...)</c> scan filter.
+        /// A finalizer-only patch covers every known shape (bool return, void with out-bools): a swallowed
+        /// throw leaves the outputs at their defaults, which mean "not referencing entities".
         /// </summary>
         private static void PatchScanMethods(Harmony harmony, Type typeManager)
         {
@@ -159,16 +154,11 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// The failure this shield exists for: <c>Assembly.GetName()</c> on an assembly whose name
-        /// carries an invalid culture, which throws out of a DOTS scan filter and takes mission load
-        /// with it. Returning null from a finalizer suppresses the exception; the caller then sees
-        /// the method's outputs at their defaults, which for every known filter variant means "does
-        /// not reference entities", so the unnameable assembly is skipped and load continues.
-        ///
-        /// NARROW, deliberately. This used to swallow every exception from a patched scan method,
-        /// which would have hidden an unrelated DOTS fault inside the mod's own shield and left
-        /// nobody able to see it. Anything that is not the documented failure is reported and
-        /// RE-THROWN, so the game behaves exactly as it would without the mod.
+        /// Suppresses the failure this shield exists for: <c>Assembly.GetName()</c> on an assembly whose name
+        /// carries an invalid culture, thrown out of a DOTS scan filter during mission load. Returning null
+        /// suppresses it, the caller sees the defaults ("does not reference entities"), and load continues.
+        /// Anything else is reported and re-thrown, so an unrelated DOTS fault stays visible and the game
+        /// behaves as it would without the mod.
         /// </summary>
         private static Exception ShieldFinalizer(Exception __exception)
         {
@@ -180,10 +170,9 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// True for the invalid-assembly-name failure, at any depth: the throw arrives wrapped when
-        /// the scan filter is itself called through reflection. Matched on the exception type plus
-        /// the name of the parameter it faults on, because the message text is culture-dependent and
-        /// cannot be compared against a fixed string.
+        /// True for the invalid-assembly-name failure at any depth (the throw arrives wrapped when the filter
+        /// is called through reflection). Matched on exception type and faulting parameter name, because the
+        /// message text depends on culture.
         /// </summary>
         private static bool IsAssemblyNameFailure(Exception ex)
         {

@@ -6,23 +6,14 @@ using UnityEngine;
 namespace AutoTOT
 {
     /// <summary>
-    /// The coordinator's log lines and the small text helpers that build them. Nothing here decides
-    /// anything: every method is called for its side effect on the log, or returns a string.
-    ///
-    /// Split out of Coordinator.cs for size only. Most of these are gated behind
-    /// <see cref="Coordinator.VerboseLog"/> or <see cref="Coordinator.TraceFlightModel"/>.
+    /// The coordinator's log lines and their text helpers; nothing here decides anything. Most are gated
+    /// behind <see cref="Coordinator.VerboseLog"/> or <see cref="Coordinator.TraceFlightModel"/>.
     /// </summary>
     internal static partial class Coordinator
     {
         /// <summary>
-        /// What the launch-state snapshot was actually
-        /// built from, and what it produced against the live estimate for the same shot.
-        ///
-        /// This estimator feeds the shared impact and had no trace of any kind. On 2026-09-07e it
-        /// returned 1218.9s for a round that flew 676.1s and moved a whole strike 548s late, and the
-        /// only way to see that was to invert the arithmetic of the anchored line afterwards.
-        ///
-        /// One line per round, since the value is memoised on the observation and computed once.
+        /// What a launch-state snapshot was built from, and what it produced against the live estimate. It
+        /// feeds the shared impact, so a bad value must be visible. One line per round, since it is memoised.
         /// </summary>
         private static void LogLaunchSnapshot(LaunchObservation o, Intent it, float est, float liveEst)
         {
@@ -34,12 +25,9 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// The recorded launch state in readable form. The rail heading's FLAT MAGNITUDE is the value
-        /// under suspicion: it is taken from the round's forward vector at first sighting, and an
-        /// air-dropped weapon's first stage is DropFromAircraft, so a round still pointing steeply
-        /// down yields a tiny horizontal component whose direction is then almost arbitrary. The
-        /// integrator flies that bearing for the whole initial flight phase before turning onto the
-        /// target.
+        /// The recorded launch state in readable form. The rail heading's flat magnitude matters: an
+        /// air-dropped round still pointing steeply down has a tiny horizontal component whose direction is
+        /// nearly arbitrary, and the integrator flies that bearing through the initial phase.
         /// </summary>
         private static string LaunchSnapshotText(LaunchObservation o, Intent it)
         {
@@ -65,26 +53,10 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// The shared impact
-        /// prediction every time it MOVES, decomposed into the two terms that produce it.
-        ///
-        /// The defect this exists to measure is that `LastRoundLaunch` is an absolute timestamp from
-        /// when a round left the rail, while `est` is the flight of a round launched from wherever
-        /// the shooter is at the moment of the call. For a ship those describe the same place. For
-        /// an aircraft closing on the target they do not, and the shared impact walks earlier by the
-        /// distance flown, splitting a strike into shots timed against different impacts.
-        ///
-        /// Three quantities per line:
-        ///   - `pred` and its movement since the last line, which is the slide itself (D1);
-        ///   - `moved`, shooter displacement since its FIRST launch, which is what the error should
-        ///     be proportional to if the diagnosis is right (D2);
-        ///   - `live`, the range-over-speed remaining flight of a round actually in the air, against
-        ///     the `est` being used in its place (D4). This is what decides whether the fix can ask
-        ///     the game for the real remaining flight or has to freeze an estimate.
-        ///
-        /// Thresholded at <see cref="AnchorSlideLogSeconds"/> because the prediction re-runs on a
-        /// 0.5s TTL. The first prediction always prints, so a ship anchor that never moves still
-        /// produces the baseline the control run needs.
+        /// The shared impact prediction each time it moves, with its terms: `pred` and its movement; `moved`,
+        /// shooter displacement since its first launch, which a launch-time and estimate mismatch scales
+        /// with; and `live`, a flying round's range over speed, against the `est` used. Thresholded at
+        /// <see cref="AnchorSlideLogSeconds"/>; the first prediction always prints as a baseline.
         /// </summary>
         private static void LogAnchorSlide(Scheduled a, Intent it, float pred,
                                            AnchorPredictTerms terms, float simNow)
@@ -110,11 +82,7 @@ namespace AutoTOT
                 $" | {ShooterDisplacement(a, it, simNow)}{LiveRoundFlight(a, it)}");
         }
 
-        /// <summary>
-        /// D6: rounds of this ammo still on the shooter. The 2026-09-06 run's estimate collapsed to
-        /// 0.2s in the same frame the aircraft fired its LAST round, so whether the shooter still
-        /// has one aboard is the first thing to rule in or out.
-        /// </summary>
+        /// <summary>Rounds of this ammo still aboard the shooter.</summary>
         private static string ReadyRoundsText(Intent it)
         {
             LauncherFactsSource.Facts f = LauncherFactsSource.Get(it.Unit, it.AmmoId);
@@ -122,10 +90,8 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// Fraction of the straight-line, top-speed flight time below which an estimate is not
-        /// slow-but-wrong, it is broken. Half is deliberately generous: a real shot is always SLOWER
-        /// than range over max speed, never faster, so anything under half is impossible rather than
-        /// merely surprising.
+        /// Fraction of the straight-line, top-speed flight time below which an estimate is broken rather than
+        /// slow: a real shot is never faster than range over top speed.
         /// </summary>
         private const float ImplausibleEstimateFraction = 0.5f;
 
@@ -148,22 +114,10 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// D8: catch a collapsed flight estimate at COMMIT, where the anchor role is decided.
-        ///
-        /// D6 watches the anchor's live prediction and so cannot see this: an order whose estimate
-        /// collapses at commit gets a tiny `enroute` and LOSES the anchor role, which is how the
-        /// 2026-09-06 second mission escaped with good coordination while the F/A-18's own Harpoons
-        /// went out 238.7s past-due. The same 0.2s value reaching an order that DOES anchor set the
-        /// shared impact to a time in the past and destroyed the strike.
-        ///
-        /// A shot cannot fly faster than the round's own top speed in a straight line, so comparing
-        /// against that is a bound the physics guarantees rather than a tuned threshold. Reports
-        /// whether the number came from the async cache or a fresh solve, which is the first fork in
-        /// diagnosing it: a cached value means a worker published garbage under a live key, a fresh
-        /// one means the integrator returned it on this thread, this frame.
-        ///
-        /// Diagnostic only. It does NOT substitute a corrected value, for the same reason
-        /// WarnOnImpactAnomaly does not clamp.
+        /// Catch a collapsed flight estimate at commit, where the anchor role is decided: a collapsed order
+        /// loses the anchor role or, if it anchors, puts the shared impact in the past. The bound is physical
+        /// (range over top speed). Says whether the value came from the async cache or a fresh solve.
+        /// Diagnostic only; nothing is substituted.
         /// </summary>
         private static void WarnOnImplausibleEstimate(Intent it, float flightEst, EstSource source)
         {
@@ -188,16 +142,8 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// D6: a loud line when the shared impact prediction does something it should never do.
-        /// Two cases, both seen in the 2026-09-06 run and neither currently detected anywhere:
-        ///
-        ///   - the estimate collapses, so the impact jumps backwards by hundreds of seconds;
-        ///   - the impact lands in the PAST, at which point every held order dumps at once with
-        ///     "released past-due" and the strike has no coordination left at all.
-        ///
-        /// Diagnostic only. It does NOT clamp the prediction, deliberately: the point of this run is
-        /// to see the raw behaviour and learn which guard is the right one. A guard added now would
-        /// hide the evidence needed to choose it.
+        /// Warn when the shared impact prediction jumps backwards by a collapse-sized step or lands in the
+        /// past, where every held order would release past due. Diagnostic only; the prediction is not clamped.
         /// </summary>
         private static void WarnOnImpactAnomaly(Scheduled a, Intent it, float pred,
                                                 AnchorPredictTerms terms, float simNow)
@@ -220,27 +166,9 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// Why an anchor that has launched NOTHING is still
-        /// holding the strike.
-        ///
-        /// The 2026-09-07 run 3 left one link in the chain inferred rather than observed. A circling
-        /// F/A-18 held the anchor role for 296 s and fired none of its 4 ready rounds, and the
-        /// existing traces say the launch envelope was not the blocker (`envelope-track` reported
-        /// `aboveGate False` for all 60 samples) and that its hardpoint reached
-        /// `EngagementNotAllowed` at t+6.9 s and logged no transition after. On those readings
-        /// <see cref="AnchorStillWorking"/> should have gone false at about
-        /// t+30 s, when the post-unblock grace expired, and the no-launch stall should have fired at
-        /// <see cref="NoLaunchStallSim"/> = 120 s. It did not: the ripple ran to the
-        /// <see cref="NoLaunchMaxHoldSim"/> = 300 s hard cap. Something kept the verdict true and no
-        /// line records what.
-        ///
-        /// So this reports the verdict AND which signal produced it, next to the launcher's own state
-        /// and the two deadlines, once every <see cref="LivenessLogIntervalSim"/> seconds. Reading
-        /// `working True (preparing)` against a launcher state of `EngagementNotAllowed` would mean
-        /// the launcher-intent read and the state the transition logger sees disagree, which is the
-        /// leading hypothesis and is not something the current traces can show.
-        ///
-        /// Diagnostics only. No timing decision reads any of this.
+        /// Why an anchor that has launched nothing is still holding the strike: the
+        /// <see cref="AnchorStillWorking"/> verdict and the signal behind it, the launcher state and both
+        /// deadlines, every <see cref="LivenessLogIntervalSim"/> seconds. Diagnostic only.
         /// </summary>
         private static void LogAnchorLiveness(Scheduled a, Intent it, float simNow, int k, int n,
                                               float interval)
@@ -249,10 +177,8 @@ namespace AutoTOT
             if (simNow - a.LastLivenessSim < LivenessLogIntervalSim) return;
             a.LastLivenessSim = simNow;
 
-            // Two clocks, and they are not interchangeable. The hard cap in AnchorStillWorking
-            // always runs from the ORDER; the stall window runs from the last round away once the
-            // ripple has started, and from the order before that. Printing one countdown against
-            // the other clock is how a diagnostic ends up lying about which deadline is close.
+            // Two clocks: the hard cap always runs from the order; the stall window runs from the last round
+            // away once the ripple has started, and from the order before that.
             float sinceFired = simNow - a.FiredAtSim;
             float held = k > 0 ? simNow - a.LaunchTimes[k - 1] : sinceFired;
             float stallWindow = k > 0
@@ -261,8 +187,7 @@ namespace AutoTOT
 
             bool preparing = LauncherFactsSource.IsPreparingToFire(it.Unit, it.AmmoId);
             bool working = AnchorStillWorking(a, it, simNow);
-            // Which arm answered, in the order AnchorStillWorking tests them. The hard cap is
-            // tested first there, so it overrides both signals.
+            // Which arm answered, in AnchorStillWorking's order; the hard cap overrides both signals.
             string why = sinceFired > NoLaunchMaxHoldSim ? "hard-cap"
                        : preparing ? "preparing"
                        : a.LastAscending ? "progress-or-grace"
@@ -279,9 +204,7 @@ namespace AutoTOT
                 $"({ReleasedFollowerCount(a)} already released)");
         }
 
-        /// <summary>Current engage state of every launcher serving this order, for D1. Falls back to
-        /// a short marker rather than throwing: this is a diagnostic and must never be the reason a
-        /// tick fails.</summary>
+        /// <summary>Engage state of every launcher serving this order; returns a marker instead of throwing.</summary>
         private static string LauncherStateText(Intent it)
         {
             try
@@ -294,17 +217,8 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// Every move of the shared impact, with the number
-        /// of followers that have ALREADY released against the old value.
-        ///
-        /// A round in the air has spent its lead, so a later move of the shared impact is unfixable
-        /// for it. This is the number that decides whether the shared impact should be committed once
-        /// the first follower releases: run 2 of the 2026-09-07 session moved it 34.6 s earlier at
-        /// stall finalisation with four rounds already away, and they ended 9.3 to 12.6 km short.
-        ///
-        /// Only reports moves past <see cref="ImpactMoveLogSeconds"/>, and only once a follower has
-        /// actually released. Before that a move costs nothing and the tracking trace already covers
-        /// it.
+        /// Every move of the shared impact past <see cref="ImpactMoveLogSeconds"/> once a follower has
+        /// released, with the number of followers already away, whose rounds cannot follow the move.
         /// </summary>
         private static void LogImpactMove(Scheduled a, Intent it, float pred, float simNow, string phase)
         {
@@ -336,8 +250,8 @@ namespace AutoTOT
             return n;
         }
 
-        /// <summary>D2: how far the shooter has moved since its first observed launch, and how long
-        /// ago that was. Empty when nothing has been recorded yet.</summary>
+        /// <summary>How far the shooter has moved since its first observed launch, and how long ago; empty
+        /// when nothing is recorded.</summary>
         private static string ShooterDisplacement(Scheduled a, Intent it, float simNow)
         {
             if (a.LaunchObs.Count == 0 || it.Unit == null) return "moved n/a";
@@ -352,11 +266,8 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// D4: the remaining flight of a round actually in the air, as range over its current speed.
-        /// Deliberately crude, and deliberately measured from the ROUND rather than from the
-        /// shooter: the question is only whether the game can answer "how long until this one
-        /// arrives" well enough to replace the re-estimate. The newest live round is used, since it
-        /// is the one whose arrival the prediction is nominally about.
+        /// Remaining flight of the newest round in the air, as range over current speed. Crude on purpose: it
+        /// shows whether the game's live state could answer "how long until this one arrives".
         /// </summary>
         private static string LiveRoundFlight(Scheduled a, Intent it)
         {
@@ -378,11 +289,7 @@ namespace AutoTOT
             return " | no live round";
         }
 
-        /// <summary>
-        /// D5: platform class, so the anchor lines say what KIND of shooter won the role. The whole
-        /// question is whether the anchor moves between its launch and the ripple finalising, and
-        /// that is a property of the platform, not of the weapon.
-        /// </summary>
+        /// <summary>Platform class, so the anchor lines say what kind of shooter won the role.</summary>
         private static string PlatformTag(ObjectBase u)
         {
             if (u == null) return "?";
@@ -393,8 +300,7 @@ namespace AutoTOT
         }
 
         // ------------------------------------------------------------------------------------
-        // Diagnostics written to prove or rule out release-path defects before they were fixed; the
-        // ones whose defects closed have been removed. Nothing below changes a timing decision.
+        // Release-path diagnostics. Nothing below changes a timing decision.
         // ------------------------------------------------------------------------------------
 
         /// <summary>Cadence for the estimator census. Sim time, so a paused game is quiet and time
@@ -404,9 +310,8 @@ namespace AutoTOT
         private static float _lastCensusSim = float.NegativeInfinity;
 
         /// <summary>
-        /// The estimator pool's census (in flight, completed, superseded, publish age, faults),
-        /// verbose only. It is the kill criterion chain-audit A2 names for a stranded in-flight key,
-        /// and it runs whether or not anything is being engaged, because the pool does.
+        /// The estimator pool's census: in flight, completed, superseded, publish age, faults. Verbose only;
+        /// it runs whether or not anything is engaged, because the pool does.
         /// </summary>
         private static void DiagnoseEstimatorCensus(float simNow)
         {
@@ -417,13 +322,8 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// D1: a follower still holding on an anchor that has left _scheduled. The hold in
-        /// ReleaseDueLaunches waits for the anchor's first launch and is bounded by RippleDone, which
-        /// only UpdateAnchorTracking can set, and that loop walks _scheduled. An anchor removed from
-        /// it after being marked Fired therefore cannot ever release its followers.
-        ///
-        /// Ungated and at WARNING: this states an invariant that should never hold, and a run that
-        /// hits it must not have to be re-flown with verbose on to see it. Once per follower.
+        /// Warn when a follower still holds on an anchor that has left _scheduled: only UpdateAnchorTracking
+        /// can set the RippleDone that frees it, and that loop walks _scheduled. Ungated, once per follower.
         /// </summary>
         private static void DiagnoseOrphanedFollower(Scheduled s, float simNow)
         {
@@ -444,14 +344,9 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// D1, removal side: how many followers were still pointing at an entry as it left
-        /// _scheduled. Zero is the ordinary case and says nothing; a nonzero count on an anchor that
-        /// has fired without launching is the exact shape the finding predicts.
-        ///
-        /// Call it AFTER <see cref="RetireAnchor"/>. Every exit retires a fired anchor first, which
-        /// sets RippleDone, so the stranding warning below can only fire for an exit that skipped
-        /// the retire: it is a regression guard, and called before the retire it cried wolf on every
-        /// case the retire was about to fix.
+        /// Count the followers still pointing at an entry as it leaves _scheduled, and warn when a fired
+        /// anchor that launched nothing leaves without RippleDone. Call after <see cref="RetireAnchor"/>,
+        /// which sets RippleDone on every such exit, so the warning only fires for an exit that skipped it.
         /// </summary>
         private static void NoteScheduleExit(Scheduled s, float simNow, string reason)
         {
@@ -464,13 +359,8 @@ namespace AutoTOT
                 if (!s.Followers[i].Fired) waiting++;
             if (waiting == 0) return;
 
-            // The recoverable exits must not warn, or every ordinary strike would print one. A
-            // ripple that COMPLETES sets RippleDone, which frees the hold; an anchor that dies BEFORE
-            // releasing is re-elected by PromoteAnchor, which re-points every survivor; one that
-            // released and launched nothing is retired, which sets RippleDone and re-anchors. What is
-            // left is the shape the finding is about: the anchor has dispatched, no round was ever
-            // seen, and it leaves without RippleDone, so nothing can set it afterwards and nothing
-            // can release the followers.
+            // Ordinary exits must not warn: a completed ripple sets RippleDone, a held anchor is re-elected,
+            // and a fired anchor that launched nothing is retired. What remains is the stranding case.
             bool stranding = s.Fired && !s.RippleDone && s.LaunchTimes.Count == 0;
             if (!stranding)
             {
@@ -490,15 +380,9 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// D6: the centering term used to finalize a stalled ripple, beside the one the observed
-        /// launches would have produced. Independent salvos release half a ripple span early and the
-        /// prediction subtracts that same span back out, but the span was fixed at commit from the
-        /// FULL order while the stall re-predicts on the rounds that actually flew.
-        ///
-        /// `correction` is what the observed span changed the centering by. It was the error this
-        /// finding measured before the fix landed; it is now the size of the fix's effect on each
-        /// stalled salvo, which is the number a regression run reads. Grouped salvos are excluded:
-        /// their centering is 0 either way. For a pooled anchor both numbers are the pool's lead.
+        /// The centring used to finalize a stalled ripple, beside the one the observed launches give: the
+        /// lead was fixed at commit from the full order, while the re-prediction uses the rounds that flew.
+        /// `correction` is the difference. Grouped salvos centre at 0 either way; a pooled anchor uses the pool's lead.
         /// </summary>
         private static void LogStallCentering(Scheduled a, Intent it, int requested, int observed,
                                               float span, float interval, float onObserved)
@@ -514,13 +398,9 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// D9: what a whole strike asks of one shooter's magazine, against what that shooter can
-        /// actually fire. The panel caps each ROW at the launcher-available count, but only the
-        /// guidance-channel budget is shared across targets, so ammunition that is not channel-capped
-        /// can be staged twice over.
-        ///
-        /// Called once per commit, after the guidance clamp and before PrepareIntent, so the counts
-        /// are the ones that will actually be dispatched.
+        /// What a strike asks of one shooter's magazine against what it can fire. The panel caps each row,
+        /// but only the channel budget is shared across targets, so ammunition that is not channel-capped can
+        /// be staged twice over. Called once per commit, after the guidance clamp and before PrepareIntent.
         /// </summary>
         private static readonly Dictionary<ShipAmmoKey, int> _stockScratch = new Dictionary<ShipAmmoKey, int>();
         private static readonly Dictionary<ShipAmmoKey, int> _stockTargets = new Dictionary<ShipAmmoKey, int>();
@@ -551,10 +431,7 @@ namespace AutoTOT
                 _stockScratch.Remove(key);   // one line per shooter and ammunition, not per order
                 int targets = _stockTargets.TryGetValue(key, out int t) ? t : 1;
                 int available = LauncherFactsSource.AvailableRounds(it.Unit, it.AmmoId);
-                // Rounds this ship already owes from EARLIER commits. Without these the check only
-                // saw one strike at a time, and the case the finding is about is a magazine spent
-                // across two commits a few seconds apart. Same ammunition only: a magazine is not
-                // shared the way a guidance channel is.
+                // Include rounds owed from earlier commits, same ammunition only.
                 int outstanding = OutstandingRounds(it.Unit, it.AmmoId);
                 requested += outstanding;
 
@@ -572,10 +449,8 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// Rounds of one ammunition this ship is already committed to and has not yet put in the
-        /// air: orders scheduled and not released, plus orders dispatched whose ripple is unfinished.
-        /// Exact ammunition match, unlike the guidance accounting, because magazines are per
-        /// ammunition while channels belong to a shared sensor.
+        /// Rounds of one ammunition this ship is committed to and has not yet launched: scheduled but
+        /// unreleased, plus dispatched but unfinished. Exact ammunition match, since magazines are per ammunition.
         /// </summary>
         internal static int AmmoOutstanding(ObjectBase unit, string ammoId)
             => OutstandingRounds(unit, ammoId);
@@ -591,8 +466,7 @@ namespace AutoTOT
                     n += Mathf.Max(1, s.Item.Shots);
             }
             n += ReservedRounds(unit, ammoId);
-            // Committed and waiting on their flight estimates: not scheduled, not in a batch, and
-            // every bit as much a claim on the magazine as a held order.
+            // Committed orders still waiting on their estimates are a claim on the magazine too.
             n += PendingAmmoRounds(unit, ammoId);
             return n;
         }

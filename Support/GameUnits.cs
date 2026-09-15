@@ -4,9 +4,8 @@ using UnityEngine;
 namespace AutoTOT
 {
     /// <summary>
-    /// Unit conversions shared by the coordinator and the HUD. The game world is measured
-    /// in Unity units; these are the game's own constants for converting to metres, nautical
-    /// miles, and metres/second. Keep any new conversion here so the values live in one place.
+    /// Unit conversions shared by the coordinator and the HUD, using the game's own constants. Keep new
+    /// conversions here.
     /// </summary>
     internal static class GameUnits
     {

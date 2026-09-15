@@ -6,44 +6,29 @@ using UnityEngine;
 namespace AutoTOT
 {
     /// <summary>
-    /// Coordinator (partial) ; the deferred commit. A commit's checks, shot counts and launcher
-    /// facts are settled on the frame the player fires, but its flight estimates are not: each
-    /// order needs its own solve, and a strike of several hundred orders needs several hundred of
-    /// them at roughly 2.5 ms each on a fast CPU. Running those on the frame that asks for them
-    /// froze a 522-order strike for 2.6 s.
-    ///
-    /// So the commit is split in two. The frame the player fires does the main-thread work only:
-    /// revalidation, the guidance clamp, PrepareIntent, and one queue request per order. The orders
-    /// then wait here until their estimates arrive, at which point anchor selection runs with no
-    /// solving left to do and the strike is scheduled exactly as before.
-    ///
-    /// Nothing launches at commit, so the wait costs the player nothing: the shared impact time is
-    /// computed from the clock at COMPLETION, and the release gate re-estimates continuously
-    /// afterwards. What it buys is a game that keeps running while a large strike is prepared.
+    /// Coordinator (partial): the deferred commit. The firing frame does only the main-thread work
+    /// (revalidation, the guidance clamp, PrepareIntent, one queue request per order). The flight
+    /// estimates, several milliseconds each, are collected over the following frames; then the anchor is
+    /// elected and the strike scheduled. Nothing launches at commit and the shared impact is computed when
+    /// the commit completes, so the wait costs nothing.
     /// </summary>
     internal static partial class Coordinator
     {
         /// <summary>
-        /// Main-thread solving allowed per frame, in milliseconds, for orders the worker pool could
-        /// not take. Deliberately small: this path exists so a commit still completes with the pool
-        /// off or declining, not so it can race the pool. At least one solve always runs, so a
-        /// single solve costing more than the whole budget cannot stall a commit forever.
+        /// Main-thread solving per frame (ms) for orders the worker pool could not take. At least one solve
+        /// always runs, so a commit completes even when one solve exceeds the budget.
         /// </summary>
         private const double PendingSolveBudgetMs = 2.0;
 
         /// <summary>
-        /// How long a commit may stay pending, in real seconds, before the rest of its estimates
-        /// are solved on the spot. The point is that a commit ALWAYS completes: a stranded solve
-        /// key or a pool that has stopped answering must not leave a strike waiting forever. On the
-        /// normal path this never fires, and when it does it says so.
+        /// Real seconds a commit may stay pending before its missing estimates are solved on the spot, so a
+        /// stalled pool cannot leave a strike waiting. Logged when it fires.
         /// </summary>
         private const float PendingDeadlineReal = 5f;
 
         /// <summary>
-        /// One commit whose orders are final and whose flight estimates are still being solved.
-        /// The item list is the same list the batch held, with the same <see cref="Intent"/>
-        /// objects, so nothing is copied and the estimates land on the objects that will be
-        /// scheduled.
+        /// A commit whose orders are final and whose flight estimates are still being solved. It holds the
+        /// batch's own <see cref="Intent"/> objects, so the estimates land on what will be scheduled.
         /// </summary>
         private sealed class PendingCommit
         {
@@ -51,13 +36,12 @@ namespace AutoTOT
             public bool Planner;    // planner fire: logs whatever the order count, always checks contention
             public bool IsStrike;   // a strike batch rather than an auto batch
             public float StartedReal;
-            public float StartedSim;  // when the queued snapshots were taken, which is the age of
-                                      // every estimate a worker answers with
+            // When the queued snapshots were taken, which is the age of every estimate a worker answers with.
+            public float StartedSim;
             public int Frames;      // ticks spent pending, for the completion line
         }
 
-        // Commits waiting on their estimates, oldest first. Normally empty, and never more than a
-        // handful: a commit clears in a frame or two unless it holds hundreds of orders or the pool is off.
+        // Commits waiting on their estimates, oldest first; normally empty.
         private static readonly List<PendingCommit> _pending = new List<PendingCommit>();
 
         /// <summary>Orders held in commits that are waiting on their flight estimates.</summary>
@@ -74,8 +58,7 @@ namespace AutoTOT
         /// <summary>True while any commit is waiting on its estimates.</summary>
         internal static bool CommitPending => _pending.Count > 0;
 
-        // Per-frame budget for the main-thread fallback solves, keyed on the frame so a commit
-        // started in OnGUI and the tick's own pump share one allowance rather than two.
+        // Per-frame fallback budget, keyed on the frame so OnGUI and the tick share one allowance.
         private static int _pendingBudgetFrame = -1;
         private static double _pendingSpentMs;
 
@@ -90,13 +73,8 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// Take a prepared, revalidated, clamped set of orders and start their estimates. The
-        /// caller has already run <see cref="TryPrepareCommit"/> and <see cref="PrepareIntent"/>,
-        /// so the only thing left before the strike can be scheduled is the flight estimates.
-        ///
-        /// Completes immediately when every estimate is already in hand, which is what happens with
-        /// the solve pool off and a small order count: the budget below covers them on the firing
-        /// frame itself and the strike is scheduled without a tick of delay.
+        /// Start the estimates for orders already prepared by <see cref="TryPrepareCommit"/> and
+        /// <see cref="PrepareIntent"/>. Completes at once when every estimate is already in hand.
         /// </summary>
         private static void BeginCommit(List<Intent> items, bool planner, bool isStrike)
         {
@@ -111,12 +89,8 @@ namespace AutoTOT
                 StartedSim = GameClock.SimNow(),
             };
 
-            // Queue every order before reading any answer. A multi-target strike commits
-            // shooters x targets distinct cache keys at once with nothing cached (the key is
-            // {unit, ammo, target}, so cross-target reuse is zero by construction). Queueing the
-            // whole set first lets the pool work on all of it in parallel; reading as we go would
-            // serialise the list behind whatever the first order needs. Setup is main-thread work,
-            // about 5 us per order, and it is the only per-order cost this frame pays.
+            // Queue every order before reading any answer, so the pool works on the whole set in parallel; a
+            // strike's {unit, ammo, target} keys are all distinct and uncached.
             for (int i = 0; i < items.Count; i++)
             {
                 Intent it = items[i];
@@ -127,19 +101,15 @@ namespace AutoTOT
                     CoordinatorProfiler.Count(CoordinatorProfiler.Counter.FlightQueued);
             }
 
-            // Added to the pending list only if it has to wait. Completing straight out of the
-            // list would leave the entry behind, and the accounting reads that list: the commit's
-            // rounds would then be counted twice, once pending and once scheduled, for the rest of
-            // the mission.
+            // Added to the pending list only if it has to wait: completing from the list would leave the
+            // entry behind and count its rounds twice.
             if (PumpPending(pc)) { CompletePending(pc); return; }
             _pending.Add(pc);
         }
 
         /// <summary>
-        /// Advance every pending commit and schedule the ones whose estimates are all in. Called
-        /// once per tick, after <see cref="FlightTime.DrainCompleted"/> has published what the
-        /// workers finished, and before the release stage, so a commit that completes on this tick
-        /// is released on it too.
+        /// Advance every pending commit and schedule those whose estimates are all in. Runs once per tick,
+        /// after <see cref="FlightTime.DrainCompleted"/> and before release.
         /// </summary>
         private static void PumpPendingCommits()
         {
@@ -157,22 +127,16 @@ namespace AutoTOT
                     ready = true;
                 }
                 if (!ready) { i++; continue; }
-                // Out of the pending list BEFORE it is scheduled, so the accounting never sees the
-                // same rounds in both places.
+                // Removed before scheduling, so the accounting never sees the rounds in both places.
                 _pending.RemoveAt(i);
                 CompletePending(pc);
             }
         }
 
         /// <summary>
-        /// Resolve what can be resolved for one pending commit without solving anything the worker
-        /// pool is already working on. Returns true when every order has an answer.
-        ///
-        /// The three routes an order takes, in order of preference: the cache, which is where a
-        /// finished worker result lands; waiting, when a worker still has it; and a solve here,
-        /// when nothing else will answer (the pool is off, or it declined the request, or its
-        /// result was superseded and dropped). Only the third costs the frame anything, and it is
-        /// capped by <see cref="PendingSolveBudgetMs"/>.
+        /// Resolve what one pending commit can without duplicating worker work: the cache, then waiting on a
+        /// worker, then a budgeted solve here (<see cref="PendingSolveBudgetMs"/>). True when every order has
+        /// an answer.
         /// </summary>
         private static bool PumpPending(PendingCommit pc)
         {
@@ -187,10 +151,8 @@ namespace AutoTOT
                 {
                     CoordinatorProfiler.CountCachedHit();
                     it.CommitFlightEst = cached;
-                    // The snapshot behind a worker's answer was taken when the request was queued,
-                    // which is the commit's own moment, not this frame's. Dating it now would tell
-                    // the release gate the estimate is fresher than it is, and at 10x compression a
-                    // third of a real second is three sim seconds.
+                    // A worker's snapshot was taken when the request was queued, so date the estimate to the
+                    // commit, not to this frame.
                     it.CommitEstSim = pc.StartedSim;
                     it.CommitEstDone = true;
                     continue;
@@ -204,10 +166,8 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// Solve one pending order on this thread and charge the frame's budget for it. The answer
-        /// is recorded even when the estimator declined and returned 0: the commit is waiting for
-        /// an ANSWER, and "this shot cannot be modelled" is one. Anchor selection already handles a
-        /// zero, by never letting that order win the anchor role and saying so if none of them can.
+        /// Solve one pending order here and charge the frame budget. A declined estimate (0) is recorded as
+        /// an answer; anchor selection already handles it.
         /// </summary>
         private static void SolvePendingNow(Intent it)
         {
@@ -224,10 +184,8 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// Finish a commit that has waited past <see cref="PendingDeadlineReal"/> by solving
-        /// everything it is still missing, budget or no budget. This is the freeze the deferred
-        /// commit exists to avoid, so it is a warning, not a quiet fallback: it means the worker
-        /// pool did not answer for five seconds, which is a condition worth seeing in the log.
+        /// Finish a commit past <see cref="PendingDeadlineReal"/> by solving everything missing, budget or
+        /// not. Warned, since it means the worker pool stopped answering.
         /// </summary>
         private static void ForceResolvePending(PendingCommit pc, float waitedReal)
         {
@@ -247,19 +205,14 @@ namespace AutoTOT
                 $"get the strike away. The solve workers are not keeping up or are not answering.");
         }
 
-        /// <summary>
-        /// Elect the anchor and schedule the strike. Every order arrives here with its estimate
-        /// already resolved, so this does no simulation work at all: the cost is one pass over the
-        /// orders plus <see cref="Schedule"/>.
-        /// </summary>
+        /// <summary>Elect the anchor and schedule the strike; every estimate is already resolved.</summary>
         private static void CompletePending(PendingCommit pc)
         {
             List<Intent> items = pc.Items;
             float waitedMs = (Time.unscaledTime - pc.StartedReal) * 1000f;
 
-            // Liveness only. NOT RevalidateCommit: its magazine pass measures each order against
-            // OutstandingRounds, which counts pending orders, so re-running it here would trim this
-            // commit against its own rounds and shrink it to nothing.
+            // Liveness only, not RevalidateCommit: its magazine pass counts pending orders, so it would trim
+            // this commit against its own rounds.
             DropDeadPendingOrders(items);
             if (items.Count == 0)
             {
@@ -279,8 +232,8 @@ namespace AutoTOT
                 ? UnitNaming.SafeName(_targetScratch[0])
                 : $"{_targetScratch.Count} targets";
 
-            // Before the anchor election: a pooled lead changes the enroute time of every order in
-            // the pool, and PickAnchor, the release gate and the board all read it as ReleaseLead.
+            // Before the anchor election: a pooled lead changes the enroute time that PickAnchor, the release
+            // gate and the board read.
             PoolSharedLaunchClock(items);
             Intent anchor = PickAnchor(items, out float maxEnroute);
             Schedule(items, GameClock.SimNow() + maxEnroute, anchor);
@@ -292,17 +245,13 @@ namespace AutoTOT
                     $"{anchor?.AmmoId} -> {UnitNaming.SafeName(anchor?.Target)}, impacts synced. " +
                     $"Estimates prepared in {waitedMs:0} ms over {pc.Frames} tick(s).");
 
-            // Unchanged from the immediate commit: the auto path only reports contention for a
-            // strike, where the player chose the target spread; the planner path always does.
+            // As the immediate commit did: contention is reported for strikes and planner fires, not AUTO batches.
             if (pc.Planner || pc.IsStrike) WarnOnLauncherContention(items);
         }
 
         /// <summary>
-        /// Drop orders whose shooter or target died while the commit was pending. The window is
-        /// normally a frame or two, but it is real time, and at high compression a few frames are
-        /// several sim seconds. The release loop would drop these anyway; doing it here keeps them
-        /// out of anchor selection, where a dead shooter's estimate could still win the anchor role
-        /// and take the whole strike's timing with it.
+        /// Drop orders whose shooter or target died while pending, so a dead shooter's estimate cannot win
+        /// the anchor role.
         /// </summary>
         private static void DropDeadPendingOrders(List<Intent> items)
         {
@@ -324,10 +273,8 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// Rounds a pending commit has spoken for on this ship, counted across every ammunition
-        /// that shares <paramref name="ammoId"/>'s guiding sensor. Feeds the guidance-channel
-        /// budget: a pending order is committed and unfired in every sense that matters to the
-        /// channel count, and leaving it out let a second commit hand the same channels out twice.
+        /// Rounds pending commits have spoken for on this ship, across every ammunition sharing
+        /// <paramref name="ammoId"/>'s guiding sensor. Feeds the guidance-channel budget.
         /// </summary>
         private static int PendingGuidedRounds(ObjectBase unit, string ammoId)
         {
@@ -348,9 +295,8 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// Rounds of exactly this ammunition a pending commit has spoken for on this ship. Feeds
-        /// the magazine accounting, which matches the ammunition exactly because a magazine is not
-        /// shared the way a guidance channel is.
+        /// Rounds of exactly this ammunition pending commits have spoken for on this ship. Feeds the magazine
+        /// accounting.
         /// </summary>
         private static int PendingAmmoRounds(ObjectBase unit, string ammoId)
         {

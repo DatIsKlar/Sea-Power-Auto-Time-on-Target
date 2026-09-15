@@ -5,15 +5,13 @@ using SeaPower;
 namespace AutoTOT
 {
     /// <summary>
-    /// Version-agnostic accessor for the game's sim clock. The beta build removed
-    /// <c>GameTime.time</c> (float) and the public build still has it, so the getter is resolved
-    /// once by reflection and cached; one DLL then runs on both branches.
+    /// Branch-independent accessor for the game's sim clock. Newer builds removed <c>GameTime.time</c>
+    /// (float), which the public branch still has, so the getter is resolved once by reflection and one DLL
+    /// runs on both.
     ///
-    /// The clock is <c>GameTime.missionElapsedTime</c> (double), NOT <c>simulationTime</c>. The game
-    /// stamps a weapon's <c>_launchTime</c> from <c>missionElapsedTime</c> and the mod compares
-    /// launch times against its own clock, so the two must be the same one. <c>simulationTime</c>
-    /// advances by a physics-capped <c>fixedDeltaTime</c> and diverges under high time compression.
-    /// Do NOT use it.
+    /// The clock is <c>GameTime.missionElapsedTime</c> (double), not <c>simulationTime</c>: the game stamps a
+    /// weapon's <c>_launchTime</c> from <c>missionElapsedTime</c>, while <c>simulationTime</c> advances by a
+    /// physics-capped <c>fixedDeltaTime</c> and diverges under high time compression.
     /// </summary>
     internal static class GameClock
     {
@@ -30,10 +28,9 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// A weapon's launch timestamp (sim-clock seconds), read via reflection: the field's TYPE
-        /// differs between branches (<c>float</c> on public, <c>double</c> on beta) and a
-        /// compile-time reference bakes one of them into the IL, so a DLL built against either
-        /// branch throws on the other. Returns -1 if the weapon or the field cannot be resolved.
+        /// A weapon's launch timestamp in sim-clock seconds, read by reflection: the field is float on public
+        /// and double on newer builds, and a compile-time reference would throw on the other branch. -1 if it
+        /// cannot be resolved.
         /// </summary>
         public static float LaunchStamp(WeaponBase w)
         {
@@ -54,10 +51,9 @@ namespace AutoTOT
         private static bool _launchStampWarned;
 
         /// <summary>
-        /// <see cref="LaunchStamp"/>, or <paramref name="fallback"/> when the field cannot be read.
-        /// Any caller whose stamp feeds timing must use this: a -1 appended to an anchor's launch
-        /// times would put the shared impact in the deep past and release every held order at once.
-        /// Warned once per session, since a miss means a game update renamed or retyped the field.
+        /// <see cref="LaunchStamp"/>, or <paramref name="fallback"/> when the field cannot be read. Use this
+        /// wherever the stamp feeds timing: a -1 in an anchor's launch times would put the shared impact in
+        /// the past and release every held order at once. Warned once per session.
         /// </summary>
         public static float LaunchStampOr(WeaponBase w, float fallback)
         {
@@ -80,8 +76,8 @@ namespace AutoTOT
             Type gt = typeof(GameTime);
             string resolved = "UNRESOLVED";
 
-            // Preferred (both branches): missionElapsedTime (double). It is the behavioral
-            // continuation of the removed float `time` and matches the clock `_launchTime` uses.
+            // Preferred: missionElapsedTime (double), the continuation of the removed float `time` and the
+            // clock _launchTime uses.
             PropertyInfo mel = gt.GetProperty("missionElapsedTime", F);
             if (mel != null && mel.GetGetMethod() != null)
             {

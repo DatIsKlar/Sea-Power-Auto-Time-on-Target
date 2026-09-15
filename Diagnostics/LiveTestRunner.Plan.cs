@@ -30,33 +30,21 @@ namespace AutoTOT
             public float Compression = 1f;
             public float WaitForContactSec = 120f;
             public float TimeoutSec = 1500f;
-            // Instrumentation, per section. Accuracy work wants the flight-model trace; the
-            // performance scenario must not have it, because it runs extra sims per round and
-            // roughly ten times the log volume, which distorts what it is trying to measure.
-            // VerboseLogging additionally REGISTERS a launch expectation for every order, which
-            // the runner's own done-detection reads, so it is forced on and not a plan key.
+            // Per-section instrumentation. The performance scenario must not trace (extra sims, ten times the
+            // log). VerboseLogging is forced on, since the done-detection reads the expectations it registers.
             public bool TraceFlightModel = true;
-            public bool VerticalProfile;
-            public bool AlignmentTrace;
-            // Counterfactual for beam-only-launcher-alignment.md A7: EndAlignment removes the ending
-            // alignment of a shared uid instead of its replacement. Runner plans only.
-            public bool AlignmentUidFix;
             public bool Profiling;
             public bool VerifySolve;
-            // Stage the panel on the first shot and hold it on screen for this long instead of
-            // firing, so a screenshot can verify a label the runner cannot read. 0 disables. The
-            // run still ends normally, with no rounds and no corpus captures.
+            // Stage the panel on the first shot and hold it on screen this long instead of firing, for a
+            // screenshot. 0 disables; the run ends normally with no rounds.
             public float PanelHoldSec;
-            // Fire through the planner instead of handing the coordinator the shot list: stage every
-            // shot in the panel with the first shooter's whole formation rostered, keep it on screen
-            // from contact on, and press FIRE THIS TARGET. PanelHoldSec wins if both are set.
+            // Fire through the planner: stage every shot with the first shooter's formation rostered, keep it
+            // on screen from contact on, and press FIRE THIS TARGET. PanelHoldSec wins if both are set.
             public bool PanelFire;
-            // Send each shot as a direct order through Coordinator.FireNow, the panel's FIRE NOW path
-            // without its range filter: nothing is coordinated or held. Watch becomes an observation
-            // window that ends on TimeoutSec, since direct orders register no launch expectation.
+            // Send each shot as a direct order (Coordinator.FireNow, no range filter): nothing coordinated or
+            // held, and Watch ends on TimeoutSec, since direct orders register no expectation.
             public bool FireNow;
-            // Accept shots inside the weapon's minimum launch range at arm, so a plan can create the
-            // order the game turns to unmask and then never launches.
+            // Accept shots inside minimum launch range, to create the order the game turns to unmask and never fires.
             public bool AllowInsideMinRange;
             // Delay firing until the geometry is right. See LiveTestRunner.HoldSatisfied.
             public float HoldUntilSec;
@@ -69,8 +57,8 @@ namespace AutoTOT
                 public string Shooter; public string Target; public string Ammo = "*"; public int Salvo = 1;
             }
 
-            // "Shooter | ammo | salvo": a player-style SAM order at whatever missile first threatens the
-            // shooter inside that SAM's range. See LiveTestRunner.TickManualOrders.
+            // "Shooter | ammo | salvo": a player-style SAM order at the first missile threatening the shooter
+            // inside that SAM's range. See LiveTestRunner.TickManualOrders.
             public readonly List<ManualLine> Manual = new List<ManualLine>();
 
             public sealed class ManualLine
@@ -83,10 +71,7 @@ namespace AutoTOT
         {
             public string Ammo, Target, Outcome, DumpKey;
             public float FinalRangeM, Flight, Predicted, Residual, Gap, MinComp, MaxComp;
-            // The step the round was ACTUALLY integrated with. The game halves its physics rate
-            // below 30 fps and restores it above 40, with nothing in between, so two runs of one
-            // plan can integrate differently and neither says so. A round whose step moved
-            // mid-flight is not reproducible and must not be scored.
+            // The step the round was actually integrated with; a round whose step changed mid-flight is not scored.
             public float MinStep, MaxStep;
             public bool Retargeted, HasResidual, HasGap;
         }
@@ -94,9 +79,8 @@ namespace AutoTOT
         private readonly List<RoundRecord> _rounds = new List<RoundRecord>();
 
         /// <summary>
-        /// Consume-once gate. True only when a plan was present, parsed and renamed. The rename
-        /// happens before anything else so a run that dies leaves no plan behind to fire on the
-        /// user's next manual launch.
+        /// Consume-once gate: true only when a plan was present, parsed and renamed. Renamed first, so a run
+        /// that dies cannot fire again on the user's next manual launch.
         /// </summary>
         private bool ConsumePlanFile()
         {
@@ -113,11 +97,8 @@ namespace AutoTOT
                 Finish("REJECTED plan file has no section");
                 return true;
             }
-            // One section per process, deliberately. Running a batch in one process was tried on
-            // 2026-09-12 to save the 39 s each launch costs, and the game cannot do it: loading a
-            // mission over another throws "Gameobject is not a root in a scene" out of
-            // SceneManager_missionLoaded and registers the Effects SpawnPool twice, both as modal
-            // dialogs. The driver splits sections into separate launches instead.
+            // One section per process: the game cannot load a mission over another in one process (it throws
+            // from SceneManager_missionLoaded and registers the Effects SpawnPool twice).
             _plan = plans[0];
             if (plans.Count > 1)
                 _notes.Add($"{plans.Count - 1} further section(s) ignored; one section per launch");
@@ -151,9 +132,6 @@ namespace AutoTOT
                 else if (key.Equals("WaitForContactSec", StringComparison.OrdinalIgnoreCase)) cur.WaitForContactSec = ParseF(val, 120f);
                 else if (key.Equals("TimeoutSec", StringComparison.OrdinalIgnoreCase)) cur.TimeoutSec = ParseF(val, 1500f);
                 else if (key.Equals("TraceFlightModel", StringComparison.OrdinalIgnoreCase)) cur.TraceFlightModel = ParseB(val, true);
-                else if (key.Equals("VerticalProfile", StringComparison.OrdinalIgnoreCase)) cur.VerticalProfile = ParseB(val, false);
-                else if (key.Equals("AlignmentTrace", StringComparison.OrdinalIgnoreCase)) cur.AlignmentTrace = ParseB(val, false);
-                else if (key.Equals("AlignmentUidFix", StringComparison.OrdinalIgnoreCase)) cur.AlignmentUidFix = ParseB(val, false);
                 else if (key.Equals("Profiling", StringComparison.OrdinalIgnoreCase)) cur.Profiling = ParseB(val, false);
                 else if (key.Equals("VerifySolve", StringComparison.OrdinalIgnoreCase)) cur.VerifySolve = ParseB(val, false);
                 else if (key.Equals("PanelHoldSec", StringComparison.OrdinalIgnoreCase)) cur.PanelHoldSec = ParseF(val, 0f);
@@ -248,8 +226,7 @@ namespace AutoTOT
             };
             if (hit && s.PredictedImpact >= 0f)
             {
-                // Same definition as the impact log line: launch plus the flight measured to the hit,
-                // not the last frame the round was seen, which at 10x can be 0.2 to 0.3 s earlier.
+                // Same definition as the impact log line: launch plus the flight measured to the hit.
                 r.HasResidual = true; r.Predicted = s.PredictedImpact; r.Residual = s.LaunchTime + flightTime - s.PredictedImpact;
             }
             if (hit && !retargeted && s.KinEstAtLaunch > 0f)
@@ -261,8 +238,8 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// Write the result, then the DONE marker, then quit. Runs once; later calls are ignored.
-        /// The marker is written before the quit so the result survives a hung exit.
+        /// Write the result, then the DONE marker, then quit; runs once. The marker precedes the quit, so a
+        /// hung exit keeps the result.
         /// </summary>
         private void Finish(string status)
         {
@@ -278,9 +255,6 @@ namespace AutoTOT
                 sb.Append("status=").Append(status).Append('\n');
                 sb.Append("gates=verbose,")
                   .Append(_plan != null && _plan.TraceFlightModel ? "trace," : "")
-                  .Append(_plan != null && _plan.VerticalProfile ? "vertical," : "")
-                  .Append(_plan != null && _plan.AlignmentTrace ? "alignment," : "")
-                  .Append(_plan != null && _plan.AlignmentUidFix ? "uidfix," : "")
                   .Append(_plan != null && _plan.Profiling ? "profiling," : "")
                   .Append(_plan != null && _plan.VerifySolve ? "verifysolve," : "")
                   .Append('\n');
@@ -322,8 +296,7 @@ namespace AutoTOT
             {
                 Bootstrap.Log.LogError($"[AutoTOT] livetest: could not write results:\n{e}");
             }
-            // The log must reach disk: BepInEx's listener flushes on a timer, and the first smoke
-            // run lost its own last lines to a quit that beat it.
+            // Flush the log first: BepInEx's listener flushes on a timer, and a quit can beat it.
             FlushDiskLog();
             _active = null;
             _quitAt = Time.realtimeSinceStartup + QuitDelay;

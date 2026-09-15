@@ -8,9 +8,8 @@ namespace AutoTOT
 {
     internal static partial class FlightTime
     {
-        // Game-side names this mod resolves by reflection. Named because each was spelled out at
-        // three sites here (primary lookup, arity fallback, diagnostic dump) and again in
-        // WaypointSim, and a typo in any one copy fails silently as "method not found".
+        // Game-side names resolved by reflection, named once because a typo in any copy fails silently as "method not
+        // found".
         internal const string MissileSimulatorType = "SeaPower.MissileSimulator";
         internal const string ThrustMethodName = "CalculateThrustOverTime";
         internal const string DragMethodName = "CalculateDrag";
@@ -20,12 +19,9 @@ namespace AutoTOT
         internal const int OptimalLoftParameterCount = 9;
         internal const int AltitudeNodesParameterCount = 6;
 
-        // AmmunitionParameters fields declared ONLY on the beta branch. Mono faults a method that
-        // reads a missing field when it compiles that method, before any branch guard inside it can
-        // run: TryBuildSolveInput read _ballisticLoft directly and threw MissingFieldException on
-        // every estimate on the public branch (2026-09-14), taking the planner panel down with it.
-        // So both are read by reflection, as LauncherFacts reads WeaponParameters._automatic. Null
-        // on public.
+        // AmmunitionParameters fields that do not exist on the public branch. Mono faults a method reading a
+        // missing field when it compiles the method, before any guard inside can run, so both are read by
+        // reflection (as LauncherFacts reads WeaponParameters._automatic). Null on public.
         internal static readonly FieldInfo BallisticLoftField =
             typeof(AmmunitionParameters).GetField("_ballisticLoft", BindingFlags.Public | BindingFlags.Instance);
         internal static readonly FieldInfo OptimizeLoftAltField =
@@ -33,9 +29,9 @@ namespace AutoTOT
         private static bool _ballisticLoftMissWarned;
 
         /// <summary>
-        /// <c>ap._ballisticLoft</c>. Only reached once the integrator has bound, which happens on the
-        /// beta branch alone, so a null field here means a game update renamed it. Said once, and
-        /// read as false, which flies a ballistic lofter as an ordinary one.
+        /// <c>ap._ballisticLoft</c>. Reached only once the integrator has bound, which needs the newer game
+        /// build, so a null field means a game update renamed it: said once, and read as false, flying a
+        /// ballistic lofter as an ordinary one.
         /// </summary>
         private static bool BallisticLoftOf(AmmunitionParameters ap)
         {
@@ -65,11 +61,10 @@ namespace AutoTOT
         private static MethodInfo _thrustMethod;
         private static MethodInfo _dragMethod;
 
-        // The integrator calls these two once per 0.1s step, so a 12-minute flight is tens of
-        // thousands of calls and a busy frame is far more. MethodInfo.Invoke boxes every argument on
-        // every call; a bound delegate does neither. The MethodInfo lookup above stays as the thing
-        // that finds the method (the branches differ in signature), and these are bound from
-        // whatever it found. Null when binding fails, in which case the Invoke path still runs.
+        // The integrator calls these two once per 0.1 s step, tens of thousands of calls on a long flight.
+        // MethodInfo.Invoke boxes every argument; a bound delegate does not. The MethodInfo lookup still
+        // finds the method (signatures differ by branch), and these are bound from it. Null when binding
+        // fails, in which case Invoke runs.
         private delegate float ThrustFn(AmmunitionParameters ap, bool isAirLaunched,
                                         float timeSinceLaunch, float timeWindow);
         private delegate float DragFn(float altitude, float velocity, float time, float pitch,
@@ -161,16 +156,9 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// Report which estimator the integrator actually bound to, once per session and regardless
-        /// of the verbose setting.
-        ///
-        /// This is deliberately not behind <c>VerboseLog</c>. The integrator needs the beta
-        /// <c>MissileSimulator</c> internals; on the public branch it finds
-        /// <c>Missile.SimulateShotLinear</c> instead, binds nothing, and declines every call, so
-        /// every flight time silently comes from <c>MaxRangePrecise</c>. That degradation is correct
-        /// behaviour but it is invisible, and the rule for performance runs is that verbose logging
-        /// stays off, so the one configuration that hid it was the one used to measure. A single
-        /// line per session makes "which estimator produced these numbers" answerable in any log.
+        /// Report which estimator the integrator bound to, once per session regardless of VerboseLog: on the
+        /// public branch it binds nothing and every flight time silently comes from <c>MaxRangePrecise</c>.
+        /// Correct, but invisible in a log taken with verbose logging off, which is how performance runs are taken.
         /// </summary>
         private static void LogEstimatorBinding()
         {
@@ -184,9 +172,8 @@ namespace AutoTOT
             }
             else
             {
-                // Names MaxRangePrecise alone, deliberately. WaypointSim is beta-only by design:
-                // EnsureLookup is called from the _simIsBeta branch below, so off beta it never
-                // initializes, Ready stays false, and KinematicRaw skips that tier entirely.
+                // Names MaxRangePrecise alone: WaypointSim is initialised only from the _simIsBeta branch
+                // below, so off that branch Ready stays false and KinematicRaw skips the tier.
                 Bootstrap.Log.LogWarning(
                     $"[AutoTOT] estimator: integrator UNAVAILABLE on the {branch} branch " +
                     $"(SimulateShotLinear {(_simulateShotMethod != null && !_simIsBeta)}, " +

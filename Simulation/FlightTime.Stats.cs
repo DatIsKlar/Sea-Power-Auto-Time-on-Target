@@ -4,18 +4,13 @@ using System.Threading;
 
 namespace AutoTOT
 {
-    // NOTE: despite the filename, this is NOT a partial of FlightTime. The other five
-    // FlightTime.*.cs files are; this one declares ModelStats, and is named for the subsystem it
-    // instruments rather than the type it holds.
+    // Despite the filename this is not a FlightTime partial: it declares ModelStats, named for the subsystem it
+    // instruments.
     /// <summary>
-    /// Cost counters for the estimator itself, so a slow frame can be attributed to something more
-    /// specific than "the flight estimate was slow".
-    ///
-    /// Deliberately NOT timed per step: at dt = 0.1 s a 12-minute flight is ~7,000 steps, and two
-    /// timestamp calls per step would cost more than the work being measured. Steps are counted with
-    /// a plain increment and wall time is taken twice per sim, which derives a per-step cost without
-    /// perturbing it. Counters are written only when <see cref="Enabled"/>, so normal play pays one
-    /// bool test per sim.
+    /// Cost counters for the estimator itself, so a slow frame can be attributed to something more specific
+    /// than "the flight estimate was slow". Not timed per step, which would cost more than the work: steps
+    /// are counted with a plain increment and wall time is taken twice per sim. Counters are written only
+    /// when <see cref="Enabled"/>, so normal play pays one bool test per sim.
     /// </summary>
     internal static class ModelStats
     {
@@ -31,10 +26,8 @@ namespace AutoTOT
         internal static int Stalls;            // runs that bailed out (returned -1)
         private static readonly int[] _tier = new int[4];
 
-        // Per-thread, because the step loop can run on a worker: two sims in flight at once would
-        // otherwise overwrite each other's start stamps and produce nonsense durations. The
-        // accumulators below are shared, so they are merged under a lock taken twice per sim (never
-        // per step), which is far too rare to matter.
+        // Per-thread, because the step loop can run on a worker and concurrent sims would overwrite each other's start
+        // stamps. The shared accumulators below merge under a lock taken twice per sim, never per step.
         [ThreadStatic] private static long _setupStart;
         [ThreadStatic] private static long _loopStart;
         private static readonly object _sync = new object();
@@ -83,13 +76,9 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// Which tier answered most recently. Written unconditionally, unlike the counters, because
-        /// the anchor-slide diagnostic needs it whether or not profiling is enabled and one enum
-        /// store is not a cost worth gating.
-        ///
-        /// Last-writer-wins across threads: the step loop can run on a worker, so this is only
-        /// meaningful when read immediately after a SYNCHRONOUS estimate on the same thread. That is
-        /// how <see cref="Coordinator"/> reads it, and it is diagnostic only, never a timing input.
+        /// Which tier answered most recently. Written unconditionally, since the anchor-slide diagnostic
+        /// needs it with profiling off. Last writer wins across threads, so it is meaningful only right after
+        /// a synchronous estimate on the same thread, which is how <see cref="Coordinator"/> reads it; diagnostic only.
         /// </summary>
         internal static Tier LastTier { get; private set; } = Tier.Failed;
 
@@ -101,13 +90,8 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// Clear the counters between profiling runs.
-        ///
-        /// Under the same lock the accumulators are merged with. A worker can be inside LoopDone
-        /// while the main thread resets, and an unsynchronised reset there either loses the worker's
-        /// contribution or, for the doubles, publishes a torn value: the next report then shows a
-        /// loop time that never happened. The lock is taken twice per sim, so a reset joining that
-        /// queue costs nothing measurable.
+        /// Clear the counters between profiling runs, under the accumulators' lock: a worker can be inside
+        /// LoopDone during a reset, and an unsynchronised reset would lose its contribution or publish a torn double.
         /// </summary>
         internal static void Reset()
         {

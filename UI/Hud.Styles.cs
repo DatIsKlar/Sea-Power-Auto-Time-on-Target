@@ -3,20 +3,19 @@ using UnityEngine;
 namespace AutoTOT
 {
     /// <summary>
-    /// Hud (partial) ; visual styling: the palette sampled from the game's own panels,
-    /// texture helpers, and one-time GUIStyle construction. No layout or input logic here.
+    /// Hud (partial): visual styling, meaning the palette sampled from the game's own panels, texture helpers
+    /// and one-time GUIStyle construction. No layout or input logic.
     /// </summary>
     internal sealed partial class Hud
     {
-        // Palette sampled directly from the game's own panels (Screenshot 2026-08-23)
-        // Panel body RGB(43,45,49); title bar RGB(30,31,34) (darker).
+        // Palette sampled from the game's own panels: body RGB(43,45,49), title bar RGB(30,31,34).
         private static readonly Color Panel     = new Color(0.169f, 0.176f, 0.192f, 0.97f);  // (43,45,49)
         private static readonly Color HeaderBg  = new Color(0.118f, 0.122f, 0.133f, 1f);     // (30,31,34)
         private static readonly Color Border    = new Color(0.235f, 0.247f, 0.267f, 1f);     // faint frame (~60)
         private static readonly Color BtnBg     = new Color(0.216f, 0.227f, 0.247f, 1f);     // (55,58,63)
         private static readonly Color BtnHover  = new Color(0.298f, 0.314f, 0.337f, 1f);     // (76,80,86)
         private static readonly Color TextMain  = new Color(0.78f, 0.80f, 0.82f, 1f);        // light gray
-        // Functional colors taken from the game's OWN rich-text status hex tags (Seapower-Scripts).
+        // Functional colours from the game's own rich-text status hex tags (Seapower-Scripts).
         private static readonly Color TextDim   = new Color(0.592f, 0.596f, 0.600f, 1f);     // #979899 unavailable/dim
         private static readonly Color Accent    = new Color(0.427f, 0.714f, 0.929f, 1f);     // #6db6ed info/friendly
         private static readonly Color OutOfRange = new Color(1.000f, 0.749f, 0.000f, 1f);    // #ffbf00 warning amber
@@ -32,26 +31,22 @@ namespace AutoTOT
         private GUIStyle _winStyle, _title, _chev, _hdr, _row, _ship, _btn, _fire, _menuItem;
         // _menuItem with the tick column reserved in its left padding, for rows that can be ticked.
         private GUIStyle _menuItemMarked;
-        // The four button roles the panel uses. _fire is primary (the single commit), _btnSecondary
-        // is an outlined action that is real but not the headline, _btn is the flat ghost used for
-        // in-list actions, and _btnDanger empties a list. One style per role, so a button's weight
-        // reads its consequence.
+        // The four button roles: _fire is the primary (the single commit), _btnSecondary an outlined
+        // secondary action, _btn the flat ghost for in-list actions, _btnDanger empties a list. A button's
+        // weight shows its consequence.
         private GUIStyle _btnSecondary, _btnDanger;
-        // Single-line variant of _row for the selection header. A long ship name in a wrapping
-        // label grows the row taller than the layout reserved for it and the second line then
-        // draws over the row above.
+        // Single-line _row for the selection header: a wrapping ship name grows the row past its layout
+        // height and draws over the row above.
         private GUIStyle _rowOneLine;
-        // Centred variants. The salvo count sits between two steppers and has to read as their
-        // centre; the title-bar status labels have to sit on the same centre line as the button
-        // between them, which a left-aligned label at a different font size does not.
+        // Centred variants: the salvo count must read as the centre of its steppers, and the title-bar status
+        // labels share the centre line of the button between them.
         private GUIStyle _rowCenter, _hdrCenterV;
         // Condensed list line, for the per-order breakdown under a strike target.
         private GUIStyle _rowSmall;
-        // The title bar's help button: _btnSecondary sized to the full header height, with its
-        // vertical padding dropped so the text centres in that box instead of riding high.
+        // The title bar's help button: _btnSecondary at full header height, vertical padding dropped so the
+        // text centres.
         private GUIStyle _btnHelp;
-        // The salvo steppers, at body size so a row's -, count and missile name are one line of
-        // text rather than a large control bolted onto a small label.
+        // The salvo steppers, at body size so "–", count and missile name read as one line of text.
         private GUIStyle _btnStep;
         private GUIStyle _scrollThumb, _scrollTrack, _hScrollThumb, _hScrollTrack;
         private Texture2D _panelTex, _headerTex, _fireTex, _btnTex, _btnHoverTex;
@@ -79,12 +74,8 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// Set every visual state of a button-shaped style at once.
-        ///
-        /// IMGUI keeps eight states (four, each with an `on` twin) and every style here sets all
-        /// eight the same way: the `on` twin mirrors its plain state, and the text colour splits
-        /// only between resting (normal, focused) and engaged (hover, active). Written out that was
-        /// 16 assignment lines per style, four times over.
+        /// Set all eight IMGUI states of a button-shaped style at once: each `on` twin mirrors its plain
+        /// state, and the text colour splits only between resting (normal, focused) and engaged (hover, active).
         /// </summary>
         private static void SetStates(GUIStyle st, Texture2D normal, Texture2D hover,
                                       Texture2D active, Texture2D focused,
@@ -117,14 +108,14 @@ namespace AutoTOT
             _btnTex      = Solid(BtnBg);
             _btnHoverTex = Solid(BtnHover);
 
-            // Scrollbar textures ; light gray thumb on dark track (Sea Power style)
+            // Scrollbar textures: light grey thumb on a dark track, as in the game's panels.
             _scrollTrackTex = Solid(new Color(Panel.r, Panel.g, Panel.b, 0.5f));
             _scrollThumbTex = Solid(new Color(0.706f, 0.706f, 0.706f, 1f));
             
-            // Menu-item hover highlight (subtle lighter background)
+            // Menu-item hover highlight, a slightly lighter background.
             _menuHoverTex = Solid(MenuHover);
             
-            // Transparent texture for "no background" states
+            // Transparent texture for "no background" states.
             _transparentTex = Solid(new Color(0, 0, 0, 0));
 
             _winStyle = new GUIStyle(GUI.skin.window);
@@ -137,9 +128,9 @@ namespace AutoTOT
             {
                 fontStyle = FontStyle.Normal, fontSize = FontSizeTitle, alignment = TextAnchor.MiddleLeft,
                 padding = new RectOffset(4, 4, 0, 0),
-                // Title-bar items carry no vertical margin. The default label margin made this
-                // label claim HeaderH+8, so the whole bar grew and every fixed-height item in it
-                // (the chevron, ? KEYS, AUTO) top-aligned instead of sharing a centre line.
+                // No vertical margin: the default label margin made this label claim HeaderH+8, growing the
+                // bar so its fixed-height items (the chevron, ? KEYS, AUTO) top-aligned instead of sharing a
+                // centre line.
                 margin = new RectOffset(0, 0, 0, 0),
             };
             _title.normal.textColor = TextMain;
@@ -159,16 +150,14 @@ namespace AutoTOT
             _row.normal.textColor = TextMain;
 
             _rowOneLine = new GUIStyle(_row) { wordWrap = false, clipping = TextClipping.Clip };
-            // Margin zeroed for the same reason as _btn: it sits between two steppers on a
-            // fixed-height row and must not make that row taller than they are.
+            // Margin zeroed as for _btn: between two steppers on a fixed-height row, it must not make the row taller.
             _rowCenter  = new GUIStyle(_row) { alignment = TextAnchor.MiddleCenter,
                                                margin = new RectOffset(0, 0, 0, 0) };
             _rowSmall   = new GUIStyle(_row) { fontSize = FontSizeSmall, wordWrap = false,
                                                clipping = TextClipping.Clip,
                                                margin = new RectOffset(0, 0, 0, 0) };
-            // Never wraps. These labels are drawn at a rect measured with CalcSize, and a fraction
-            // of a pixel lost to the panel's scale matrix is enough to make a wrapping label break
-            // "○ AUTO" onto two lines.
+            // Never wraps: these labels are drawn at a CalcSize-measured rect, and a fraction of a pixel lost
+            // to the scale matrix is enough to break "○ AUTO" onto two lines.
             _hdrCenterV = new GUIStyle(_hdr) { alignment = TextAnchor.MiddleCenter,
                                                wordWrap = false, clipping = TextClipping.Clip,
                                                margin = new RectOffset(0, 0, 0, 0) };
@@ -176,20 +165,18 @@ namespace AutoTOT
             _ship = new GUIStyle(GUI.skin.label) { fontStyle = FontStyle.Bold, fontSize = FontSizeTitle };
             _ship.normal.textColor = TextMain;
 
-            // Small square button for –/+ controls (centered, flat)
+            // Small square button for the – and + controls, centred and flat.
             _btn = new GUIStyle()
             {
                 fontStyle = FontStyle.Bold, fontSize = FontSizeControl, alignment = TextAnchor.MiddleCenter,
-                // No vertical margin. A 1px margin top and bottom makes a Height(RowHeight) button
-                // claim RowHeight+2, which grows the row past every fixed-height item beside it;
-                // those then top-align and the steppers sit a couple of pixels low.
+                // No vertical margin: a 1px margin makes a Height(RowHeight) button claim RowHeight+2,
+                // growing the row so the items beside it top-align.
                 border = new RectOffset(0, 0, 0, 0), margin = new RectOffset(1, 1, 0, 0),
                 padding = new RectOffset(0, 0, 0, 0),
             };
             SetStates(_btn, _transparentTex, _btnHoverTex, _btnTex, _transparentTex, TextMain, TextMain);
 
-            // Menu-item row style (for checkboxes and other interactive rows)
-            // Flat text with hover highlight, checkmark prefix when active
+            // Menu-item row style for checkboxes and other interactive rows: flat text with a hover highlight.
             _menuItem = new GUIStyle()
             {
                 fontStyle = FontStyle.Normal, fontSize = FontSizeBody, alignment = TextAnchor.MiddleLeft,
@@ -199,10 +186,9 @@ namespace AutoTOT
             SetStates(_menuItem, _transparentTex, _menuHoverTex, _menuHoverTex, _menuHoverTex,
                       TextMain, Color.white);
 
-            // A tickable row reserves the mark's width in its padding and the mark is drawn into
-            // that column separately. Carrying the tick as a text prefix instead made the label
-            // move when the row was ticked: the glyph is not the width of the spaces it replaces,
-            // and it is taller than the plain text, so the centred line box shifted down as well.
+            // A tickable row reserves the mark's width in its padding and the mark is drawn into that column;
+            // a text prefix moved the label when ticked, since the glyph is wider and taller than the spaces
+            // it replaced.
             _menuItemMarked = new GUIStyle(_menuItem)
             {
                 padding = new RectOffset(_menuItem.padding.left + (int)MarkColumnW,
@@ -210,9 +196,9 @@ namespace AutoTOT
                                          _menuItem.padding.top, _menuItem.padding.bottom),
             };
             
-            // Scrollbar styles ; flat light gray thumb, dark track (Sea Power style).
-            // These are LOCAL styles applied only around our own scroll view (see
-            // DrawWindowInner), never to the shared GUI.skin.
+            // Scrollbar styles: flat light grey thumb on a dark track. Applied only around the panel's own
+            // scroll views (see DrawWindowInner) and then restored, never written to the shared GUI.skin,
+            // which the BepInEx console and every other IMGUI mod also use.
             
             // Tracks and thumbs, vertical and horizontal: one flat texture, no border.
             FlatBar(_scrollTrack = new GUIStyle(GUI.skin.verticalScrollbar), _scrollTrackTex);
@@ -220,11 +206,7 @@ namespace AutoTOT
             FlatBar(_scrollThumb = new GUIStyle(GUI.skin.verticalScrollbarThumb), _scrollThumbTex);
             FlatBar(_hScrollThumb = new GUIStyle(GUI.skin.horizontalScrollbarThumb), _scrollThumbTex);
 
-            // NOTE: these styles are applied only around our own scroll view (see DrawWindowInner),
-            // then restored ; we deliberately do NOT overwrite GUI.skin, which is process-global
-            // and shared with the BepInEx console and every other IMGUI mod.
-
-            // Fire button ; green background but flat, menu-item height
+            // Fire button: green background, flat, menu-item height.
             _fire = new GUIStyle(_btn)
             {
                 fontSize = FontSizeTitle,
@@ -233,9 +215,8 @@ namespace AutoTOT
             };
             SetStates(_fire, _fireTex, _fireTex, _fireTex, _fireTex, Color.white, Color.white);
 
-            // Secondary: a real action, outlined rather than filled. Framed() carries its border in
-            // the texture, so unlike _btn this style needs a 1px GUIStyle border to stop the corners
-            // being stretched away.
+            // Secondary: a real action, outlined rather than filled. Framed() carries its border in the
+            // texture, so this style needs a 1px GUIStyle border or the corners stretch away.
             _outlineTex      = Framed(new Color(0f, 0f, 0f, 0f), Border);
             _outlineHoverTex = Framed(BtnHover, Border);
             _btnSecondary = new GUIStyle(_btn)
@@ -249,14 +230,12 @@ namespace AutoTOT
                       TextMain, Color.white);
 
             _btnHelp = new GUIStyle(_btnSecondary) { padding = new RectOffset(8, 8, 0, 0) };
-            // Normal weight, not _btn's bold: a stepper row reads "– 4 +" as one line of text, and
-            // the count between them is a plain label. Bold steppers around a normal count looked
-            // like two different fonts. Same style whatever the step size, so "–5"/"–10" under a
-            // held modifier are the same control as "–", only wider.
+            // Normal weight, not _btn's bold, so "– 4 +" reads as one line of text around a plain count
+            // label. The same style at any step size, so "–5" and "–10" are the same control, only wider.
             _btnStep = new GUIStyle(_btn) { fontStyle = FontStyle.Normal, fontSize = FontSizeBody };
 
-            // Destructive: empties a list. Flat and dim at rest so it never competes with a commit
-            // button, amber on hover so the consequence is stated before the click.
+            // Destructive: empties a list. Flat and dim at rest so it never competes with a commit button,
+            // amber on hover.
             _btnDanger = new GUIStyle(_btn)
             {
                 fontStyle = FontStyle.Normal, fontSize = FontSizeSmall,
@@ -266,19 +245,14 @@ namespace AutoTOT
             SetStates(_btnDanger, _transparentTex, _menuHoverTex, _menuHoverTex, _transparentTex,
                       TextDim, Warn);
         }
-    
 
-        // Our scrollbar styling is applied only around our own scroll views and then restored, so
-        // we never restyle other mods' IMGUI (the BepInEx console and so on) via the shared skin.
-        // Both the shooter list and the strike list need it, hence the pair.
+        // The shared skin's scrollbar styles, saved while the panel's own are pushed around its two scroll lists.
         private GUIStyle _prevVBar, _prevVThumb, _prevHBar, _prevHThumb;
 
         /// <summary>
-        /// Put the shared skin back if a draw threw between the push and the pop, then decline to
-        /// handle the exception. Written as an exception FILTER so the restore runs before the stack
-        /// unwinds any further, and the throw still reaches the game exactly as before. Without it a
-        /// single failed frame left every other IMGUI window in the process wearing this panel's
-        /// scrollbars for the rest of the session.
+        /// Put the shared skin back if a draw threw between the push and the pop, then decline the exception.
+        /// An exception filter, so the restore runs before the stack unwinds; otherwise every other IMGUI
+        /// window keeps this panel's scrollbars for the rest of the session.
         /// </summary>
         private bool RestoreSharedSkin()
         {
@@ -298,8 +272,7 @@ namespace AutoTOT
 
         /// <summary>
         /// Undo <see cref="PushScrollSkin"/>. The saved styles are cleared once restored, so
-        /// <see cref="RestoreSharedSkin"/> acts only while a push is outstanding; before, the saved
-        /// fields stayed set after the first frame and its guard was always true.
+        /// <see cref="RestoreSharedSkin"/> acts only while a push is outstanding.
         /// </summary>
         private void PopScrollSkin()
         {

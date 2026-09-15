@@ -5,15 +5,12 @@ using UnityEngine;
 namespace AutoTOT
 {
     /// <summary>
-    /// Read-only snapshot of a submarine shooter's launch-depth state, for diagnostics.
-    /// Reads the game's own launch-depth gate (WeaponSystemLauncher.cs:414-421) and reports
-    /// whether the launcher is held by depth. Nothing here changes behaviour. All reads are
+    /// Read-only snapshot of a submarine shooter's launch-depth state: reads the game's launch-depth gate
+    /// (WeaponSystemLauncher.cs:414-421) and reports whether depth holds the launcher. All reads are
     /// null-guarded and public on both branches. See docs/ARCHITECTURE.md "Submarine launch-depth gating".
     /// </summary>
     internal static class SubmarineFacts
     {
-        /// <summary>Unity units to feet, the game's own factor (ObjectTorpedoDepthViewModel.cs:28).</summary>
-
         /// <summary>Depths are reported positive-down, so the sign flips out of Unity's y axis.</summary>
         private static float DepthFeet(float unityY) => -unityY * GameUnits.UnityToFeet;
 
@@ -33,42 +30,32 @@ namespace AutoTOT
             // Live vertical state, for the ascent model and the asc-track diagnostic.
             public float PitchDeg;          // hull pitch, positive nose-down
             public float SpeedKn;
-            // Ordered speed, so a boat still accelerating toward its telegraph is distinguishable
-            // from one holding station. SubmarineAscent seeds from the INSTANTANEOUS speed and holds
-            // it constant, which is only sound if the two agree. NaN when no command is set.
+            // Ordered speed, NaN when none is set. SubmarineAscent seeds from the instantaneous speed and
+            // holds it, which is sound only if the two agree.
             public float CmdSpeedKn;
             public float BallastRateFtPerS; // _currentDepthChangeUsingTanks, positive down
             public float TargetDepthFt;     // where the launcher is taking it (0 when not commanded)
         }
 
         /// <summary>
-        /// Snapshot for <paramref name="unit"/> firing <paramref name="ammoId"/>. Returns false when
-        /// the unit is not a submarine, so callers can append nothing for surface shooters.
-        /// </summary>
-        /// <summary>
-        /// Depth the launcher will take the boat to for this weapon: its own command from
-        /// WeaponSystemLauncher.cs:414-416, <c>-_maxDepthUnity + 0.115</c>, i.e. the weapon ceiling
-        /// less 25.4 ft. That is 75 ft for a 100 ft ceiling, matching where boats were observed to
-        /// level off, and the surface for a weapon declaring MaxDepth 0.
+        /// Depth the launcher takes the boat to for this weapon, its own command from
+        /// WeaponSystemLauncher.cs:414-416: <c>-_maxDepthUnity + 0.115</c>, the weapon ceiling less 25.4 ft
+        /// (75 ft for a 100 ft ceiling), or the surface for MaxDepth 0.
         /// </summary>
         private static float LaunchTargetDepthFt(float maxLaunchDepthFt)
             => Mathf.Max(0f, maxLaunchDepthFt - 0.115f * GameUnits.UnityToFeet);
 
         /// <summary>
-        /// Seconds a submarine needs between the fire order and its first round leaving: the ascent
-        /// to the weapon's launch depth plus the launcher's hatch cycle. Zero for a surface ship and
-        /// for a boat already shallow enough, in which case coordination timing is exact rather than
-        /// estimated.
+        /// Seconds a submarine needs from the fire order to its first round: the ascent to the weapon's
+        /// launch depth. Zero for a surface ship or a boat already shallow enough, where timing is exact.
         ///
-        /// The ascent is stepped through the game's own two-regime vertical model
-        /// (<see cref="SubmarineAscent"/>) rather than divided by an assumed rate: ballast and dive
-        /// planes are mutually exclusive and differ several-fold, so no single rate fits both.
-        /// Returns 0 when the model reports the boat never arrives, which is the depth-deadlock
-        /// case; the caller must not read that as "ready now", and the no-launch hold in
-        /// <see cref="Coordinator"/> is what actually terminates such an order.
+        /// The ascent is stepped through the game's two-regime vertical model
+        /// (<see cref="SubmarineAscent"/>): ballast and dive planes are mutually exclusive and differ
+        /// several-fold, so no single rate fits. Returns 0 when the model says the boat never arrives; that
+        /// is not "ready now", and the no-launch hold in <see cref="Coordinator"/> ends such an order.
         ///
-        /// <para><paramref name="trace"/> collects a sampled ascent profile for the asc-sim
-        /// diagnostic. Pass null on any path that runs per frame.</para>
+        /// <para><paramref name="trace"/> collects a sampled ascent profile for the asc-sim diagnostic. Pass
+        /// null on any per-frame path.</para>
         /// </summary>
         internal static float EstimateLaunchDelay(ObjectBase unit, string ammoId, System.Text.StringBuilder trace)
         {
@@ -78,17 +65,11 @@ namespace AutoTOT
 
             float targetFt = LaunchTargetDepthFt(s.MaxLaunchDepthFt);
 
-            // The game's own gate decides this, not a depth comparison. WeaponSystemLauncher.cs:419
-            // blocks on `y < -MaxDepth && (MaxDepth > 0 || isSubmerged())`, so a weapon declaring
-            // MaxDepth 0 is gated on isSubmerged() alone: a boat running with its deck awash at 2 ft
-            // is NOT submerged, is free to fire, and owes no ascent at all.
-            //
-            // Comparing DepthFt against targetFt instead charged such a boat a full ascent it never
-            // performs. That is two faults in one: a launch lead the coordinator then builds the
-            // shared impact time on, and a panel warning telling the player to come to launch depth
-            // while they are already at it. It also over-charged a boat sitting inside a nonzero
-            // ceiling but above the depth the launcher commands, the 18.2s-predicted-versus-4.0s-
-            // observed case. LaunchBlocked is that gate, already evaluated in the snapshot.
+            // The game's own gate decides this, not a depth comparison. WeaponSystemLauncher.cs:419 blocks on
+            // `y < -MaxDepth && (MaxDepth > 0 || isSubmerged())`, so for MaxDepth 0 only isSubmerged() gates:
+            // a boat with its deck awash is not submerged and owes no ascent. A depth comparison would also
+            // charge a boat inside a nonzero ceiling but above the commanded depth. LaunchBlocked is that
+            // gate, evaluated in the snapshot.
             if (!s.LaunchBlocked) return 0f;    // ready where it floats: exact, no estimate
             if (s.DepthFt - targetFt <= 0f) return 0f;
 
@@ -106,20 +87,23 @@ namespace AutoTOT
                 MaxBallastU = sub.SP._maxDepthChangeUsingTanks,
             };
 
-            // Seed description, matching the shape LaunchEnvelope writes for an aircraft, so
-            // envelope-sim reads the same for both platform types.
+            // Seed description in the shape LaunchEnvelope writes for an aircraft, so envelope-sim reads
+            // alike for both.
             trace?.Append($" from {s.DepthFt:0}ft to {targetFt:0}ft, spd {s.SpeedKn:0.0}kn " +
                           $"(cmd {(float.IsNaN(s.CmdSpeedKn) ? 0f : s.CmdSpeedKn):0.0}kn), pitch {s.PitchDeg:0.0} |");
             if (!SubmarineAscent.TryEstimate(st, out float ascent, trace)) return 0f;
-            // Ascent only. The hatch cycle used to be added here because StartupDelay excluded it;
-            // it is now part of Facts.LauncherCycle, which every platform pays through StartupDelay,
-            // and Coordinator adds EnvelopeLead on top of that. Adding it again would double-count.
+            // Ascent only: the hatch cycle is part of Facts.LauncherCycle, which every platform pays through
+            // StartupDelay, and Coordinator adds EnvelopeLead on top; adding it here would double-count.
             return ascent;
         }
 
         /// <summary>Cheap test used to gate the sim-cadence depth trace; no field reads.</summary>
         internal static bool IsSubmarine(ObjectBase unit) => unit is Submarine;
 
+        /// <summary>
+        /// Snapshot for <paramref name="unit"/> firing <paramref name="ammoId"/>; false when the unit is not
+        /// a submarine.
+        /// </summary>
         internal static bool TrySnapshot(ObjectBase unit, string ammoId, out Snapshot s)
         {
             s = default;
@@ -159,10 +143,9 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// Distinct <c>_engageState</c> values across every launcher serving this ammo, joined.
-        /// Distinct rather than first-wins because a boat's port and starboard launchers can sit in
-        /// different states, and "which one is stuck" is exactly what the shortfall lines need.
-        /// Logged by name so a branch that renumbers the enum still reads correctly.
+        /// Distinct <c>_engageState</c> values across the launchers serving this ammo, joined: port and
+        /// starboard launchers can differ, and which one is stuck is what the shortfall lines need. Logged by
+        /// name, so a renumbered enum still reads correctly.
         /// </summary>
         private static string EngageStates(ObjectBase unit, string ammoId)
         {
@@ -183,8 +166,8 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// One-line suffix for an existing log line, or the empty string when the shooter is not a
-        /// submarine. Callers append it unconditionally; surface ships are unaffected.
+        /// One-line suffix for a log line, or the empty string when the shooter is not a submarine; callers
+        /// append it unconditionally.
         /// </summary>
         internal static string Describe(ObjectBase unit, string ammoId)
         {

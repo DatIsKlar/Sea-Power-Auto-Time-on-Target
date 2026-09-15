@@ -8,25 +8,21 @@ using UnityEngine;
 namespace AutoTOT
 {
     /// <summary>
-    /// Ported waypoint-sim fallback (middle tier). Reconstructs the game's waypoint flight-plan
-    /// via reflection and flies it with PN guidance + drag.
+    /// Ported waypoint-sim fallback (middle tier): reconstructs the game's waypoint flight plan via
+    /// reflection and flies it with PN guidance and drag. <c>FlightTime.Waypoints.cs</c> re-implements the
+    /// same waypoint laws as pure functions for the estimator threads and the lab; this tier drives the
+    /// game's own objects, which ties it to the main thread. The two stay apart because merging them would
+    /// move the flight model.
     ///
-    /// Not the only port of that code. The integrator's own route (<c>FlightTime.Waypoints.cs</c>)
-    /// re-implements the same waypoint laws as pure functions, so it can run on the estimator
-    /// threads and in the lab. This tier drives the game's own objects instead, which ties it to the
-    /// main thread. The two are kept apart on purpose: merging them would move the flight model.
-    ///
-    /// BETA ONLY, by design. <see cref="EnsureLookup"/> is called from the beta branch of
-    /// <c>FlightTime.EnsureSimLookup</c> and nowhere else, so on the public branch this type is
-    /// never initialized, <see cref="Ready"/> stays false and <see cref="EndTime"/> no-ops. The
-    /// tier it serves is beta shots the grounded integrator declines.
+    /// Only where the newer simulator binds: <see cref="EnsureLookup"/> is called only from that branch of
+    /// <c>FlightTime.EnsureSimLookup</c>, so on the public branch <see cref="Ready"/> stays false and
+    /// <see cref="EndTime"/> no-ops. It serves shots the integrator declines.
     /// </summary>
     internal static class WaypointSim
     {
         private const float KU = GameUnits.KnotsToUnityPerSecond; // knots -> Unity units/s
-        // Pinned copies of Mathf.Rad2Deg and Mathf.PI/2, deliberately NOT replaced by the Unity
-        // constants: these differ from Unity's in the last digit, and both are read inside the step
-        // loop below, so swapping them could move a result. They are decompile-faithful values.
+        // Pinned copies of Mathf.Rad2Deg and Mathf.PI/2, not the Unity constants: they differ in the last
+        // digit, and both are read inside the step loop, so swapping them could move a result.
         private const float Rad2DegF = 57.29578f;
 
         private const float SimTimestep = 0.5f;
@@ -39,22 +35,17 @@ namespace AutoTOT
         private const float LoftCheckMinSimTime = 1f;
 
         // Start re-estimating the intercept once the shot is this far into its first estimate
-        // (public Missile.cs:2446). Before that the seed from the analytical solver is the better
-        // number.
+        // (public Missile.cs:2446). Before that the seed from the analytical solver is the better number.
         private const float InterceptReestimateFraction = 6f;
 
-        // The intercept solver's margin, applied at both places the game uses it: the quadratic's
-        // a-term (public Missile.cs:2455) and, when the quadratic degenerates, the closing-rate
-        // fallback beside it (:2471). Shares its value with FlightTime.EvasiveBoostFraction by
-        // coincidence, not by meaning. That one scales a TARGET's speed to model evasion; this one
-        // is a margin inside one solver. Kept separate so a change to either cannot travel to the
-        // other, which means the fallback below reads THIS constant even though the term it
-        // scales happens to be a target velocity.
+        // The intercept solver's margin, at both places the game applies it: the quadratic's a-term (public
+        // Missile.cs:2455) and the closing-rate fallback beside it (:2471). Equal to
+        // FlightTime.EvasiveBoostFraction by coincidence (that one scales a target's speed for evasion), so
+        // kept separate.
         private const float InterceptSpeedMarginFactor = 0.8f;
 
-        // Cadence of the verbose wp-track line. Not TelemetryCadence: that one exists so the
-        // integrator's sim-track and the live track can be read against each other, and this trace
-        // is a third thing, sampled coarsely because a fallback-tier shot is not the subject.
+        // Cadence of the verbose wp-track line; not TelemetryCadence, which pairs the integrator's sim-track
+        // with the live track. A fallback-tier shot is sampled coarsely.
         private const float WpTrackLogIntervalSim = 15f;
 
         private static bool _lookedUp;
@@ -80,24 +71,23 @@ namespace AutoTOT
         private static ConstructorInfo _ctorDistWp;      // DistanceToTargetWaypoint(float, bool)
         private static ConstructorInfo _ctorWaypoint;    // Waypoint(IWaypoint, Settings, Context)
 
-        // Fields ; WaypointCreationContext.
+        // Fields: WaypointCreationContext.
         private static FieldInfo _fCtxAp, _fCtxIsAir, _fCtxTerrain, _fCtxGroupLeader,
             _fCtxStartAngle, _fCtxPopUpDisabled, _fCtxLaunchAlt, _fCtxLoftOverride;
-        // Fields ; WaypointConfig.
+        // Fields: WaypointConfig.
         private static FieldInfo _fCfgDist, _fCfgSettings;
-        // Fields ; Waypoint.
+        // Fields: Waypoint.
         private static FieldInfo _fWpStatus, _fWpSettings;
-        // Fields ; Status.
+        // Fields: Status.
         private static FieldInfo _fStDesiredPos, _fStDone;
-        // Fields ; Settings.
+        // Fields: Settings.
         private static FieldInfo _fSetTargetSpeed, _fSetLoftHeight;
-        // Fields ; Context.
+        // Fields: Context.
         private static FieldInfo _fCoGeo, _fCoUnity, _fCoVel, _fCoFlatVel, _fCoStall, _fCoMotor;
 
-        // Phase 2/3 (full loop port). Resolved best-effort; a miss leaves FullReady false so
-        // EndTime no-ops (spike/Ready unaffected). Wired as the middle fallback tier in
-        // FlightTime.KinematicRaw (integrator -> WaypointSim.EndTime -> legacy EstimateShot); the
-        // grounded integrator stays primary. All on MissileSimulator except the two seed methods.
+        // The full loop port (FullReady), resolved best-effort beside the waypoint surface (Ready); a miss
+        // leaves FullReady false so EndTime no-ops. The middle tier of FlightTime.KinematicRaw, after the
+        // integrator. All on MissileSimulator except the two seed methods.
         internal static bool FullReady { get; private set; }
         private static MethodInfo _mComputePN;    // MissileSimulator.ComputePN(Vector3,Vector3,Vector3,float)->Vector3
         private static MethodInfo _mThrust;       // MissileSimulator.CalculateThrustOverTime(ap,bool,float,float)->float
@@ -107,9 +97,8 @@ namespace AutoTOT
         private static MethodInfo _mSimple;       // Missile.CalculateMissileInterceptTimeSimple(...)->float
 
         /// <summary>
-        /// Resolve every reflection handle once. Called from <see cref="FlightTime.EnsureSimLookup"/>
-        /// after it confirms the beta branch, with the game assembly. Fail-soft: any miss leaves
-        /// <see cref="Ready"/> false and the spike/port simply no-ops.
+        /// Resolve every reflection handle once, from <see cref="FlightTime.EnsureSimLookup"/> with the game assembly.
+        /// Fail-soft: any miss leaves <see cref="Ready"/> false and the tier no-ops.
         /// </summary>
         internal static void EnsureLookup(Assembly gameAsm)
         {
@@ -137,8 +126,8 @@ namespace AutoTOT
 
                 _mCreateConfigs = typeof(Missile).GetMethod("CreateWaypointConfigs", PS, null,
                     new[] { _tWpCreateCtx }, null);
-                // UpdateAndGetActiveWaypoint has a 3-arg and a 4-arg overload; we want the 4-arg
-                // (…, float simulationDt). Its first two params are by-ref, so match by name+count.
+                // UpdateAndGetActiveWaypoint has 3- and 4-arg overloads; take the 4-arg one (…, float
+                // simulationDt), matched by name and count since its first two params are by-ref.
                 _mUpdateActive = FindStaticByNameCount(_tWaypoint, "UpdateAndGetActiveWaypoint", 4);
                 _mUpdateContext = _tWaypoint.GetMethod("UpdateContext", PI, null, new[] { _tWpContext }, null);
                 _mGeoToUnity = _tGeoPos.GetMethod("ToUnity", PI, null, Type.EmptyTypes, null);
@@ -179,17 +168,15 @@ namespace AutoTOT
                 _fCoStall = _tWpContext.GetField("StallSpeedKnots", PI);
                 _fCoMotor = _tWpContext.GetField("MotorBurning", PI);
 
-                // All 22, not the 8 the step loop happens to dereference first. An unchecked
-                // null does not fail here; it fails later as a NullReferenceException inside
-                // EndTime's catch, which returns -1 and reads as "the tier declined" with only a
-                // verbose log to say otherwise. A field renamed by a beta bump would look like an
-                // ammunition the port cannot fly. The name is reported so the rename is findable.
+                // All 22, not just the ones the step loop dereferences first: an unchecked null would fail
+                // later as a NullReferenceException inside EndTime's catch, reading as "the tier declined".
+                // The name is reported so a rename is findable.
                 string missing = FirstMissingField();
                 if (missing != null) { LogInitFail("field " + missing); return; }
 
                 Ready = true;
 
-                // Phase 2 full-loop handles (additive; independent of the spike surface above).
+                // Full-loop handles, independent of the waypoint surface above.
                 Type ms = gameAsm.GetType(FlightTime.MissileSimulatorType);
                 if (ms != null)
                 {
@@ -272,8 +259,8 @@ namespace AutoTOT
             return null;
         }
 
-        // Waypoint(IWaypoint wp, Settings settings, Context context) ; pick the 3-arg ctor whose
-        // 2nd/3rd params are Settings/Context (the other 3-arg ctor takes an ObjectBase 2nd param).
+        // Waypoint(IWaypoint wp, Settings settings, Context context): the 3-arg ctor whose 2nd and 3rd params
+        // are Settings and Context (the other takes an ObjectBase second).
         private static ConstructorInfo FindWaypointCtor()
         {
             foreach (ConstructorInfo c in _tWaypoint.GetConstructors())
@@ -357,18 +344,16 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// PHASE 2: the full ported flight sim (public <c>Missile.SimulateShotLinear</c>,
-        /// Missile.cs:2371-2605). Flies the game's own waypoint plan with PN guidance + turn-rate
-        /// limit + <c>CalculateDrag</c>, in Unity space. Returns intercept time in seconds, or -1 when
-        /// non-beta / a handle is missing / the sim never closes / stalls (→ caller falls back).
-        /// Variable names track the decompile (simTime = t, velKnots = knots, missilePos = pos, direction = dir).
+        /// The full ported flight sim (public <c>Missile.SimulateShotLinear</c>, Missile.cs:2371-2605): flies
+        /// the game's own waypoint plan with PN guidance, a turn-rate limit and <c>CalculateDrag</c>, in
+        /// Unity space. Returns the intercept time in seconds, or -1 when a handle is missing or the sim
+        /// never closes or stalls (the caller falls back). Variable names track the decompile (simTime = t,
+        /// velKnots = knots, missilePos = pos, direction = dir).
         /// </summary>
         /// <param name="emitDiag">
-        /// Emit the per-15s <c>wp-track</c> overlay. Defaults to <c>false</c>: the frequent caller is
-        /// the <see cref="FlightTime.KinematicRaw"/> fallback tier, reached whenever the integrator
-        /// declines a shot (a SAM planned beyond its reach, for one), and it must not trace there.
-        /// The Profiling report's <c>tiers</c> line counts how often that happens. Only the per-shot
-        /// instrument in <c>LaunchDiagnostics</c> passes true.
+        /// Emit the per-15 s <c>wp-track</c> overlay. False by default: the frequent caller is the
+        /// <see cref="FlightTime.KinematicRaw"/> fallback tier, reached whenever the integrator declines a
+        /// shot, which must not trace. Only the per-shot instrument in <c>LaunchDiagnostics</c> passes true.
         /// </param>
         internal static float EndTime(ObjectBase unit, AmmunitionParameters ap, ObjectBase target,
             bool emitDiag = false)
@@ -389,9 +374,8 @@ namespace AutoTOT
                 float flatDist = GameMath.FlatDistance(launchPosition, targetPosition);
                 if (flatDist < MinFlatDist) return 0f;
                 float dragFactor = ap.GetDragFactor(isAirUnit);
-                // Capped at the integrator's own ceiling. An ammunition that leaves MaxFlightTime unset
-                // loads it as float.MaxValue, and adding a 0.5 s step stops changing a float at 2^24 s,
-                // so without the cap only the close, stall and range exits could end the loop below.
+                // Capped at the integrator's own ceiling: an unset MaxFlightTime loads as float.MaxValue, and
+                // a 0.5 s step stops changing a float at 2^24 s.
                 float maxFlightTime = Mathf.Min(ap._maxFlightTime > 0f ? ap._maxFlightTime : FlightTime.MaxFlightTimeFallback,
                                                 FlightTime.SolveLoopCeilingSim);
 
@@ -499,7 +483,7 @@ namespace AutoTOT
                     direction = new Vector3(horizHeading.x * Mathf.Cos(pitchRadCmd), Mathf.Sin(pitchRadCmd), horizHeading.z * Mathf.Cos(pitchRadCmd));
                     float pitchDegCmd = -pitchRadCmd * Rad2DegF;
 
-                    // Speed update ; verbatim public branch (2508-2527).
+                    // Speed update, verbatim from the public branch (2508-2527).
                     if (nonKin)
                     {
                         float tgtSpd = 0f;
@@ -526,7 +510,7 @@ namespace AutoTOT
                         { missilePos.y, speedUnity, SimTimestep, pitchDegCmd, dragFactor, motorBurning, predTargetPos.y, liftFactor, minVel, 0f });
                         velKnots = Mathf.Max(velKnots + thrust - drag, 0f);
                     }
-                    // Intercept detection (public 2532-2554) ; return only the time.
+                    // Intercept detection (public 2532-2554); return only the time.
                     float speedUnityLoop = velKnots * KU;
                     if (slantRange > SqrEpsilon)
                     {
@@ -563,19 +547,14 @@ namespace AutoTOT
                         nextLog += WpTrackLogIntervalSim;
                     }
 
-                    // loftTooHigh escape + stall (public 2577-2604).
-                    //
-                    // The escape retires the loft waypoint and does NOT skip the range break below.
-                    // The game reaches that break through `goto IL_0a08`, so the same iteration
-                    // still evaluates it (public Missile.cs:2596-2604); an earlier `continue` here
-                    // jumped to the loop increment instead, buying the round one extra 0.5s step and
-                    // one extra intercept-detection pass whenever both conditions came true at once.
+                    // loftTooHigh escape + stall (public 2577-2604). The escape retires the loft waypoint and
+                    // does not skip the range break below: the game reaches that break through `goto
+                    // IL_0a08`, so the same iteration still evaluates it (public Missile.cs:2596-2604).
                     if (simTime > LoftCheckMinSimTime && !motorBurning)
                     {
                         bool stalled = velKnots < minVel;
-                        // waypoints[0] is null-checked because the game checks it (public
-                        // Missile.cs:2583). Reaching through a null here would throw into EndTime's
-                        // catch and turn a flyable shot into a silent -1 tier decline.
+                        // waypoints[0] is null-checked because the game checks it (public Missile.cs:2583); a
+                        // null here would throw into EndTime's catch and turn a flyable shot into a silent -1.
                         if (velKnots < minVel + LoftHighSpeedMargin && waypoints.Count > 0
                             && waypoints[0] != null)
                         {

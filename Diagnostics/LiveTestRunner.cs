@@ -8,17 +8,12 @@ using UnityEngine;
 namespace AutoTOT
 {
     /// <summary>
-    /// Unattended in-game test driver. When <c>BepInEx/AutoTOT-livetest/plan.ini</c> exists at
-    /// startup it is consumed (renamed to <c>plan.running</c>) and this component walks the game
-    /// from the main menu into the named mission, fires the listed shots through the coordinator,
-    /// waits for every round to land or die, writes a result file and quits the process. Nothing
-    /// is clicked: every step calls the same method the game's own button would. Without the plan
-    /// file the component does nothing at all.
-    ///
-    /// The driver is <c>tools/livetest/run.sh</c>, which writes the plan, launches Steam, waits for
-    /// <c>results/DONE</c> and collects the log. Plan keys are listed in tools/livetest/plans/README.md.
-    ///
-    /// Every state has a wall-clock timeout so a stuck run still produces a result and exits.
+    /// Unattended in-game test driver, live test build only. When <c>BepInEx/AutoTOT-livetest/plan.ini</c>
+    /// exists at startup it is consumed (renamed to <c>plan.running</c>), and this component walks the game
+    /// from the main menu into the named mission, fires the listed shots, waits for every round to land or
+    /// die, writes a result file and quits. Every step calls the method the game's own button calls. Driven
+    /// by <c>tools/livetest/run.sh</c>; plan keys are in tools/livetest/plans/README.md. Every state has a
+    /// wall-clock timeout.
     /// </summary>
     internal sealed partial class LiveTestRunner : MonoBehaviour
     {
@@ -43,8 +38,7 @@ namespace AutoTOT
         private readonly List<ObjectBase> _targets = new List<ObjectBase>();
         private readonly List<string> _notes = new List<string>();
 
-        // Wall-clock budgets per state, seconds. Proton cold start plus shader warm-up can hold
-        // the menu for minutes; loading a mission likewise.
+        // Wall-clock budgets per state, in seconds; Proton cold start and shader warm-up can hold the menu for minutes.
         private const float MenuTimeout = 900f;
         private const float LoadTimeout = 900f;
         private const float MenuSettle = 3f;
@@ -140,8 +134,8 @@ namespace AutoTOT
 
                     if (_startedAt < 0f)
                     {
-                        // The briefing pauses the game only when it has content. Its Play button's
-                        // body, verbatim (MissionBriefViewModel.PlayCommand).
+                        // The briefing pauses only when it has content; this is its Play button's body
+                        // (MissionBriefViewModel.PlayCommand).
                         if (sc._pauseForBriefing)
                         {
                             if (Singleton<InputHandler>.InstanceExists())
@@ -160,17 +154,14 @@ namespace AutoTOT
 
                     // UnPause() reset compression, so set it only now.
                     ApplyCompression();
-                    // VerboseLog is forced: LaunchDiagnostics only registers a launch expectation
-                    // for every order when it is on, and Watch reads those. The rest is per plan.
+                    // VerboseLog is forced: every order registers a launch expectation only with it on, and
+                    // Watch reads those.
                     Coordinator.VerboseLog = true;
                     Coordinator.TraceFlightModel = _plan.TraceFlightModel;
-                    VerticalProfiler.Enabled = _plan.VerticalProfile;
-                    AlignmentProbe.Enabled = _plan.AlignmentTrace;
-                    AlignmentProbe.UidCollisionFix = _plan.AlignmentUidFix;
                     Coordinator.ProfilingEnabled = _plan.Profiling;
                     FlightTime.VerifySolve = _plan.VerifySolve;
                     Bootstrap.Log.LogInfo($"[AutoTOT] livetest gates: verbose on, trace {_plan.TraceFlightModel}, " +
-                                          $"vertical {_plan.VerticalProfile}, alignment {_plan.AlignmentTrace}, uidfix {_plan.AlignmentUidFix}, profiling {_plan.Profiling}, verifySolve {_plan.VerifySolve}");
+                                          $"profiling {_plan.Profiling}, verifySolve {_plan.VerifySolve}");
                     AudioListener.volume = 0f;   // again, in case the options manager reset it on load
                     Enter(State.Arm);
                     return;
@@ -186,9 +177,8 @@ namespace AutoTOT
                             Fail("STUCK waiting for contact: " + string.Join(", ", waiting));
                         return;
                     }
-                    // Panel fire: build the shot in the planner as a player does, and keep it on
-                    // screen from contact on, so the panel's per-frame work over the whole roster runs
-                    // through the hold, the release and the flight, as it does while a player waits.
+                    // Panel fire: build the shot in the planner as a player does and keep it on screen from
+                    // contact on, so the panel's per-frame work runs through the hold, release and flight.
                     if (_plan.PanelFire && _plan.PanelHoldSec <= 0f && !_panelStaged)
                     {
                         _panelStaged = Hud.StagePanelForShots(_shots, wholeFormation: true);
@@ -197,10 +187,8 @@ namespace AutoTOT
                         _panelHeldFrom = Time.realtimeSinceStartup;
                     }
                     if (!HoldSatisfied()) return;
-                    // Panel mode: stage the first shot on screen and hold, instead of firing. The
-                    // warnings this photographs are drawn per weapon row and in the strike section,
-                    // so they need a shooter picked, a target picked and a row ticked, which is
-                    // exactly what StagePanelFor sets. Nothing is fired and nothing is captured.
+                    // Panel mode: stage the first shot on screen and hold instead of firing, so a screenshot
+                    // can read the row's warnings. Nothing is fired or captured.
                     if (_plan.PanelHoldSec > 0f)
                     {
                         if (!_panelStaged)
@@ -234,8 +222,8 @@ namespace AutoTOT
                                           (_plan.FireNow ? " as direct FIRE NOW orders" : _plan.PanelFire ? " through the panel's FIRE THIS TARGET" : ""));
                     if (_plan.FireNow)
                     {
-                        // Direct orders, the panel's FIRE NOW path without its range filter: nothing is
-                        // coordinated or held, and an order inside minimum range reaches the game as is.
+                        // Direct orders, the panel's FIRE NOW path without its range filter: nothing
+                        // coordinated or held.
                         foreach (Coordinator.Shot shot in _shots)
                             Coordinator.FireNow(shot.Unit, shot.AmmoId, shot.Target, shot.Salvo);
                         _notes.Add("fired as direct orders through Coordinator.FireNow, nothing coordinated");
@@ -254,14 +242,13 @@ namespace AutoTOT
 
                 case State.Watch:
                 {
-                    // Mission events (a civilian hit, a scripted message) pause the game or drop
-                    // compression mid-flight. Unattended, nobody clicks them away, so do it here.
+                    // Mission events can pause the game or drop compression mid-flight; unattended, reapply it.
                     ApplyCompression();
                     float simElapsed = GameClock.SimNow() - _firedSim;
                     if (_plan.FireNow)
                     {
-                        // Direct orders register no launch expectation, so nothing below can see them.
-                        // The run is an observation window: the game's own logs are the result.
+                        // Direct orders register no launch expectation, so the run is an observation window
+                        // and the game's own logs are the result.
                         if (simElapsed > _plan.TimeoutSec)
                         {
                             _notes.Add($"observation window of {_plan.TimeoutSec:0}s sim elapsed");
@@ -277,10 +264,8 @@ namespace AutoTOT
                     // Every ordered round is accounted for: nothing can still be coming.
                     if (_sawActivity && _rounds.Count >= _expectedRounds) { Enter(State.Settle); return; }
 
-                    // NOT HasInFlightAt(target). A seeker that switches to a sibling in the
-                    // target's formation clears the per-target flag while the round is still 25 km
-                    // out, and the first automated run ended exactly there: the runner quit at
-                    // t+281s with the missile in TerminalApproach, so nothing was ever recorded.
+                    // Not HasInFlightAt(target): a seeker that switches to a formation sibling clears the
+                    // per-target flag while the round still flies.
                     bool anyActive = LaunchDiagnostics.AnyCoordinatedInFlight();
                     if (!anyActive)
                     {
@@ -297,8 +282,8 @@ namespace AutoTOT
                     if (anyActive) { _sawActivity = true; return; }
                     if (!_sawActivity)
                     {
-                        // The commit is deferred to the solve workers, so an empty queue right
-                        // after FireCoordinated is normal. Staying empty is not.
+                        // The commit is deferred to the solve workers, so an empty queue right after firing
+                        // is normal; staying empty is not.
                         if (Time.realtimeSinceStartup - _firedReal < CommitGrace) return;
                         Fail("REJECTED by commit: nothing was scheduled, launched or seen in flight " +
                              "(RevalidateCommit logs the reason)");
@@ -322,10 +307,10 @@ namespace AutoTOT
         private bool[] _manualDone;
 
         /// <summary>
-        /// ManualAtInbound lines. Once a missile threatens the named ship and is inside its SAM's range,
-        /// issue the SAM order the way the game's own attack order does (AttackTask.OnExecute calls
-        /// InsertEngageTask with autoAttack false and GetEngagePriority), without the coordinator's
-        /// bypass, so the Harmony prefix sees a player order. Each line is issued once.
+        /// ManualAtInbound lines: once a missile threatens the named ship inside its SAM's range, issue the
+        /// SAM order as the game's own attack order does (InsertEngageTask, autoAttack false,
+        /// GetEngagePriority), without the coordinator's bypass, so the prefix sees a player order. Each line
+        /// fires once.
         /// </summary>
         private void TickManualOrders()
         {
@@ -408,18 +393,15 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// Turn the plan's shot lines into coordinator shots. Every check the planner panel makes
-        /// before it offers a row (ammo present and a missile, matches the target, inside the
-        /// launch band) is repeated here, so a bad plan is REJECTED at once instead of holding
-        /// the ship forever. Returns false after failing the run.
+        /// Turn the plan's shot lines into coordinator shots, repeating the planner's row checks (ammo aboard
+        /// and a missile, matches the target, inside the launch band), so a bad plan is rejected at once.
+        /// False after failing the run.
         /// </summary>
         private bool ResolveShots()
         {
             var byKey = Singleton<SceneCreator>.Instance.ObjectsByPvKey;
 
-            // Inventory pass first, over EVERY line. Resolution stops at the first bad shot, so a
-            // probe plan (one deliberately unknown ammo name) would otherwise report only its first
-            // shooter. Dumping all of them up front makes one 60 s probe answer the whole mission.
+            // Inventory of every line first, since resolution stops at the first bad shot.
             foreach (Plan.ShotLine probe in _plan.Shots)
             {
                 if (byKey.TryGetValue(probe.Shooter, out ObjectBase pu) && pu != null && !pu.IsDestroyed &&
@@ -475,11 +457,8 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// Every missile aboard this shooter and why each one can or cannot be used against this
-        /// target. Plans pin ammunition by name, and the names of modded units are not in the
-        /// game's own files, so without this a plan author is guessing: the first automated run of
-        /// `teest` asked for `*` and silently got surface-to-air rounds rather than the anti-ship
-        /// weapons the scenario exists to test.
+        /// Every missile aboard this shooter and whether it can be used against this target: modded loadouts
+        /// are not in the game's files, and plans pin ammunition by name.
         /// </summary>
         private static void LogInventory(ObjectBase unit, ObjectBase target)
         {
@@ -519,15 +498,9 @@ namespace AutoTOT
         private float _lastHoldLog = -1f;
 
         /// <summary>
-        /// Delay firing until the plan says the geometry is right. Two forms, both optional:
-        /// `HoldUntilSec` waits a fixed span of SIM time from mission start, and
-        /// `HoldUntilRangeNm` waits for one named shooter to close inside a range of its target.
-        ///
-        /// The range form exists because who anchors a strike is decided by enroute time, and a
-        /// closing aircraft crosses over. A Hornet 70 nm out has a far longer Harpoon flight than
-        /// the ship beside it and is elected anchor; let it run in to 30 nm and the same mission
-        /// tests it as a FOLLOWER instead, with no edit to the mission file. Ranges are checked
-        /// against the shot's own target, and a shooter named in no shot line is ignored.
+        /// Delay firing until the geometry is right: `HoldUntilSec` waits a span of sim time from mission
+        /// start, and `HoldUntilRangeNm` waits for one shooter to close inside a range of its shot's target.
+        /// The range form lets one mission test a closing aircraft as anchor or as follower.
         /// </summary>
         private bool HoldSatisfied()
         {

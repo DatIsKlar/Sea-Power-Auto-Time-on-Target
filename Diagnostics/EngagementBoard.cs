@@ -6,12 +6,8 @@ namespace AutoTOT
 {
     /// <summary>
     /// Per-target engagement state for the planner's live overview, and the snapshot builder
-    /// (<see cref="CollectSalvos"/>) that the HUD renders.
-    ///
-    /// One row per target (fired-at, impact time, spread, wave count, wave gap) so the fields
-    /// cannot drift out of sync, with exactly one prune path: <see cref="CollectSalvos"/> prunes
-    /// fired targets idle past their grace window, and <see cref="Drop"/> removes never-fired rows
-    /// left by dropped orders.
+    /// (<see cref="CollectSalvos"/>) the HUD renders. One row per target, pruned by <see cref="Prune"/> (idle
+    /// fired targets past their grace) and <see cref="Drop"/> (never-fired rows of dropped orders).
     /// </summary>
     internal static class EngagementBoard
     {
@@ -31,11 +27,11 @@ namespace AutoTOT
         private static readonly Dictionary<ObjectBase, Engagement> _byTarget =
             new Dictionary<ObjectBase, Engagement>();
 
-        // Snapshot scratch (reused every CollectSalvos call to avoid per-frame allocation)
+        // Snapshot scratch, reused every CollectSalvos call.
         private static readonly Dictionary<ObjectBase, SalvoLine> _salvoMap =
             new Dictionary<ObjectBase, SalvoLine>();
         private static readonly List<ObjectBase> _pruneScratch = new List<ObjectBase>();
-        // Cached so CollectSalvos (called per frame from the HUD) doesn't allocate a closure.
+        // Cached so the per-frame CollectSalvos does not allocate a closure.
         private static readonly System.Action<WeaponBase, ObjectBase> _countInFlight = CountInFlightAt;
 
         /// <summary>One row of the HUD's ENGAGEMENTS overview.</summary>
@@ -55,8 +51,7 @@ namespace AutoTOT
 
         private static void CountInFlightAt(WeaponBase w, ObjectBase t)
         {
-            // In-flight rounds count only for targets we actually coordinated (fired) ; otherwise
-            // any friendly missile at that contact would inflate the overview.
+            // In-flight rounds count only for targets AutoTOT fired at; otherwise any friendly missile would count.
             if (!HasFired(t)) return;
             _salvoMap.TryGetValue(t, out SalvoLine ln);
             ln.Target = t;
@@ -74,7 +69,7 @@ namespace AutoTOT
             return e;
         }
 
-        /// <summary>Called when a batch is scheduled: sets the shared impact + arrival-shape figures.</summary>
+        /// <summary>Called when a batch is scheduled: sets the shared impact and arrival-shape figures.</summary>
         internal static void RecordScheduled(ObjectBase target, float impactSim, float impactSpread,
                                              int waves, float waveGap, int strikeId)
         {
@@ -97,15 +92,16 @@ namespace AutoTOT
         internal static bool HasFired(ObjectBase target)
             => _byTarget.TryGetValue(target, out Engagement e) && e.FiredAtSim >= 0f;
 
-        /// <summary>True if AutoTOT is coordinating this target (a row exists) ; i.e. a missile at
-        /// it is one we fired, not an auto-fired defensive SAM. Scopes verbose per-missile
-        /// diagnostics to our own shots.</summary>
+        /// <summary>
+        /// True if AutoTOT is coordinating this target (a row exists), so a missile at it is one AutoTOT
+        /// fired rather than a defensive SAM. Scopes per-missile diagnostics to AutoTOT's shots.
+        /// </summary>
         internal static bool IsCoordinated(ObjectBase target)
             => target != null && _byTarget.ContainsKey(target);
 
         /// <summary>
-        /// The target's last predicted (anchor-finalized) impact time, for residual logging.
-        /// Returns false if the target has no coordinated row or no impact was ever set.
+        /// The target's last predicted impact time, for residual logging; false if the target has no row or
+        /// no impact was set.
         /// </summary>
         internal static bool TryGetPredictedImpact(ObjectBase target, out float impactSim)
         {
@@ -117,8 +113,8 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// Removes a never-fired target's row (held order dropped before release). Fired targets
-        /// are owned by the grace-window prune in <see cref="CollectSalvos"/> instead.
+        /// Remove a never-fired target's row, left by a held order dropped before release. Fired rows are
+        /// left to <see cref="Prune"/>.
         /// </summary>
         internal static void Drop(ObjectBase target)
         {
@@ -133,10 +129,9 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// Snapshot of what we're currently coordinating, grouped by target: shots still held for
-        /// timing (<see cref="SalvoLine.Queued"/>) and friendly missiles already in flight at that
-        /// target (<see cref="SalvoLine.InFlight"/>). Reuses <paramref name="outList"/> to avoid
-        /// per-frame allocation.
+        /// Snapshot of what is being coordinated, by target: shots still held
+        /// (<see cref="SalvoLine.Queued"/>) and friendly missiles in flight
+        /// (<see cref="SalvoLine.InFlight"/>). Reuses <paramref name="outList"/>.
         /// </summary>
         internal static void CollectSalvos(List<SalvoLine> outList)
         {
@@ -184,23 +179,14 @@ namespace AutoTOT
                 outList.Add(ln);
             }
 
-            // Pruning is NOT done here any more. It runs on the coordinator tick, so that hiding
-            // the panel cannot stop it, and doing it here as well would only pay the cost twice.
+            // Pruning runs on the coordinator tick (Prune), so hiding the panel cannot stop it.
         }
 
         /// <summary>
-        /// Drop every row whose target is gone, and fired rows that are idle and past their grace
-        /// window. Never-fired rows of live targets stay: they belong to held orders and are dropped
-        /// via <see cref="Drop"/> or <see cref="Clear"/>.
-        ///
-        /// Called from the coordinator's tick, not from the draw. It used to run only inside
-        /// <see cref="CollectSalvos"/>, which the HUD calls while painting, so hiding the panel or
-        /// turning the indicator off stopped the cleanup entirely: measured on 2026-09-09, a fired
-        /// row survived 188 s with nothing in flight and nothing scheduled, against an 8 s grace,
-        /// and only the mission reset cleared it.
-        ///
-        /// Activity is recomputed here rather than read from the display scratch, for the same
-        /// reason: the scratch is only filled when something draws.
+        /// Drop every row whose target is gone, and fired rows idle past their grace window. Never-fired rows
+        /// of live targets belong to held orders and go through <see cref="Drop"/> or <see cref="Clear"/>.
+        /// Called from the coordinator tick rather than the draw, so a hidden panel still prunes; activity is
+        /// recomputed rather than read from the display scratch for the same reason.
         /// </summary>
         internal static void Prune(float now)
         {
@@ -211,14 +197,12 @@ namespace AutoTOT
             {
                 ObjectBase t = kv.Key;
                 Engagement e = kv.Value;
-                // Tested before the never-fired filter, which exists for held orders: a dead
-                // target's held orders are already being dropped by the release loop, and its row
-                // otherwise outlived them to the end of the mission.
+                // Before the never-fired filter: a dead target's held orders are dropped by the release loop,
+                // and its row would otherwise outlive them.
                 if (t == null || t.IsDestroyed) { _pruneScratch.Add(t); continue; }
                 if (e.FiredAtSim < 0f) continue;
-                // "Active" has to include an order that has fired but whose rounds have not left
-                // the rail yet, or a slow launcher (a submarine climbing to launch depth) loses its
-                // row mid-ascent and the round that follows is treated as one we never fired.
+                // Active includes an order that fired but whose rounds have not left yet, or a slow launcher
+                // (a rising submarine) would lose its row and its round would be treated as uncoordinated.
                 bool active = IsStillWorking(t) || LaunchDiagnostics.HasPendingLaunch(t);
                 bool inGrace = (now - e.FiredAtSim) < EngageGrace;
                 if (!active && !inGrace) _pruneScratch.Add(t);

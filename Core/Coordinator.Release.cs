@@ -6,12 +6,8 @@ using UnityEngine;
 namespace AutoTOT
 {
     /// <summary>
-    /// The release half of the pipeline: deciding when each held order is due, resolving the flight
-    /// estimate it is due against, and putting the shot away.
-    ///
-    /// Split out of Coordinator.cs for size only. The anchoring that keeps the shared impact time
-    /// honest while these fire is in Coordinator.Anchor.cs, and the budget of rounds a commit may
-    /// order (guidance channels, magazine, reservations) is in Coordinator.Channels.cs.
+    /// The release half of the pipeline: when each held order is due, the flight estimate it is due
+    /// against, and firing it. Anchoring is in Coordinator.Anchor.cs, the round budget in Coordinator.Channels.cs.
     /// </summary>
     internal static partial class Coordinator
     {
@@ -24,32 +20,17 @@ namespace AutoTOT
         private static float ResolveFlightEstimate(Scheduled s, Intent it, float simNow,
                                                    float timeLeft, float releaseGate)
         {
-            // Two invariants bind here.
-            //
-            // 1. Release must use the SAME estimator the commit path scheduled the impact against
-            //    (FlightTime.Estimate, whose real-0.5 s TTL cache both paths share). Any cheaper
-            //    substitute biases one path against the other, slack goes negative, and the whole
-            //    batch dumps on one tick with no stagger.
-            // 2. Staleness is measured in SIM time, not real time, or slow ticks expire the cache
-            //    every frame and force a full recompute, which is the feedback loop that made them
-            //    slow.
-            //
-            // Proximity gate: far items reuse a prior Estimate on a long cadence (FlightRefreshSim),
-            // near-release items on a short one (FlightRefreshNearSim). The reused value is always a
-            // real Estimate output, so it cannot diverge from the commit path.
+            // Two invariants:
+            // 1. Release uses the estimator the commit scheduled against (FlightTime.Estimate, shared cache). A
+            //    cheaper substitute biases one path against the other and the batch fires unstaggered.
+            // 2. Staleness is measured in sim time; real time would expire the cache on every slow frame.
+            // Far items reuse their estimate every FlightRefreshSim, near-release items every FlightRefreshNearSim.
             bool nearRelease = s.LastFlightEst >= 0f &&
                                timeLeft <= s.LastFlightEst + releaseGate + FlightGateMargin;
             float refreshCadence = nearRelease ? FlightRefreshNearSim : FlightRefreshSim;
             bool due = s.LastFlightEst < 0f || simNow - s.LastFlightEstSim >= refreshCadence;
-            // Per-frame ceiling on fresh sims: a synchronized wave bunches many due refreshes into
-            // one frame. An item with NO estimate always computes; correctness before budget.
-            //
-            // The budget is charged AFTER the call and only when it missed the cache. Charging it
-            // before meant a cache hit spent a slot, and hits are the large majority: one measured
-            // window served 454 hits against 123 misses, the hits costing 0.1 ms in total. A ceiling
-            // of 12 therefore admitted about 2 real sims per frame and turned away roughly 64 items,
-            // so the release path ran on estimates 8 to 12 s old with the budget mostly spent on
-            // work that was free. Only a miss consumes the resource this exists to bound.
+            // Per-frame ceiling on fresh sims; an item with no estimate always computes. Charged after the
+            // call and only on a cache miss, since hits cost nothing.
             bool budgeted = s.LastFlightEst < 0f || _flightEstimatesThisFrame < MaxFlightEstimatesPerFrame;
             float flightNow;
             if (due && budgeted)
@@ -58,39 +39,26 @@ namespace AutoTOT
                 if (FlightTime.TryCached(it.Unit, it.AmmoId, it.Target, out float cached,
                                          out float cacheAgeReal))
                 {
-                    // Already computed, possibly by a worker that finished since the last tick.
-                    // No Begin/End here: nothing ran, so there is no duration to attribute.
+                    // Already computed, possibly by a worker since the last tick; nothing ran, so nothing is timed.
                     CoordinatorProfiler.CountCachedHit();
                     flightNow = cached;
                     s.LastFlightEst = flightNow;
-                    // Back-date the staleness stamp by the entry's own age. The cache is SHARED and
-                    // its TTL is 0.5 s of REAL time, so a hit can be a value another caller stored
-                    // half a second ago; stamping it `simNow` recorded geometry of arbitrary age as
-                    // computed this instant, and at the game's 20x compression clamp that is up to
-                    // 10 sim seconds of movement, with the 2 s far-item cadence on top. The item is
-                    // then due again sooner, which is the whole effect: one extra refresh rather
-                    // than a release decided on a stale number.
-                    //
-                    // Real age is converted with the current compression rather than tracked in sim
-                    // time. Over a 0.5 s window the two differ only if the player changed
-                    // compression inside it, and the cost of being wrong there is one refresh.
+                    // The cache is shared with a 0.5 s real-time TTL: back-date the stamp by the entry's age
+                    // (at current compression) so a stale hit is refreshed sooner.
                     s.LastFlightEstSim = simNow - cacheAgeReal * Mathf.Max(GameTime.TimeCompression, 1f);
                 }
                 else if (s.LastFlightEst >= 0f &&
                          FlightTime.RequestRefresh(it.Unit, it.AmmoId, it.Target))
                 {
-                    // A refresh of a value we already hold: queue it and keep the previous number
-                    // for now. LastFlightEstSim is deliberately NOT advanced, so the item stays due
-                    // and adopts the fresh value the moment it lands. RequestRefresh dedupes by key,
-                    // so staying due does not re-queue it.
+                    // Refreshing a value we hold: queue it and keep the old number. LastFlightEstSim is not
+                    // advanced, so the item stays due and adopts the fresh value when it lands;
+                    // RequestRefresh dedupes by key.
                     flightNow = s.LastFlightEst;
                     CoordinatorProfiler.Count(CoordinatorProfiler.Counter.FlightQueued);
                 }
                 else
                 {
-                    // No usable previous value (the anchor releases almost immediately after being
-                    // scheduled, so it must be answered now), or the queue declined the work.
-                    // Correctness before budget, as before.
+                    // No previous value (an anchor releases almost at once), or the queue declined: solve now.
                     CoordinatorProfiler.Begin(CoordinatorProfiler.Stage.FlightEstimate);
                     flightNow = FlightTime.Estimate(it.Unit, it.AmmoId, it.Target);
                     CoordinatorProfiler.End(CoordinatorProfiler.Stage.FlightEstimate);
@@ -114,11 +82,8 @@ namespace AutoTOT
         {
             if (_scheduled.Count == 0) { _lastReleaseSimNow = simNow; return; }
 
-            // Half-a-frame lookahead: releases evaluate "time left <= flight time" with a flight
-            // time estimated THIS frame, but the missile actually launches a fraction of a sim
-            // step later. The tiny lead absorbs shooter/target motion during the stagger and
-            // corrects time-compression's late-bias. simStep is measured in SIM time so pause
-            // (simStep=0) adds no lookahead.
+            // Half-a-step lookahead: the missile launches a fraction of a sim step after this decision.
+            // Measured in sim time, so a paused game adds none.
             float simStep = (_lastReleaseSimNow >= 0f) ? Mathf.Max(0f, simNow - _lastReleaseSimNow) : 0f;
             float lookahead = LookaheadFraction * simStep;
             _lastReleaseSimNow = simNow;
@@ -134,13 +99,10 @@ namespace AutoTOT
                     bool shooterGone = it.Unit == null || it.Unit.IsDestroyed;
                     string reason = shooterGone ? "shooter destroyed" : "target destroyed";
                     _scheduled.RemoveAt(i);
-                    // Every removal of an anchor goes through one exit. Before, only an anchor that
-                    // had NOT released was handed over, and one that had released without launching
-                    // took its followers' release condition with it. See RetireAnchor.
+                    // Every anchor removal goes through RetireAnchor, released or not.
                     if (s.IsAnchor) RetireAnchor(s, simNow, reason);
                     NoteScheduleExit(s, simNow, reason);   // after the retire, see its summary
-                    // Never fires, so the target may never get a fired row, which is what the board's
-                    // prune keys off. Drop it now or it leaks until the next mission Reset().
+                    // It never fires, so no fired row will prune its target from the board; drop it now.
                     DropImpactDataIfUnscheduled(it.Target);
                     LogDroppedItem(s);
                     continue;
@@ -148,8 +110,7 @@ namespace AutoTOT
 
                 float timeLeft = s.ImpactAtSim - simNow;
 
-                // Use cached GroupDelay if available (independent of the flight estimate; the
-                // proximity gate below needs it, so resolve it first).
+                // GroupDelay does not depend on the flight estimate, and the proximity gate below needs it.
                 if (s.GroupDelayCached < 0f)
                 {
                     CoordinatorProfiler.Begin(CoordinatorProfiler.Stage.GroupDelay);
@@ -159,29 +120,17 @@ namespace AutoTOT
                 float groupDelay = s.GroupDelayCached;
                 CoordinatorProfiler.Count(CoordinatorProfiler.Counter.GroupDelayCalls);
 
-                // A follower never fires before its anchor has actually put a round up. The anchor is
-                // by definition the longest-enroute shot of the batch, so a follower going first can
-                // only ever be too early. Normally a no-op (the anchor launches within seconds of its
-                // own release); it earns its keep when the anchor is a submarine whose ascent ran
-                // longer than the estimate folded into StartupLead. Bounded by RippleDone: when the
-                // anchor completes, or is abandoned at NoLaunchMaxHoldSim, followers free next tick.
-                //
-                // A pooled follower on the anchor's own launch clock holds even before the anchor has
-                // fired. The pooled prediction measures the pool's centre from the anchor's first
-                // round, so that round has to be the clock's first, and a follower whose flight is
-                // within a release tick of the anchor's could otherwise take the slot. The follower's
-                // own slot comes after that round either way. See PoolSharedLaunchClock.
+                // A follower never fires before its anchor has put a round up: the anchor is the longest
+                // enroute, so going first can only be early. Bounded by RippleDone (completion or
+                // NoLaunchMaxHoldSim). A pooled follower on the anchor's own launch clock holds even before
+                // the anchor fires, so the anchor's round is the clock's first; see PoolSharedLaunchClock.
                 bool onAnchorClock = it.Pooled && s.Anchor?.Item != null && s.Anchor.Item.Pooled &&
                                      it.PoolClock == s.Anchor.Item.PoolClock && it.Unit == s.Anchor.Item.Unit;
-                // An order marked to fire when ready (MarkUnholdableOrders) arrives when its geometry
-                // says whatever it waits for, so holding it for the anchor's first round only costs
-                // the shot. Behind a submarine anchor that wait is the boat's whole ascent.
+                // An order that fires when ready (MarkUnholdableOrders) gains nothing by waiting for the anchor.
                 if (!s.IsAnchor && !it.FireImmediately && s.Anchor != null && (s.Anchor.Fired || onAnchorClock) &&
                     !s.Anchor.RippleDone && s.Anchor.LaunchTimes.Count == 0)
                 {
-                    // D1: the hold is bounded by RippleDone, which only UpdateAnchorTracking sets,
-                    // and that loop walks _scheduled. An anchor that has left it can no longer reach
-                    // this follower. Says so once rather than holding in silence.
+                    // Reported once if the anchor has left _scheduled, since nothing can then release this follower.
                     DiagnoseOrphanedFollower(s, simNow);
                     if (VerboseLog && !s.LoggedAnchorWait)
                     {
@@ -199,35 +148,26 @@ namespace AutoTOT
                 float releaseGate = it.ReleaseLead + it.StartupLead + groupDelay + lookahead;
                 float flightNow = ResolveFlightEstimate(s, it, simNow, timeLeft, releaseGate);
 
-                // Release early by: the ripple lead (centers the salvo on the coordinated impact),
-                // the fixed startup offset (PreLaunchDelay + expected reaction) the engage cycle burns
-                // before round 1 leaves the rail, PLUS the group-drag delay (a grouped salvo flies
-                // slower than the solo estimate, so it must leave earlier to still arrive on time).
-                // FireImmediately: this order's arrival does not follow its release, so waiting
-                // gains nothing and costs the shot. See MarkUnholdableOrders in Coordinator.cs.
+                // Release when time left <= flight + ripple lead + startup lead + group-drag delay
+                // (EnrouteSeconds), or at once for an order whose arrival does not follow its release.
                 if (it.FireImmediately || timeLeft <= EnrouteSeconds(it, flightNow, groupDelay) + lookahead)
                 {
                     if (s.IsAnchor)
                     {
-                        // The anchor stays in _scheduled after firing: UpdateAnchorTracking observes
-                        // its launch ripple and finalizes the batch impact from it.
+                        // The anchor stays in _scheduled after firing, so UpdateAnchorTracking can observe its ripple.
                         if (s.Fired) continue;
                         s.Fired = true;
                         s.FiredAtSim = simNow;
                     }
                     else
                     {
-                        // Marked before removal purely so the anchor's follower list can still tell
-                        // which of its orders are already in the air. A released round has spent its
-                        // lead and a later move of the shared impact cannot reach it, which is what
-                        // the impact-commitment line measures. No timing reads this.
+                        // Marked before removal so the anchor's follower list knows which orders are away. No
+                        // timing reads it.
                         s.Fired = true;
                         _scheduled.RemoveAt(i);
                     }
-                    // Regression guardrail for invariant 1 in ResolveFlightEstimate: large positive
-                    // overshoot means the item cannot make its scheduled impact and the batch has
-                    // collapsed onto one tick with no stagger. Once per item, independent of
-                    // VerboseLog.
+                    // Guardrail for invariant 1 in ResolveFlightEstimate: a large overshoot means the batch
+                    // collapsed onto one tick. Logged once per item, ungated.
                     float overshoot = flightNow - timeLeft;
                     if (overshoot > SlackWarnSeconds)
                         Bootstrap.Log.LogWarning(
@@ -253,16 +193,12 @@ namespace AutoTOT
                             $"simStep {simStep:0.0}s, overshoot {overshoot:0.0}s" +
                             SubmarineFacts.Describe(it.Unit, it.AmmoId));
                     }
-                    // Age of the estimate this release used: what the per-frame sim cap costs in
-                    // freshness. 0 = recomputed this frame, -1 = no estimate was ever taken.
+                    // Age of the estimate this release used: 0 = this frame, -1 = never estimated.
                     CoordinatorProfiler.ReleaseStaleness(s.LastFlightEst >= 0f ? simNow - s.LastFlightEstSim : -1f);
                     if (!Fire(it, s.IsAnchor ? s : null, s.ImpactAtSim))
                     {
-                        // The game refused it. An anchor that cannot fire must hand the strike over
-                        // rather than leave its followers waiting for a ripple that will never
-                        // start; it is already out of _scheduled below, or still in it as an anchor,
-                        // so retire it through the one exit. A follower has spent its release window
-                        // and is simply gone, which the warning above states.
+                        // The game refused it. An anchor retires through the one exit so its followers are
+                        // handed over; a follower is simply gone, as the warning says.
                         if (s.IsAnchor)
                         {
                             int at = _scheduled.IndexOf(s);
@@ -276,19 +212,9 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// Re-read a held order's launch-envelope transit from the platform's CURRENT state.
-        ///
-        /// <see cref="PrepareIntent"/> computes <see cref="Intent.EnvelopeLead"/> once, at commit,
-        /// and the release can be minutes later. A boat that was still settling at 430 ft when the
-        /// strike was planned, and sat at 420 ft by the time its gate opened, was released against a
-        /// 120.2 s ascent it no longer had to make: it launched 4.4 s early and its round arrived
-        /// 6.0 s ahead of the rest. Scored against the depth it actually left from, the same model
-        /// was off by 1.4 s, in line with every other run. The model was right and the input was
-        /// stale.
-        ///
-        /// Refreshing is safe for the release gate in a way it would not be for the flight estimate:
-        /// the shared impact time is already fixed, and this only answers "how long does this
-        /// platform need FROM NOW", which is exactly the question the gate asks.
+        /// Re-read a held order's launch-envelope transit from the platform's current state: the commit-time
+        /// value can be minutes old, and a boat that has already risen would release early. Safe for the
+        /// gate, because the shared impact is fixed and the gate only asks how long the platform needs from now.
         /// </summary>
         private static void RefreshEnvelopeLead(Scheduled s, Intent it, float simNow)
         {
@@ -311,9 +237,8 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// Fire a hand-picked set of missile shots, staggered so they all arrive together. The shots
-        /// need not share a target: one anchor is elected across the whole set and every other shot
-        /// follows it, so a strike spanning several targets lands on one time-on-target.
+        /// Fire a hand-picked set of shots so they arrive together. One anchor is elected across the whole
+        /// set, so shots at several targets land on one time on target.
         /// </summary>
         internal static void FireCoordinated(List<Shot> shots)
         {
@@ -334,31 +259,25 @@ namespace AutoTOT
             }
             if (items.Count == 0) return;
 
-            // Before the formation flags and PrepareIntent below, both of which are derived from the
-            // shot counts and from which orders survive.
+            // Before the formation flags and PrepareIntent, which depend on the surviving shot counts.
             if (!TryPrepareCommit(items)) return;
 
             foreach (Intent it in items)
             {
-                // Per TARGET, not per strike: the game's formation-attack flag means "several
-                // shooters are engaging this contact together", so counting the whole strike would
-                // mislabel a one-shooter target inside a multi-target strike.
+                // Per target: the game's formation-attack flag means several shooters engage this contact together.
                 int atTarget = 0;
                 foreach (Intent o in items) if (o.Target == it.Target) atTarget++;
                 it.IsFormation = atTarget > 1;
                 PrepareIntent(it);
             }
 
-            // The flight estimates, the anchor pick and the scheduling all happen once the solve
-            // workers have answered. See Coordinator.Pending.cs.
+            // Estimates, anchor and scheduling complete once the workers answer (Coordinator.Pending.cs).
             BeginCommit(items, planner: true, isStrike: false);
         }
 
         /// <summary>
-        /// Fire the planner's staged strike. Any orders the player also issued in-game while the
-        /// strike was armed are already sitting in the armed batch, so the staged picks are folded
-        /// into it and the whole lot commits as ONE strike with one anchor. With nothing armed this
-        /// is just a coordinated multi-target fire of the staged picks.
+        /// Fire the planner's staged strike. With a strike armed, the picks join the orders already collected
+        /// and commit as one strike with one anchor; otherwise this is a coordinated fire of the picks.
         /// </summary>
         internal static void FireStrike(List<Shot> staged)
         {
@@ -379,9 +298,7 @@ namespace AutoTOT
                         Priority = PlannerTaskPriority,
                     });
                 }
-                // Formation-attack flag, per target and over the WHOLE batch: an intercepted order
-                // and a staged pick at the same contact are one formation attack on it. Intercepted
-                // items keep the flag the game itself passed.
+                // Formation flag per target over the whole batch; intercepted orders keep the flag the game passed.
                 List<Intent> all = _strikeBatch.Items;
                 for (int i = firstAdded; i < all.Count; i++)
                 {
@@ -415,15 +332,8 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// Hand one order to the game. Returns false when the game did not take it, which the caller
-        /// must act on. This used to catch
-        /// the exception, log it, and then mark the engagement fired and register a launch
-        /// expectation anyway, so the mod believed rounds were coming that nothing had accepted, and
-        /// a follower had already been dropped from the schedule by its caller.
-        ///
-        /// Not retried here. An exception can be thrown after the game accepted the task, and a
-        /// retry would then order the salvo twice; the honest move is to report the order as failed
-        /// and let the player reissue it.
+        /// Hand one order to the game. False when the game did not take it, which the caller must act on. Not
+        /// retried: the game may have accepted the task before throwing, and a retry would fire it twice.
         /// </summary>
         private static bool Fire(Intent it, Scheduled sched, float impactAtRelease)
         {

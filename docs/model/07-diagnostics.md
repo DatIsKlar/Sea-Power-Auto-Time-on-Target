@@ -205,53 +205,7 @@ Simulated against the game's own step sizes the answer moves <0.2% out to 300x a
 Speed is held constant for the whole ascent. A boat re-ordered to a new speed mid-climb will
 diverge, and nothing here notices.
 
-## 7.7 Vertical profiler
-
-`VerticalProfiler.cs` captures how a platform changes depth or altitude, off by default. This is
-a research tool, not a runtime diagnostic.
-
-### Why separate from the envelope-* lines
-
-The `envelope-*` lines only fire while an AutoTOT order is pending, which is useless for modelling: to
-characterise a hull you want to order a depth or altitude change with no engagement at all and
-watch the response. The profiler samples every submarine and aircraft whenever its commanded
-altitude differs from where it is, and stops when it settles, so one dive or climb produces one
-labelled block that can be pulled straight out of the log.
-
-Sampling is deliberately fast (1 s) because an aircraft crosses its whole envelope in the time a
-submarine moves a few feet. Each block carries a run number so several manoeuvres in one mission
-stay separable.
-
-### What the trace captures
-
-A trace is only worth having if the model's own variables are in it. The two game models take
-different inputs:
-
-- **Submarine** (`Submarine.applyDepth`) is a proportional controller on depth error with a
-  ballast/dive-plane interlock, so it needs depth, commanded depth, pitch, speed and the
-  tank rate. See `SubmarineAscent`, which already implements it.
-- **Aircraft** (`FixedWingFlightPhysics`) has two paths. The approximation path is a constant
-  `MoveTowards` at `_maxClimbRate` (`FixedWingFlightPhysics.cs:361`). The full path is
-  energy-based: `sin(climbAngle) = clamp01((thrust*lapse - drag)/weight + speedTrade)`,
-  optionally capped at `_maxClimbRate/V` (`FixedWingFlightPhysics.cs:800-816`). Which one runs
-  changes the answer completely, so the card records the approximation flag, and mass and
-  speed are sampled because thrust-to-weight drives the energy path.
-
-### Opening thresholds
-
-Aircraft hold altitude to within a few feet and never sit exactly on the commanded value,
-so a 3 ft opening test turned station-keeping jitter into 321 junk blocks out of 330 in
-the first session. A run has to be worth measuring before it is worth opening. The opening
-thresholds are 50 ft for aircraft and 5 ft for submarines.
-
-### Position snaps
-
-The game teleports a unit on spawn and on altitude correction (`transform.position = ...DesiredAltitude`),
-and the first session logged peaks of 1372 and 1612 ft/s, above the airframes' own declared maxima.
-Samples beyond a plausible ceiling are dropped from the rate statistics and counted, so a
-snap-heavy run is visibly suspect rather than quietly biased.
-
-### Reading `turn`, `launchTurn` and `gLimit`
+## 7.7 Reading `turn`, `launchTurn` and `gLimit`
 
 `turn` is the ammunition's `MaxTurnRate`. The two beside it are the corrections that can move it,
 and both print `none` for almost every round:

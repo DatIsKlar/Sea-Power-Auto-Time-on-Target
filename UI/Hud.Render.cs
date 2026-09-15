@@ -5,9 +5,8 @@ using UnityEngine;
 namespace AutoTOT
 {
     /// <summary>
-    /// Hud (partial) ; panel content rendering: header, missile rows, ENGAGEMENTS overview,
-    /// fire actions, and small draw helpers. Data comes from the core partial; styling from
-    /// the styles partial.
+    /// Hud (partial): panel content rendering, including the header, missile rows, the ENGAGEMENTS overview,
+    /// fire actions and small draw helpers.
     /// </summary>
     internal sealed partial class Hud
     {
@@ -16,38 +15,30 @@ namespace AutoTOT
         private const float AddUnitButtonW = 100f;   // + UNIT / ✓ HELD
         private const float AddFormationButtonW = 130f;  // + FORMATION / ✓ HELD
         private const float HelpButtonW = 76f;       // ? KEYS, in the title bar
-        // Secondary commit-row buttons. They share a width so the row reads as one set of
-        // alternatives to the primary above it, and three of them fit inside MinWindowW.
+        // Secondary commit-row buttons share one width, and three fit inside MinWindowW.
         private const float SecondaryButtonW = 122f;
         private const float SecondaryButtonH = 28f;
-        // Salvo stepper. Both buttons and the count keep ONE width whatever the held modifier
-        // prints on them, otherwise the whole group jumps sideways the moment Shift goes down.
+        // Salvo stepper buttons and count keep one width whatever the modifier prints, so the group does not jump.
         private const float StepButtonW = 42f, SalvoCountW = 42f;
-        // The strike list gets at most this share of the window height, and never less than
-        // StrikeListMinH. Expressing it as a fraction is what keeps the shooter list and the strike
-        // list usable together at any window size; a fixed pixel height would starve one of them at
-        // the extremes. It only claims the height its own content needs, so a one-order strike
-        // stays a one-line list.
+        // The strike list gets at most this share of the window height (and at least StrikeListMinH), so the
+        // shooter and strike lists stay usable together at any window size; it claims only the height its
+        // content needs.
         private const float StrikeListShare = 0.5f;
         private const float StrikeListMinH = 2f * RowHeight;
         private const float StrikeOrderLineH = 18f;   // one condensed order line
-        // Width of the tick column on a tickable row. The mark is drawn into it, never prefixed
-        // to the label, so a row's text sits at the same place whether it is ticked or not.
+        // Tick column width; the mark is drawn into it, so a row's text does not move when ticked.
         private const float MarkColumnW = 14f;
 
         // SHOOTERS then TARGET, in the order the player works: pick who shoots, then what at.
         private void DrawSelectionHeader(bool haveTarget)
         {
-            // The name gets whatever the two buttons leave, on ONE line. Wrapping here pushed a
-            // long ship name up into the row above.
+            // The name gets what the two buttons leave, on one line; wrapping pushed long names into the row above.
             GUILayout.BeginHorizontal(GUILayout.Height(RowHeight));
             GUILayout.Label("SELECTED", _hdr, GUILayout.Width(SelectionLabelW));
             GUILayout.Label(_anchor != null ? UnitNaming.SafeName(_anchor) : "click one of your units",
                             _rowOneLine, GUILayout.ExpandWidth(true));
 
-            // Two buttons rather than one button and a mode. Each names the noun it adds, and each
-            // says when its work is already done, so clicking a ship that is already held gives an
-            // answer instead of looking like nothing happened.
+            // Two buttons, each naming what it adds and saying when it is already done.
             bool haveAnchor = _anchor != null && !_anchor.IsDestroyed;
             bool shipHeld = haveAnchor && _group.Contains(_anchor);
             GUI.enabled = haveAnchor && !shipHeld;
@@ -64,9 +55,8 @@ namespace AutoTOT
             GUI.enabled = true;
             GUILayout.EndHorizontal();
 
-            // The shooter roster, when there is one. It replaces the current selection as the
-            // shooter list, so say so plainly: otherwise clicking another ship and seeing the list
-            // not change reads as the panel having stopped tracking the selection.
+            // With a roster, it replaces the current selection as the shooter list; say so, or clicking
+            // another ship looks like the panel stopped tracking.
             if (_group.Count > 0)
             {
                 GUILayout.BeginHorizontal(GUILayout.Height(RowHeight));
@@ -88,11 +78,7 @@ namespace AutoTOT
             GUILayout.EndHorizontal();
         }
 
-        /// <summary>
-        /// One line stating what the commit buttons will do, or why they are greyed. A disabled
-        /// button that gives no reason is the panel refusing to say which of two preconditions is
-        /// missing, and both are one click away from being met.
-        /// </summary>
+        /// <summary>One line stating what the commit buttons will do, or why they are greyed.</summary>
         private void DrawStatusLine(List<ObjectBase> shooters, bool haveTarget)
         {
             int ships = 0, rounds = 0;
@@ -118,23 +104,17 @@ namespace AutoTOT
 
             GUILayout.BeginHorizontal(GUILayout.Height(RowHeight));
             GUI.color = col;
-            // Sized to its text, not expanded: an expanding label takes the whole row and leaves
-            // the collecting notice parked wherever that label happens to end, instead of on the
-            // panel's right edge where the flexible space below puts it.
+            // Sized to its text, so the collecting notice sits at the panel's right edge.
             GUILayout.Label(msg, _rowOneLine, GUILayout.ExpandWidth(false));
             GUILayout.FlexibleSpace();
-            // A strike whose flight estimates are still being solved has been accepted but is not
-            // scheduled yet, so it appears in no other part of the panel: no ENGAGEMENTS row, no
-            // countdown. On a large strike that is a visible pause between the button and the
-            // rows, and without a word here it reads as the button having done nothing.
+            // A strike still waiting on its flight estimates appears nowhere else in the panel; say so.
             if (Coordinator.CommitPending)
             {
                 GUI.color = Accent;
                 GUILayout.Label($"● preparing {Coordinator.PendingOrders} order(s)",
                                 _rowOneLine, GUILayout.ExpandWidth(false));
             }
-            // Collecting in-game orders is a mode, not a hint, so it belongs on the status line
-            // whenever it is on and nowhere at all when it is off.
+            // Collecting in-game orders is a mode, so it shows here whenever it is on.
             if (Coordinator.StrikeArmed)
             {
                 GUI.color = Accent;
@@ -145,9 +125,7 @@ namespace AutoTOT
             GUILayout.EndHorizontal();
         }
 
-        // The hotkey list, as rows rather than one run-on line: a key column and a description
-        // column. Run together, the keys and the phrases they belong to wrapped into each other and
-        // there was no telling which description went with which key.
+        // The hotkey list as rows: a key column and a description column.
         private static readonly string[] HelpDescriptions =
         {
             "hide the panel",
@@ -155,14 +133,12 @@ namespace AutoTOT
             "collect the orders you issue in-game into the strike",
             "fire the staged strike",
             "hold while stepping a salvo: +/- 10 (Shift) or 5 (Ctrl)",
-            // Not a key. It earns a line here because it is the one title-bar light that reports
-            // rounds the player will not get, and it is readable with the panel collapsed, which is
-            // exactly when its meaning is least guessable.
+            // Not a key: the one title-bar light that reports rounds the player will not get, readable with
+            // the panel collapsed.
             "a shooter is out of missile guidance channels; further orders for it are refused",
         };
 
-        // One GUIContent reused for the header's width measurements. CalcSize takes a GUIContent,
-        // and building a fresh one per label per OnGUI pass was four allocations a pass.
+        // One GUIContent reused for the header's width measurements, instead of one per label per pass.
         private static readonly GUIContent _measure = new GUIContent();
 
         private static float TextWidth(GUIStyle style, string text)
@@ -200,10 +176,7 @@ namespace AutoTOT
             DrawDivider();
         }
 
-        /// <summary>
-        /// Height the overlay needs, dividers included. One row per key, so this is exact and does
-        /// not depend on how the text happens to wrap.
-        /// </summary>
+        /// <summary>Height the overlay needs, dividers included; one row per key, so it is exact.</summary>
         private float HelpOverlayHeight()
         {
             return HelpDescriptions.Length * HelpLineH + 2f * DividerH + 8f;
@@ -214,17 +187,12 @@ namespace AutoTOT
         private const float DividerH = 3f;
 
         /// <summary>
-        /// The title bar ; always visible, draggable, carries the collapse toggle and auto status.
-        ///
-        /// Drawn at explicit rects rather than with auto-layout. The painted strip runs to the
-        /// window's top edge, so it is taller than the layout row that sits inside the window
-        /// padding, and anything centred in that row is centred on the wrong box. Every item here
-        /// is instead centred on the strip's own mid-line, which is what the eye measures against.
+        /// The title bar: always visible, draggable, with the collapse toggle and status. Drawn at explicit
+        /// rects centred on the strip's mid-line, since the painted strip is taller than its layout row.
         /// </summary>
         private void DrawHeader(Rect strip)
         {
-            // One mid-line for the whole bar. Each item gets a full-height rect on it, and the
-            // styles' Middle* alignment then centres the glyphs inside those rects.
+            // One mid-line for the bar; each item gets a full-height rect and the Middle* styles centre the glyphs.
             float y = strip.center.y - HeaderH * 0.5f;
             float left = strip.x + 6f, right = strip.xMax - 10f;
 
@@ -232,8 +200,7 @@ namespace AutoTOT
             _chevRectWin = chevRect;
             if (GUI.Button(chevRect, _open ? "\u25be" : "\u25b8", _chev)) _open = !_open;
 
-            // AUTO, and the live engagement count when there is one, are measured and laid out from
-            // the right edge inwards so neither depends on how wide the title happens to be.
+            // AUTO and the engagement count are laid out from the right edge inwards, independent of the title width.
             string autoText = Coordinator.Active ? "\u25cf AUTO" : "\u25cb AUTO";
             float autoW = TextWidth(_hdrCenterV, autoText) + 2f;
             var autoRect = new Rect(right - autoW, y, autoW, HeaderH);
@@ -242,9 +209,7 @@ namespace AutoTOT
             GUI.color = Color.white;
             right = autoRect.x - 8f;
 
-            // Strike state, in the same shape as AUTO and next to it. Collecting orders is a mode
-            // the player can leave running with the panel collapsed, and a mode with no indicator
-            // is a mode you forget you are in.
+            // Strike state, shaped like AUTO: collecting can be left running with the panel collapsed.
             int staged = _strike.Count + Coordinator.StrikeCount;
             if (Coordinator.StrikeArmed || staged > 0)
             {
@@ -258,10 +223,8 @@ namespace AutoTOT
                 right -= strikeW + 8f;
             }
 
-            // Guidance-channel trim, in the same shape as the two above. This is the one status here
-            // that reports rounds the player asked for and did NOT get, and the paths that trigger it
-            // (auto-coordination and Alt+H collection) are exactly the ones a player uses without
-            // ever opening the panel, so a panel-only warning would never reach them.
+            // Guidance-channel trim: the one status reporting rounds asked for and not received, and its
+            // triggers (AUTO, Alt+H) are used without opening the panel.
             if (Coordinator.AnyChannelCapped || AnyStagedChannelCap())
             {
                 const string capText = "● CH CAP";
@@ -284,10 +247,8 @@ namespace AutoTOT
                 right -= liveW + 8f;
             }
 
-            // The hotkeys live behind this, so they are findable without being repeated on a hint
-            // line every frame. Outlined rather than bare: a glyph drawn in a label style reads as
-            // part of the title, not as something to press. Centred in the bar, then pushed left if
-            // a long status on the right would otherwise overlap it.
+            // The hotkeys live behind this button, outlined so it reads as pressable; centred, then pushed
+            // left if a long status would overlap it.
             float helpX = Mathf.Min(strip.center.x - HelpButtonW * 0.5f, right - HelpButtonW);
             var helpRect = new Rect(helpX, y + 2f, HelpButtonW, HeaderH - 4f);
             _helpRectWin = helpRect;
@@ -301,8 +262,7 @@ namespace AutoTOT
                       "TIME-ON-TARGET", _title);
         }
 
-        // Held modifier grows the salvo step so large launchers fill faster.
-        // Read from Event.current (live during OnGUI). Result is still clamped to the row range.
+        // A held modifier grows the salvo step (read from Event.current during OnGUI); still clamped to the row range.
         private static int SalvoStep()
         {
             var e = Event.current;
@@ -314,9 +274,8 @@ namespace AutoTOT
         private void DrawMissileRow(ObjectBase ship, Row r)
         {
             string key = Key(ship, r.AmmoId);
-            // Rows start unticked. They used to start ticked, so + FORMATION followed by FIRE THIS
-            // TARGET fired every in-range weapon on every ship in the formation, not only the rows
-            // the player picked; the slowest of those became the anchor and held the rest.
+            // Rows start unticked, so + FORMATION then FIRE THIS TARGET fires only the rows the player picked, not every
+            // in-range weapon in the formation, whose slowest would become the anchor and hold the rest.
             if (!_checked.ContainsKey(key)) _checked[key] = false;
             if (!_salvo.ContainsKey(key)) _salvo[key] = 1;
 
@@ -326,9 +285,8 @@ namespace AutoTOT
             string eta = "--", range = "";
             if (haveTarget)
             {
-                // Out-of-range rows print "(out of range)" instead of the ETA below, so simulating
-                // one is wasted work -- and it is the worst kind, because an unreachable shot is
-                // exactly where the integrator bails and the call then also pays for WaypointSim.
+                // Out-of-range rows print "(out of range)" instead of an ETA, so they are not simulated: an
+                // unreachable shot is where the integrator bails and WaypointSim runs too.
                 if (r.InRange)
                 {
                     CoordinatorProfiler.Begin(CoordinatorProfiler.Stage.UiEstimate);
@@ -341,9 +299,7 @@ namespace AutoTOT
                 range = $"{nm:0.0}nm";
             }
 
-            // A row with no channels left is shown but cannot be picked, exactly like an
-            // out-of-range one. Both are "visible so it can explain itself, inert so it cannot be
-            // staged".
+            // A row with no channels left is shown but cannot be picked, like an out-of-range one.
             bool selectable = r.InRange && r.Count > 0;
 
             GUI.enabled = selectable;
@@ -356,8 +312,7 @@ namespace AutoTOT
                 _checked[key] = !isChecked;
             if (isChecked)
             {
-                // Drawn over the row's own rect rather than laid out, so the mark costs the row no
-                // width and toggling it cannot move anything.
+                // Drawn over the row's rect, so the mark costs no width and toggling it moves nothing.
                 Rect nameRect = GUILayoutUtility.GetLastRect();
                 GUI.Label(new Rect(nameRect.x + _menuItem.padding.left, nameRect.y,
                                    MarkColumnW, nameRect.height), "\u2713", _rowCenter);
@@ -368,11 +323,8 @@ namespace AutoTOT
             GUI.color = selectable ? Accent : OutOfRange;
             GUILayout.Label($"ETA {eta}", _row, GUILayout.Width(95));
             GUI.color = selectable ? TextMain : OutOfRange;
-            // Both range failures read as the live range compared against the bound it broke, so
-            // the near and far cases have one shape. Width matters: the label column is a fixed
-            // 170px, and the first attempt at this, "(inside minimum range)", wrapped and pushed
-            // every row below it down. Both of these are shorter than the "(out of range)" they
-            // replace.
+            // Both range failures read as the range against the bound it broke, short enough for the fixed
+            // 170 px label column.
             string why = r.TooClose ? " < min range"
                        : !r.InRange ? " > max range"
                        : r.Count <= 0 ? " (no channels left)"
@@ -381,8 +333,8 @@ namespace AutoTOT
             GUI.color = Color.white;
             
             GUILayout.FlexibleSpace();
-            // The steppers state their own step size while a modifier is held, which is the moment
-            // it matters. The full key list lives behind the ? in the title bar.
+            // The steppers show their step size while a modifier is held; the key list is behind the ? in the
+            // title bar.
             int step = SalvoStep();
             string minus = step > 1 ? $"–{step}" : "–", plus = step > 1 ? $"+{step}" : "+";
             if (GUILayout.Button(minus, _btnStep, GUILayout.Width(StepButtonW), GUILayout.Height(RowHeight)))
@@ -393,9 +345,8 @@ namespace AutoTOT
             GUI.enabled = true;
             GUILayout.EndHorizontal();
 
-            // Warn when the chosen salvo can't fire before the launcher must reload.
-            // The strike still fires as one order (the game paces the reload); it just arrives in
-            // waves, which the ENGAGEMENTS overview then shows split out.
+            // Warn when the salvo cannot fire before the launcher must reload: it still fires as one order,
+            // arriving in waves that ENGAGEMENTS shows.
             if (r.InRange && _checked[key] &&
                 LauncherFactsSource.WillNeedReload(ship, r.AmmoId, _salvo[key], out int ready, out int waves))
             {
@@ -404,10 +355,8 @@ namespace AutoTOT
                 GUI.color = Color.white;
             }
 
-            // Shared missile group. Grouped ammo is not limited by fire-control channels but by the
-            // group itself, and shooters inside the ammo's join range feed ONE group between them.
-            // Overfill it and the surplus rounds never leave the rails, so this is the one warning
-            // the player can act on by repositioning rather than by firing less.
+            // Shared missile group: shooters inside the ammo's join range feed one group, and overfilled
+            // rounds never leave the rails. The player can fix this by repositioning.
             if (r.InRange && _checked[key] && _groupShare.TryGetValue(key, out GroupShare gs))
             {
                 GUI.color = Warn;
@@ -419,23 +368,11 @@ namespace AutoTOT
                 GUI.color = Color.white;
             }
 
-            // Fire-control channel limit. A radio-command round that cannot join a group holds one
-            // channel for its whole flight, so the salvo picker clamps the row to what the boat can
-            // guide at once (Hud.cs, CachedEngageRows). A limit the player is nowhere near is noise
-            // on every row of every ship, so this fires only when the player is AT the cap.
-            //
-            // It used to test `_salvo[key] > cap`, which is unreachable: the + button clamps to
-            // r.Count and r.Count is already Min(available, cap), so the salvo can never exceed the
-            // cap and this warning never once appeared. The slider simply stopped at the cap and
-            // said nothing. `>=` is the condition that makes a binding limit visible, which is the
-            // whole point of the line.
-            // Outside the `_checked` block below, deliberately: the limit applies to the row whether
-            // or not it is ticked, including rows already staged in the strike, which is the moment
-            // the player most needs it.
-            //
-            // Kept to one short clause. This fires whenever the player is at the limit, which on a
-            // 4-channel ship is most of the time, so a long explanation becomes wallpaper and stops
-            // being read at all.
+            // Fire-control channel limit: a radio-command round that cannot join a group holds a channel for
+            // its whole flight, so the picker clamps the row to what the ship can guide. These notes show
+            // whether or not the row is ticked; the plain at-cap note needs a tick and tests `>=`, since the
+            // + button clamps and `>` is never reached. Each is one short clause, because at the limit it
+            // shows most of the time.
             if (r.ChannelCap < int.MaxValue)
             {
                 int cap = r.ChannelCap;
@@ -451,8 +388,7 @@ namespace AutoTOT
                 int want = _salvo.TryGetValue(key, out int sv) ? sv : 0;
                 bool atCap = _checked[key] && r.InRange && want >= r.Count && r.Count > 0;
 
-                // Ordered by how much the player loses, worst first. Only the trimmed case says
-                // rounds were dropped; a ship merely sitting at its limit has lost nothing yet.
+                // Worst first; only the trimmed case says rounds were dropped.
                 string note = null;
                 if (trimmed)                      note = $"over {cap} guidance channels : the extra rounds will not fire";
                 else if (r.Count <= 0)            note = $"all {cap} guidance channels used at other targets";
@@ -472,11 +408,9 @@ namespace AutoTOT
             {
                 RowFacts rf = CheckedRowFacts(ship, r.AmmoId, key);
 
-                // Beam-only launcher. The ship steers to put the target within 3 degrees of exactly
-                // abeam, not merely inside the launcher's arc, so it keeps manoeuvring after it
-                // could already shoot and its salvo comes out in bursts around the turns. Nothing
-                // this mod schedules changes that, and how far the salvo splits depends on the
-                // player's time compression, so the warning states the effect and no number.
+                // Beam-only launcher: the ship steers to put the target within 3 degrees of abeam, not merely
+                // inside the arc, so it keeps turning after it could shoot and fires in bursts. The split
+                // depends on time compression, so no number is given.
                 if (rf.Manoeuvres)
                 {
                     GUI.color = Warn;
@@ -485,9 +419,8 @@ namespace AutoTOT
                     GUI.color = Color.white;
                 }
 
-                // Launcher contention. The strike path makes this easy to do by accident: two
-                // targets picked off the same box launcher cannot leave together, whatever this mod
-                // schedules, because the game services those engage tasks one at a time.
+                // Launcher contention: two targets on one box launcher cannot fire together, since the game
+                // services the engage tasks one at a time.
                 if (rf.Contended)
                 {
                     GUI.color = Warn;
@@ -496,17 +429,9 @@ namespace AutoTOT
                     GUI.color = Color.white;
                 }
 
-                // Every guiding sensor this ammo can use has been shot away. The game's launcher
-                // holds the engage task in ReadyUpWhileWaiting forever when hasFreeWeaponChannel()
-                // finds no operable, on, channel-free sensor (WeaponSystemLauncher.cs:436-450), so
-                // this really is a launch that never happens.
-                //
-                // This is NOT the depth case it was originally written for, and that case does not
-                // exist: no ammunition in the game both requires launcher guidance and declares a
-                // nonzero MaxDepth (0 of 437 screened), so the launcher's own depth branch always
-                // drives a submerged boat to the SURFACE before firing, which is shallower than any
-                // periscope depth. Measured: an Echo II at -200 ft fired both its SS-N-3 102 s after
-                // the order. The ascent is covered by the launch-depth row below.
+                // Every guiding sensor this ammo can use has been shot away: the launcher holds the engage
+                // task in ReadyUpWhileWaiting forever when hasFreeWeaponChannel() finds no operable free
+                // sensor (WeaponSystemLauncher.cs:436-450).
                 if (rf.SensorUnavailable)
                 {
                     GUI.color = Warn;
@@ -514,18 +439,13 @@ namespace AutoTOT
                     GUI.color = Color.white;
                 }
 
-                // A submerged boat's order-to-first-round delay is ESTIMATED, not measured, and the
-                // observed ascent rates span 3x. Where the boat ends up as the batch anchor the
-                // error is absorbed (its real launch rewrites the shared impact); where it ends up a
-                // follower it is not, and lands on the arrival time. The role is not known until
-                // commit, so warn on the condition the picker can see: the delay is nonzero. At
-                // launch depth it is zero and the timing is exact.
+                // A submerged boat's (or descending aircraft's) delay is estimated. As anchor the error is
+                // absorbed by its real launch; as a follower it lands on the arrival. The role is unknown
+                // until commit, so warn whenever the delay is nonzero.
                 float envelopeDelay = rf.EnvelopeDelay;
                 if (envelopeDelay > 0f)
                 {
-                    // The same delay covers a boat that must rise and an aircraft that must descend,
-                    // so the text has to name the platform. It said "submerged" for both, which told
-                    // a pilot their aircraft was under water.
+                    // The delay covers a rising boat and a descending aircraft, so the text names the platform.
                     bool air = ship is Aircraft || ship is Helicopter;
                     GUI.color = Warn;
                     GUILayout.Label(air
@@ -536,8 +456,7 @@ namespace AutoTOT
             }
         }
 
-        // Live overview of every salvo we're coordinating: target + rounds queued / in flight,
-        // and the synced impact countdown for shots still being held.
+        // Live overview of every coordinated salvo: target, rounds queued and in flight, and the impact countdown.
         private void DrawEngagements()
         {
             DrawDivider();
@@ -563,8 +482,7 @@ namespace AutoTOT
             {
                 GUILayout.BeginHorizontal();
                 GUI.color = TargetCol;
-                // Rows sharing a strike id were scheduled together and land together; say so, or a
-                // multi-target strike reads as several engagements that coincide by accident.
+                // Rows sharing a strike id land together; say so, or a multi-target strike reads as coincidence.
                 string label = FoggedLabel(e.Target);
                 if (e.StrikeId > 0 && SharesStrike(e.StrikeId)) label = "◆ " + label;
                 GUILayout.Label(label, _row, GUILayout.Width(210));
@@ -605,8 +523,8 @@ namespace AutoTOT
             }
         }
 
-        // One staged shooter: its name and every missile it fires at this target, small and dim so
-        // a long strike stays scannable. Collected orders carry a marker naming where they came from.
+        // One staged shooter: its name and every missile it fires at this target, small and dim; collected
+        // orders are marked.
         private void DrawStrikeOrderLine(ObjectBase unit, string weapons, bool fromGame)
         {
             GUILayout.BeginHorizontal(GUILayout.Height(StrikeOrderLineH));
@@ -624,17 +542,14 @@ namespace AutoTOT
             GUILayout.EndHorizontal();
         }
 
-        // Reused by the order-line grouping below and by the height it asks for, so both always
-        // count the same lines. Never held across frames.
+        // Shared by the grouping below and its height count, so both count the same lines. Never held across frames.
         private readonly List<ObjectBase> _orderShooterScratch = new List<ObjectBase>();
         private readonly System.Text.StringBuilder _orderLine = new System.Text.StringBuilder();
 
         /// <summary>
-        /// The per-order breakdown under one target: ONE line per shooter, listing every missile
-        /// that ship fires at it, rather than one line per missile. A ship with three weapon types
-        /// staged used to cost three lines, which pushed the rest of the strike out of view for no
-        /// extra information. Staged rows and in-game orders are grouped separately, so the
-        /// "in-game order" marker on a line is true of everything on that line.
+        /// The per-order breakdown under one target: one line per shooter listing every missile it fires
+        /// there. Staged rows and in-game orders are grouped separately, so a line's in-game marker is true
+        /// of the whole line.
         /// </summary>
         private void DrawStrikeOrderLines(ObjectBase target, List<Coordinator.Shot> collected)
         {
@@ -663,8 +578,8 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// How many order lines the breakdown will draw: one per shooter per target, counted the
-        /// same way DrawShooterGroup groups them, so the height reserved matches what is drawn.
+        /// How many order lines the breakdown draws, grouped as DrawShooterGroup groups them, so the reserved
+        /// height matches.
         /// </summary>
         private int StrikeOrderLineCount(List<ObjectBase> targets, List<Coordinator.Shot> collected)
         {
@@ -698,14 +613,9 @@ namespace AutoTOT
         private readonly List<ObjectBase> _strikeTargetScratch = new List<ObjectBase>();
 
         /// <summary>
-        /// Height the whole strike section will occupy: its header row plus the scrolling list.
-        /// The shooter list above is sized as the rest of the budget, so this is what keeps the two
-        /// in proportion at any window size.
-        ///
-        /// The list asks only for the height its CURRENT contents need, so collapsing the breakdown
-        /// hands the slack to the shooter list above rather than leaving an empty box. The commit
-        /// row below stays put either way, because the two lists share one fixed budget: the strike
-        /// section is anchored to the bottom of that budget and grows upward into it.
+        /// Height of the strike section: its header row plus the scrolling list, which asks only for what its
+        /// current contents need. The section is anchored to the bottom of the shared list budget and grows
+        /// upward, so the commit row below stays put.
         /// </summary>
         private float StrikeSectionHeight()
         {
@@ -722,8 +632,7 @@ namespace AutoTOT
                    Mathf.Min(wanted, Mathf.Max(StrikeListMinH, _listsAvailH * StrikeListShare));
         }
 
-        // The staged multi-target strike: one group per target, each removable, directly above the
-        // commit row that fires them. The list and the button that acts on it belong together.
+        // The staged strike, one removable group per target, directly above the commit row that fires it.
         private void DrawStagedStrike()
         {
             bool armed = Coordinator.StrikeArmed;
@@ -735,8 +644,7 @@ namespace AutoTOT
 
             DrawDivider();
             GUILayout.BeginHorizontal(GUILayout.Height(RowHeight));
-            // The chevron collapses the per-order breakdown, not the list: the target lines and
-            // their counts stay, so the strike is still readable at a glance while collapsed.
+            // The chevron collapses the per-order breakdown, not the target lines.
             if (GUILayout.Button(_strikeDetail ? "▾" : "▸", _chev,
                                  GUILayout.Width(20), GUILayout.Height(RowHeight)))
                 _strikeDetail = !_strikeDetail;
@@ -779,18 +687,14 @@ namespace AutoTOT
                     if (sh.Target == t) { orders++; rounds += Mathf.Max(1, sh.Salvo); }
                 foreach (Coordinator.Shot sh in collected)
                     if (sh.Target == t) { orders++; rounds += Mathf.Max(1, sh.Salvo); }
-                // One line, never wrapped: at RowHeight a second line would be drawn below the
-                // row's own box and overlap the target line under it.
+                // One line, never wrapped: a second line would overlap the target line below.
                 GUILayout.Label($"{orders} order(s)  ·  {rounds} round(s)", _rowOneLine,
                                 GUILayout.ExpandWidth(false));
                 GUI.color = Color.white;
 
                 GUILayout.FlexibleSpace();
                 ObjectBase removing = t;   // captured by the closure below, so it must not be the loop variable
-                // Only the panel's own rows can be taken back out; an order the game has already
-                // accepted is held by the coordinator, and CLEAR is the way to drop those.
-                // Removes the whole group the player is looking at, staged rows and collected
-                // in-game orders alike. Anything else makes the button lie about what it acts on.
+                // Removes the whole group shown: staged rows and collected in-game orders alike.
                 if (GUILayout.Button("REMOVE", _btnDanger, GUILayout.Width(ClearButtonW), GUILayout.Height(RowHeight)))
                 {
                     _strike.RemoveAll(sh => sh.Target == removing);
@@ -798,9 +702,7 @@ namespace AutoTOT
                 }
                 GUILayout.EndHorizontal();
 
-                // What each order actually fires, one condensed line apiece. The count above says
-                // how much is committed; these say which shooter and which missile, which is what
-                // tells the player the order they just gave is the one that got caught.
+                // Which shooter fires which missile, one line apiece, so the player can see their order was caught.
                 if (_strikeDetail) DrawStrikeOrderLines(t, collected);
             }
 
@@ -809,15 +711,12 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// The commit row. Exactly ONE solid green button is ever on screen, and it is whichever
-        /// commit the player is currently building: the staged strike if anything is staged, the
-        /// target in front of them otherwise. Direct fire stays available either way, because a
-        /// pop-up threat is a legitimate reason to shoot without disturbing the plan; it just stops
-        /// being the headline action.
+        /// The commit row. Exactly one solid green button is on screen: the staged strike if anything is
+        /// staged, else the target in front of the player. Direct fire stays available either way.
         /// </summary>
         /// <param name="canStage">A target and a checked row: + TARGET can stage something.</param>
-        /// <param name="canFire">A target and a checked row not already staged at it: the direct
-        /// fire buttons would fire something.</param>
+        /// <param name="canFire">A target and a checked row not already staged at it: direct fire would fire
+        /// something.</param>
         private void DrawCommitRow(List<ObjectBase> shooters, bool canStage, bool canFire)
         {
             CollectStrikeTargets(_strikeTargetScratch);
@@ -860,8 +759,7 @@ namespace AutoTOT
                 AddSelectionToStrike(shooters);
             GUI.enabled = canFire;
 
-            // Demoted, not removed: firing the target in front of you must stay one click away even
-            // while a strike is staged.
+            // Demoted, not removed: firing the target in front of you stays one click away while a strike is staged.
             if (strikeIsPrimary &&
                 GUILayout.Button("FIRE THIS TARGET", _btnSecondary,
                                  GUILayout.Width(SecondaryButtonW + 30f), GUILayout.Height(SecondaryButtonH)))
@@ -891,18 +789,16 @@ namespace AutoTOT
             foreach (ObjectBase ship in shooters)
                 foreach (Row r in CachedEngageRows(ship))
                 {
-                    // Count 0 means the guidance channels are already spoken for at another
-                    // target, so there is nothing to fire here even if the row is still ticked.
+                    // Count 0 means the guidance channels are spoken for at another target.
                     if (!r.InRange || r.Count <= 0) continue;
-                    // Already staged against this target: the strike fires it. Ticks outlive
-                    // + TARGET, so without this a direct fire would send these rounds now and the
-                    // strike would send them again.
+                    // Already staged at this target, so the strike fires it; firing it directly too would
+                    // send it twice.
                     if (IsStagedHere(ship, r.AmmoId)) continue;
                     string key = Key(ship, r.AmmoId);
                     if (_checked.TryGetValue(key, out bool on) && on)
                     {
-                        // Re-clamp to the CURRENT launcher cap: rounds may have been spent on
-                        // another strike since the +/- buttons last clamped this picker.
+                        // Re-clamp to the current launcher cap; rounds may have been spent since the picker
+                        // last clamped.
                         int salvo = Mathf.Min(_salvo.TryGetValue(key, out int sv) ? sv : 1, r.Count);
                         shots.Add(new Coordinator.Shot
                         {
@@ -919,14 +815,8 @@ namespace AutoTOT
         private const float ScaleValueW = 36f;   // "1.0×", wide enough for every step
 
         /// <summary>
-        /// The bottom strip: a divider and the panel-scale stepper, drawn at explicit rects on the
-        /// window's bottom edge rather than in the layout flow.
-        ///
-        /// Same reasoning as the title bar. The flow puts a row wherever the content above it
-        /// happens to end, so this row moved with the strike list and eventually sat on the border;
-        /// and a flow row is only as tall as its tallest item, so the label beside the steppers had
-        /// no row to be centred in. Here every item gets a full-height rect on ONE mid-line, and the
-        /// strip keeps a fixed clearance from the resize grip in the corner.
+        /// The bottom strip: a divider and the panel-scale stepper, drawn at explicit rects on the window's
+        /// bottom edge, like the title bar, so it stays put and its items centre on one mid-line.
         /// </summary>
         private void DrawFooter()
         {
@@ -937,9 +827,7 @@ namespace AutoTOT
             GUI.DrawTexture(new Rect(1f, y - 4f, _win.width - 2f, 1f), Texture2D.whiteTexture);
             GUI.color = Color.white;
 
-            // Measured from the right edge inwards, so the group stays put whatever the panel width.
-            // Same style, size and centred read-out as the salvo steppers: both are a value between
-            // two steps, so they should not be two different-looking controls.
+            // Laid out from the right edge inwards, styled like the salvo steppers.
             var plusRect  = new Rect(right - StepButtonW, y, StepButtonW, FooterRowHeight);
             var valueRect = new Rect(plusRect.x - ScaleValueW, y, ScaleValueW, FooterRowHeight);
             var minusRect = new Rect(valueRect.x - StepButtonW, y, StepButtonW, FooterRowHeight);

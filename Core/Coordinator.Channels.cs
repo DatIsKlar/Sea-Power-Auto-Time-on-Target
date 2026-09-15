@@ -6,9 +6,8 @@ using UnityEngine;
 namespace AutoTOT
 {
     /// <summary>
-    /// The budget of rounds a commit may order: guidance-channel reservations held from dispatch
-    /// to launch, the channel and magazine checks that intake and commit run, and the launcher
-    /// contention warning. Split out of Coordinator.Release.cs, which keeps the release timing.
+    /// The rounds a commit may order: guidance-channel reservations from dispatch to launch, the channel
+    /// and magazine checks at intake and commit, and the launcher contention warning.
     /// </summary>
     internal static partial class Coordinator
     {
@@ -18,23 +17,15 @@ namespace AutoTOT
         private static readonly List<Intent> _clampDropped = new List<Intent>();
 
         /// <summary>
-        /// One dispatched order whose rounds have not all left the rail yet.
-        ///
-        /// The channel budget is read as "sensor channels minus weapons the sensor is guiding", and
-        /// a weapon only joins that list when it LAUNCHES. An order that AutoTOT has handed to the
-        /// game therefore occupies nothing measurable until its ripple runs, which on a submarine
-        /// can be half a minute later. Between those two moments the rounds were invisible to both
-        /// halves of the accounting, and a second order could be accepted against channels the first
-        /// one was already going to need. Measured on 2026-09-09: a Prj.675 with a 4-channel
-        /// Front_Door took a 4-round order and then a 2-round order 26 s later, and two of the four
-        /// rounds that flew ended 2.4 km and 4.8 km short with the target still afloat.
+        /// A dispatched order whose rounds have not all launched. A sensor's used channels only count weapons
+        /// in flight, so without this a second order could take channels the first order's rounds need.
         /// </summary>
         private sealed class Reservation
         {
             public ObjectBase Unit;
             public string AmmoId;      // the order's ammunition id, for the sensor-sharing lookup
-            public string AmmoFile;    // AmmunitionParameters._ammunitionFileName, what a LAUNCHED
-                                       // round reports; the two are not always the same string
+            // AmmunitionParameters._ammunitionFileName, what a launched round reports; can differ from the ammo id.
+            public string AmmoFile;
             public int Shots;
             public int Launched;
             public float DispatchedSim;
@@ -43,15 +34,15 @@ namespace AutoTOT
 
         private static readonly List<Reservation> _reservations = new List<Reservation>();
 
-        /// <summary>How long past its expected ripple a dispatched order keeps reserving the rounds
-        /// that have not appeared. Long enough to cover a launcher working through a slow cycle,
-        /// bounded so a dead order cannot hold a ship's channels for the rest of the mission.</summary>
+        /// <summary>
+        /// How long past its expected ripple a dispatched order keeps its reservation: enough for a slow
+        /// launcher, bounded so a dead order cannot hold channels all mission.
+        /// </summary>
         private const float ReservationGraceSim = 120f;
 
         /// <summary>
-        /// Reserve the rounds of a dispatched order until they are seen leaving. Only
-        /// channel-limited ammunition is tracked: everything that can form a missile group is
-        /// bounded by the group instead, so reserving it would refuse orders for no reason.
+        /// Reserve a dispatched order's rounds until they are seen launching. Channel-limited ammunition
+        /// only; grouping ammunition is bounded by its group.
         /// </summary>
         private static void ReserveDispatched(Intent it, float simNow)
         {
@@ -79,8 +70,7 @@ namespace AutoTOT
 
         /// <summary>
         /// Credit one observed launch against the oldest matching reservation. Called from the launch
-        /// tracker's first-sighting path, which sees every round the game puts up, so this does not
-        /// depend on the diagnostic expectation list and its verbose-only membership rule.
+        /// tracker's first sighting, which sees every round.
         /// </summary>
         internal static void CreditReservedLaunch(ObjectBase unit, string ammoFile)
         {
@@ -98,11 +88,8 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// Drop reservations whose rounds have arrived, whose shooter is gone, or which have waited
-        /// past their grace. Called once per tick.
-        ///
-        /// An expiry is worth a line: it means rounds were ordered, the channels were held for them,
-        /// and they never flew. That is the shortfall case seen from the guidance side.
+        /// Drop reservations whose rounds arrived, whose shooter is gone, or which outlived their grace. An
+        /// expiry is logged: rounds were ordered and never flew.
         /// </summary>
         private static void PruneReservations(float simNow)
         {
@@ -121,10 +108,8 @@ namespace AutoTOT
             }
         }
 
-        /// <summary>
-        /// Rounds of exactly this ammunition still owed by dispatched orders. The magazine question,
-        /// as opposed to the channel question below.
-        /// </summary>
+        /// <summary>Rounds of exactly this ammunition still owed by dispatched orders (the magazine
+        /// question).</summary>
         private static int ReservedRounds(ObjectBase unit, string ammoId)
         {
             int n = 0;
@@ -139,13 +124,9 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// Rounds this ship has spoken for that are not yet occupying a channel: orders committed and
-        /// not released, plus orders dispatched whose rounds have not all launched.
-        ///
-        /// Counted across every ammunition that SHARES a guiding sensor with
-        /// <paramref name="ammoId"/>, because the budget belongs to the sensor rather than to the
-        /// ammunition. Rounds already in the air are deliberately absent: they appear in the sensor's
-        /// own weapon list, which the cap subtracts, and counting them here would charge them twice.
+        /// Rounds this ship has spoken for that do not yet occupy a channel: committed but unreleased, plus
+        /// dispatched but unlaunched. Counted across every ammunition sharing <paramref name="ammoId"/>'s
+        /// guiding sensor; rounds in flight are left out because the cap already subtracts them.
         /// </summary>
         private static int CommittedUnfired(ObjectBase unit, string ammoId)
         {
@@ -165,20 +146,12 @@ namespace AutoTOT
                 if (!LauncherFactsSource.SharesGuidanceSensor(unit, r.AmmoId, ammoId)) continue;
                 n += Mathf.Max(0, r.Shots - r.Launched);
             }
-            // Orders that are committed but still waiting on their flight estimates. They are not
-            // in _scheduled yet and they are no longer in a batch, so without this they are
-            // invisible to the channel budget for the length of the pending window and a second
-            // commit can hand the same channels out twice.
+            // Committed orders still waiting on their estimates are in neither _scheduled nor a batch.
             n += PendingGuidedRounds(unit, ammoId);
             return n;
         }
 
-        /// <summary>
-        /// Rounds of <paramref name="ammoId"/> this ship could still guide if an order arrived now:
-        /// its channel budget less what is already committed and unfired, less what
-        /// <paramref name="batch"/> is already holding for it. int.MaxValue when the ammunition is
-        /// not channel-limited, which is everything that can form a missile group.
-        /// </summary>
+        /// <summary>Rounds of <paramref name="ammoId"/> this ship holds in batch <paramref name="b"/>.</summary>
         private static int BatchRounds(Batch b, ObjectBase unit, string ammoId)
         {
             int n = 0;
@@ -194,10 +167,8 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// Every round of <paramref name="ammoId"/> this ship is already spoken for by the
-        /// coordinator: committed and unfired, plus anything in the armed strike batch or in an open
-        /// per-target batch. A batch is either the strike batch or in _openBatches, never both, so
-        /// these three pools do not overlap.
+        /// Every round of <paramref name="ammoId"/> the coordinator holds for this ship: committed and
+        /// unfired, plus the armed strike and every open batch, which never overlap.
         /// </summary>
         internal static int HeldRounds(ObjectBase unit, string ammoId)
         {
@@ -209,13 +180,8 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// Rounds the PLANNER PANEL has staged but not yet handed over, supplied by the Hud because
-        /// the coordinator cannot see them: a staged pick lives in the panel until FireStrike.
-        ///
-        /// <para>Without this the two halves of the budget were blind to each other. Orders taken in
-        /// through Alt+H did not stop the panel offering more, and picks staged in the panel did not
-        /// stop Alt+H accepting more, so either order of operations could exceed the channels the
-        /// other half was carefully protecting.</para>
+        /// Rounds staged in the planner panel but not yet fired, supplied by the Hud, so the intake and the
+        /// panel cannot hand out channels the other has promised.
         /// </summary>
         internal static System.Func<ObjectBase, string, int> StagedRoundsProvider;
         private static bool _stagedRoundsFaultLogged;
@@ -227,8 +193,7 @@ namespace AutoTOT
             try { return f(unit, ammoId); }
             catch (System.Exception e)
             {
-                // A UI fault must never block firing, so the count falls back to 0. Said once,
-                // because a 0 here lets the budget ignore every staged pick.
+                // A UI fault must never block firing, so fall back to 0, and say so once.
                 if (!_stagedRoundsFaultLogged)
                 {
                     _stagedRoundsFaultLogged = true;
@@ -240,9 +205,8 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// Rounds of <paramref name="ammoId"/> this ship could still guide if an order arrived now.
-        /// int.MaxValue when the ammunition is not channel-limited, which is everything that can
-        /// form a missile group.
+        /// Rounds of <paramref name="ammoId"/> this ship could still guide if an order arrived now;
+        /// int.MaxValue when the ammunition is not channel-limited.
         /// </summary>
         private static int GuidanceRoom(ObjectBase unit, string ammoId)
         {
@@ -252,21 +216,14 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// Flag the shooters an armed batch has already pushed past their guidance-channel budget,
-        /// WITHOUT trimming anything. Called as each order is collected, so the indicator and the
-        /// panel can say a trim is coming while the strike is still being built and the player can
-        /// still do something about it.
-        ///
-        /// <para>The clamp itself cannot serve this purpose: it runs at commit, which is the same
-        /// instant the rounds leave. A player with the panel collapsed then learns what happened
-        /// only from a log line, after the fact.</para>
+        /// Flag shooters whose armed orders already fill their guidance channels, without trimming, so the
+        /// panel can warn while the strike is still being built. The commit clamp comes too late for that.
         /// </summary>
         internal static void MarkChannelPressure(List<Intent> items)
         {
             _channelCappedShooters.Clear();
             _clampSeen.Clear();
-            // Every armed batch, not only the one that just took an order. Clearing every mark and
-            // re-marking one batch let an order at one target put out the light for another.
+            // Every armed batch, so an order at one target does not clear the warning for another.
             MarkPressureFrom(_strikeBatch?.Items);
             foreach (KeyValuePair<ObjectBase, Batch> kv in _openBatches)
                 MarkPressureFrom(kv.Value.Items);
@@ -286,14 +243,9 @@ namespace AutoTOT
                 int cap = LauncherFactsSource.GuidanceChannelCap(lead.Unit, lead.AmmoId);
                 if (cap == int.MaxValue) continue;
 
-                // HeldRounds already covers `items`, since the caller's list is one of the batches
-                // it walks. Adding the list again here would double-count it.
+                // HeldRounds already includes `items`.
                 int requested = HeldRounds(lead.Unit, lead.AmmoId) + StagedRounds(lead.Unit, lead.AmmoId);
-                // >= not >: the point of the light is "this ship's channels are spoken for", and a
-                // ship holding exactly its cap is the case the player most needs to see, since the
-                // next order they try will be refused outright. Requiring a strict overrun made it
-                // unreachable on the intercept path, which now refuses the overrun before it can be
-                // counted at all.
+                // >=, not >: a ship at exactly its cap is the case to show, because its next order will be refused.
                 if (requested >= cap) _channelCappedShooters.Add(key);
             }
         }
@@ -320,18 +272,9 @@ namespace AutoTOT
         private static readonly Dictionary<ShipAmmoKey, int> _revalBudget = new Dictionary<ShipAmmoKey, int>();
 
         /// <summary>
-        /// Last check before a strike is scheduled: is every order still one the game would accept,
-        /// and does the magazine actually hold the rounds it promises?
-        ///
-        /// A strike can be staged over minutes. In that time a shooter or a target can die, a
-        /// launcher can be destroyed, and rounds can be spent by an earlier order or by the ship's
-        /// own automatic fire. Commit used to check none of it: it trimmed guidance channels and
-        /// scheduled whatever was left, so an order could be timed, held, and released against a
-        /// magazine that had emptied.
-        ///
-        /// Runs BEFORE <see cref="ClampToGuidanceChannels"/> and before PrepareIntent, because both
-        /// derive from the shot counts and from which orders survive. Every reduction is stated: a
-        /// strike that quietly shrinks is worse than one that says what it lost.
+        /// Last check before scheduling: is every order still one the game would accept, and does the
+        /// magazine hold its rounds? A strike can be staged for minutes while shooters, targets and rounds
+        /// are lost. Runs before <see cref="ClampToGuidanceChannels"/> and PrepareIntent; every reduction is logged.
         /// </summary>
         private static void RevalidateCommit(List<Intent> items)
         {
@@ -365,12 +308,8 @@ namespace AutoTOT
                     continue;
                 }
 
-                // The near bound, re-tested here rather than trusted from staging time. The panel
-                // refuses to stage inside it and the intake refuses to collect inside it, but a
-                // strike can be built minutes before it is fired and a shooter closing on its
-                // target crosses the minimum without anything else noticing. Same treatment as a
-                // shooter that can no longer engage at all, because the outcome is the same: no
-                // round leaves.
+                // Minimum range re-tested at commit: a shooter closing on its target can cross it after
+                // staging, and the game would then never fire.
                 if (LaunchEnvelope.IsInsideMinimumRange(it.Unit, ammo._ap, it.Target,
                                                         out float closeNm, out float minNm))
                 {
@@ -386,9 +325,8 @@ namespace AutoTOT
             _revalDropped.Clear();
             if (items.Count == 0) return;
 
-            // Magazine, aggregated per shooter and ammunition across the WHOLE commit and against
-            // what the ship already owes. Trimmed in list order, so the targets staged first keep
-            // their rounds, which is the same rule the channel clamp uses.
+            // Magazine per shooter and ammunition, across the whole commit and what the ship already owes;
+            // trimmed in list order like the channel clamp.
             for (int i = 0; i < items.Count; i++)
             {
                 Intent it = items[i];
@@ -427,25 +365,10 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// Trim every shooter's salvo to the number of rounds its guiding sensor can actually
-        /// control, across the WHOLE commit rather than one target at a time.
-        ///
-        /// <para><b>Why this clamps instead of warning.</b> The surplus rounds are not held back by
-        /// the game: they launch, fail to win a channel in Missile.CheckRadioConnection, set
-        /// ConnectionLost and are logged "no weapon channel". A radio-command round in that state is
-        /// refused its run-in by Missile.RunInPermitted, so it flies on and self-destructs. The
-        /// magazine is spent either way, so ordering them can only waste rounds, never deliver
-        /// them.</para>
-        ///
-        /// <para><b>Why here.</b> This is the only point that sees the whole wave, and it covers the
-        /// planner path and the intercepted-order path alike. The panel's own per-row cap cannot do
-        /// it: it is applied per target, and orders issued through the game's own interface never
-        /// reach the panel at all. It must also run BEFORE PrepareIntent, because anchor selection
-        /// and the shared impact time are computed from the shot counts.</para>
-        ///
-        /// <para>Only ungroupable launcher-guided ammo is capped at all (see
-        /// LauncherFactsSource.ComputeGuidance); everything that can form a missile group shares one
-        /// channel and is bounded by the group instead.</para>
+        /// Trim every shooter's salvo to the rounds its guiding sensor can control, across the whole commit.
+        /// Surplus radio-command rounds would launch, find no channel and self-destruct, so ordering them
+        /// only wastes the magazine. Done here because it is the one point that sees every order from every
+        /// path, before PrepareIntent uses the counts. Only ungroupable launcher-guided ammunition is capped.
         /// </summary>
         private static void ClampToGuidanceChannels(List<Intent> items)
         {
@@ -463,10 +386,7 @@ namespace AutoTOT
                 if (lead?.Unit == null || lead.AmmoId == null) continue;
                 var key = new ShipAmmoKey(lead.Unit, lead.AmmoId);
                 if (!_clampSeen.Add(key)) continue;
-                // One pass per CHANNEL POOL, not per ammunition. Two radio-command types served by
-                // one radar draw on one set of channels, and budgeting them separately handed the
-                // same pool out twice. An earlier item in this same commit that shares the pool has
-                // already trimmed everything in it, this one included.
+                // One pass per channel pool: two ammunition types on one radar share its channels.
                 if (PoolAlreadyClamped(items, i, lead)) continue;
 
                 int cap = LauncherFactsSource.GuidanceChannelCap(lead.Unit, lead.AmmoId);
@@ -484,9 +404,7 @@ namespace AutoTOT
                         requested += Mathf.Max(1, it.Shots);
                 }
 
-                // D3, commit side. The intake line only covers orders issued through the game's own
-                // interface; everything staged in the planner arrives here instead, which is the
-                // path the 2026-09-09 over-commit came in on.
+                // Commit side of the channel check; planner-staged orders arrive here rather than at intake.
                 if (VerboseLog)
                     Bootstrap.Log.LogInfo(
                         $"[AutoTOT] channels-commit {lead.AmmoId} from {UnitNaming.SafeName(lead.Unit)}: " +
@@ -495,9 +413,7 @@ namespace AutoTOT
 
                 if (requested <= budget) { _channelCapWarned.Remove(key); continue; }
 
-                // Trim in list order, so the targets staged first keep their full salvo and the ones
-                // added last absorb the cut. Deterministic, and it matches the order the player
-                // built the strike in.
+                // Trim in list order: the targets staged first keep their full salvo.
                 int left = budget;
                 for (int j = 0; j < items.Count; j++)
                 {
@@ -529,14 +445,9 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// Warn when a shooter is being committed to more targets than its launcher can service at
-        /// once. The game queues every engage task (ObjectBase.InsertEngageTask appends and re-sorts;
-        /// nothing is replaced), but HandleEngageTasks will only execute a task whose weapon system
-        /// is actually free, so a launcher already engaging one target cannot start another. On a
-        /// non-per-container launcher, a box mount, those orders therefore leave SERIALLY and their
-        /// impacts cannot be synchronised no matter what this mod schedules.
-        ///
-        /// Diagnostic only. The shot the player asked for is still fired.
+        /// Warn when a shooter is committed to more targets than its launcher can service at once: the game
+        /// queues every engage task but starts one only on a free weapon system, so a box launcher fires them
+        /// serially and their impacts cannot be synchronised. The shots still fire.
         /// </summary>
         private static void WarnOnLauncherContention(List<Intent> items)
         {
@@ -561,12 +472,10 @@ namespace AutoTOT
                 bool parallel = f.Valid && f.PerContainer;
                 if (parallel) continue;   // VLS cells cycle independently; no serialisation to warn about
 
-                // The HUD marks these rows. Recorded before the once-per-shooter log gate below, so
-                // the panel keeps showing the condition after the log has said its piece.
+                // Recorded before the once-per-shooter log gate, so the panel keeps showing it.
                 _contendedShooters.Add(key);
 
-                // Once per shooter and ammo while the contention lasts; re-warning as the player adds
-                // targets says nothing new.
+                // Warned once per shooter and ammo while the contention lasts.
                 if (_contentionWarned.Contains(key)) continue;
                 _contentionWarned.Add(key);
 

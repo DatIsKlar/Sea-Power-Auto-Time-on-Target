@@ -938,8 +938,6 @@ Persistence: `path = Path.Combine(Paths.ConfigPath, Guid + ".cfg")`, which is
 | Timing | MaxCollectSeconds | float | 6.0 | 0.25–20.0 | live |
 | Debug | VerboseLogging | bool | false | - | live |
 | Debug | TraceFlightModel | bool | false | - | live |
-| Debug | VerticalProfile | bool | false | - | live |
-| Debug | AlignmentTrace | bool | false | - | live |
 | Debug | Profiling | bool | false | - | live |
 | Debug | VerifySolve | bool | false | - | live |
 | Performance | EstimatorThreads | int | -1 | -1 = auto, 0 = main thread only, else clamped to the core count | game start |
@@ -958,12 +956,12 @@ frame. `Update`:
 - `inMission = Globals._mainGameViewModel != null`.
 - Mission-exit detection with a 0.5 s debounce (`ExitDebounceSeconds`): a menu or pause
   briefly nulls the view model while the same mission keeps running, and resetting on that
-  transient would discard rounds still in flight. `Coordinator.Reset()`, `VerticalProfiler.Reset()`
-  and `AlignmentProbe.Reset()` run only once the mission has been absent for the debounce, each
-  under its own try/catch, so a reset that throws is logged and not retried every frame.
+  transient would discard rounds still in flight. `Coordinator.Reset()` runs only once the mission
+  has been absent for the debounce, under its own try/catch, so a reset that throws is logged and not
+  retried every frame.
 - In mission, a mission clock that runs backwards by more than 1 s with no reset in between
   logs a warning: it would mean a new mission started without the exit being seen.
-- `Coordinator.Tick()`, `VerticalProfiler.Tick()` and `AlignmentProbe.Tick()` in try/catch. A new exception message
+- `Coordinator.Tick()` in try/catch. A new exception message
   is logged in full; a repeat of the same one is restated every 30 s real with a count.
 
 ## File map
@@ -1008,13 +1006,10 @@ Sources live in five folders by concern: `Core/` (pipeline + lifecycle),
 | `Diagnostics/LaunchDiagnostics.Expectations.cs` | Launch expectations: crediting, late crediting, shortfall detection; feeds anchor launch times |
 | `Diagnostics/LaunchDiagnostics.Tracing.cs` | Per-missile and per-launcher tracing behind the diagnostic switches |
 | `Diagnostics/SolveInputDump.cs` | The research corpus writer: solver input and flight result per traced round |
-| `Diagnostics/TargetMotionProbe.cs`, `Diagnostics/GuidanceStateProbe.cs` | Research traces behind `TraceFlightModel`: how a target ship moves across the map, and the inputs a missile's intercept point is built from |
-| `Diagnostics/VerticalProfiler.cs` | The `VerticalProfile` research trace of depth and altitude changes |
-| `Diagnostics/AlignmentProbe.cs` | The `AlignmentTrace` research trace of ships turning to bring a launcher to bear |
 | `Diagnostics/EngagementBoard.cs` | Per-target engagement state for the HUD (consolidated: one row per target) |
 | `Diagnostics/TelemetryCadence.cs` | Sampling offsets shared by the `sim-track` and `track` traces, so the two stay comparable |
 | `Diagnostics/CoordinatorProfiler.cs` | Per-frame timing (`CoordinatorProfiler`): stage timers, counters, frame share, the 60-frame report |
-| `Diagnostics/LiveTestRunner.cs`, `Diagnostics/LiveTestRunner.Plan.cs` | Unattended in-game test driver. Inert unless `BepInEx/AutoTOT-livetest/plan.ini` exists, which it consumes on startup; then it walks the game from the main menu into a mission, fires the listed shots through the coordinator, waits for every round to retire, writes a result and quits. Nothing is clicked: every step calls the method the game's own button calls. Driver and plan format are under `tools/livetest/`. Compiled only into the live test build (`-p:LiveTest=true`, which defines `LIVETEST`); the Workshop build leaves it out, together with the panel hooks it calls (`Hud.StagePanelFor`, `StagePanelForShots`, `PressFireThisTarget`), `LaunchDiagnostics.AnyCoordinatedInFlight` and the `AlignmentUidFix` counterfactual |
+| `Diagnostics/LiveTestRunner.cs`, `Diagnostics/LiveTestRunner.Plan.cs` | Unattended in-game test driver. Inert unless `BepInEx/AutoTOT-livetest/plan.ini` exists, which it consumes on startup; then it walks the game from the main menu into a mission, fires the listed shots through the coordinator, waits for every round to retire, writes a result and quits. Nothing is clicked: every step calls the method the game's own button calls. Driver and plan format are under `tools/livetest/`. Compiled only into the live test build (`-p:LiveTest=true`, which defines `LIVETEST`); the Workshop build leaves it out, together with the panel hooks it calls (`Hud.StagePanelFor`, `StagePanelForShots`, `PressFireThisTarget`) and `LaunchDiagnostics.AnyCoordinatedInFlight` |
 | `UI/Hud.cs` (+ `.Rows` `.Render` `.Actions` `.Labels` `.Mouse` `.Styles` partials) | IMGUI planner panel: lifecycle and layout, row data, drawing, strike actions, labels, pointer capture, styling |
 
 ## Multiplayer crash shield: `DotsScanHardening`
@@ -1284,9 +1279,8 @@ still reports.
 
 ## Diagnostic gates
 
-Six switches in the `Debug` config section, all off by default. The two below cover most reports.
-`VerticalProfile` and `AlignmentTrace` are research traces for one question each, `Profiling` is the
-timing report, and `VerifySolve` checks the threaded solver against the main thread.
+Four switches in the `Debug` config section, all off by default. The two below cover most reports;
+`Profiling` is the timing report, and `VerifySolve` checks the threaded solver against the main thread.
 
 **`VerboseLogging`** answers *what did the coordinator decide, and why*: commit and release lines,
 dispatch, the anchor trace and its finalisation, launch crediting, envelope and launcher state, and

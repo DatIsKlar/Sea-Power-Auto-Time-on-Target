@@ -10,29 +10,20 @@ using UnityEngine;
 namespace AutoTOT
 {
     /// <summary>
-    /// Writes one solver input to disk as plain text, so the same solve can be replayed outside the
-    /// game.
-    ///
-    /// <see cref="FlightTime.SolveInput"/> is a pure value: the step loop reads no Unity API and no
-    /// mutable game state, so a solve is fully determined by this struct plus the ammunition fields
-    /// the loop and the game's thrust helper read. Launch-time loft optimization is resolved before
-    /// the struct is written; configured/resolved heights and the resulting Kappa nodes are all
-    /// captured, so offline replay does not repeat a mutable game-state lookup.
-    ///
-    /// One file per round, under BepInEx/AutoTOT-solve/. Written only when TraceFlightModel is on,
-    /// the same gate as the sim-track trace, and never on the normal path.
+    /// Writes one solver input to disk as plain text, so the same solve can be replayed outside the game.
+    /// <see cref="FlightTime.SolveInput"/> is a pure value, so a solve is determined by it plus the
+    /// ammunition fields the loop and the game's thrust helper read; launch-time loft optimisation is
+    /// resolved before writing. One file per round under BepInEx/AutoTOT-solve/, only with TraceFlightModel.
     /// </summary>
     internal static class SolveInputDump
     {
         private static readonly CultureInfo Inv = CultureInfo.InvariantCulture;
         internal const string CaptureSchema = "rich-flight-v3";
-        // The assembly MVID changes with the compiled artifact and is available even when several
-        // development builds intentionally share the same user-facing mod version.
+        // The assembly MVID changes with every build, even between builds sharing one mod version.
         private static string ModBuildId =>
             typeof(SolveInputDump).Assembly.ManifestModule.ModuleVersionId.ToString("N");
 
-        // Monotonic, so two rounds of one ammunition launched on the same tick still get
-        // separate entries.
+        // Monotonic, so two rounds of one ammunition on the same tick get separate entries.
         private static int _seq;
 
         internal static string Directory => Path.Combine(Paths.BepInExRootPath, "AutoTOT-solve");
@@ -43,17 +34,9 @@ namespace AutoTOT
         {
             try
             {
-                // Keyed by label, wall clock and mission time. Label alone meant a second sortie
-                // silently overwrote the first. Mission time alone is not enough either: firing one
-                // round early in each mission, which is the cleanest way to gather data, reproduces
-                // nearly the same mission time every run, so the corpus would hold one entry per
-                // ammunition instead of one per shot. The wall clock is what actually separates two
-                // sorties; mission time stays in the name because it is what the log lines show.
-                // Label, wall clock, mission time and a sequence number. The label alone repeats
-                // whenever the same ammunition is fired twice, and mission time alone repeats across
-                // missions, since firing early in each one is the cleanest way to gather data. Both
-                // ambiguities pair one round's outcome with another round's input, which is worse
-                // than losing the round.
+                // Label, wall clock, mission time and a sequence number: the label repeats whenever an
+                // ammunition is fired twice and mission time repeats across missions, and either ambiguity
+                // would pair one round's outcome with another round's input.
                 string key = Sanitize(label) + "__" +
                              DateTime.Now.ToString("yyyyMMdd-HHmmss", Inv) + "__t" +
                              GameClock.SimNow().ToString("0.0", Inv) + "__" +
@@ -68,13 +51,12 @@ namespace AutoTOT
                 b.AppendLine(F("ModBuild", ModBuildId));
                 b.AppendLine(F("CaptureSchema", CaptureSchema));
                 b.AppendLine(F("AmmoFingerprint", AmmunitionFingerprint(ap)));
-                // What this build's step loop returned for this exact input, and the step it ran
-                // at. tools/lab `parity` replays the input and must reproduce the value.
+                // What this build's step loop returned for this input, and its step; tools/lab `parity` must
+                // reproduce it.
                 b.AppendLine(F("InGameEstimate", inGameEstimate));
                 b.AppendLine(F("InGameStep", inGameStep));
 
-                // Ammunition. Two fields the step loop reads directly, and six more that
-                // MissileSimulator.CalculateThrustOverTime reads out of the same object.
+                // Ammunition: two fields the step loop reads directly, and six that CalculateThrustOverTime reads.
                 b.AppendLine(F("Ammo.MinVelocity", ap.MinVelocity));
                 b.AppendLine(F("Ammo.LiftFactor", ap.LiftFactor));
                 b.AppendLine(F("Ammo.Acceleration", ap._acceleration));
@@ -88,9 +70,8 @@ namespace AutoTOT
                 b.AppendLine(F("Ammo.TerminalAltMode", ap._terminalAltMode.ToString()));
                 b.AppendLine(F("Ammo.LoftToSkim", ap._loftToSkim));
                 b.AppendLine(F("Ammo.TargetType", ap._targetType.ToString()));
-                // Raw trajectory/controller fields are retained even when SolveInput also carries
-                // their resolved value. That leaves future generalized models something to train
-                // against and makes modded ammunition changes attributable instead of anonymous.
+                // Raw trajectory and controller fields are kept even when SolveInput carries their resolved
+                // value, so modded ammunition changes are attributable.
                 b.AppendLine(F("Ammo.Deceleration", ap._deceleration));
                 b.AppendLine(F("Ammo.MaxLoftVelocityInKnots", ap._maxLoftVelocityInKnots));
                 b.AppendLine(F("Ammo.TerminalVelocityInKnots", ap._terminalVelocityInKnots));
@@ -118,10 +99,8 @@ namespace AutoTOT
                 b.AppendLine(F("Ammo.RequiresTargetToProceed", ap._requiresTargetToProceed));
                 b.AppendLine(F("Ammo.SeekerActiveRange", ap._seekerActiveRange));
                 b.AppendLine(F("Ammo.SeekerPassiveRange", ap._seekerPassiveRange));
-                // Decides whether CurrentTarget can ever be null (WeaponBase.cs:362), and so
-                // whether the game ever hands CalculateDrag the round's own altitude instead of the
-                // target's. A TargetMemory=True round falls through to its intended target and
-                // never enters that window; a False one enters it when its seeker switches on.
+                // Decides whether CurrentTarget can be null (WeaponBase.cs:362), and so whether CalculateDrag
+                // is ever given the round's own altitude.
                 b.AppendLine(F("Ammo.TargetMemory", ap._targetMemory));
                 b.AppendLine(F("Ammo.NavigationGain", ap._navigationGain));
                 b.AppendLine(F("Ammo.TerrainFollowFlight", ap._terrainFollowFlight));
@@ -131,13 +110,12 @@ namespace AutoTOT
                 b.AppendLine(F("Ammo.TerminalVerticalTurnRate", ap._terminalVerticalTurnRate));
                 b.AppendLine(F("Ammo.SelectivePopUp", ap._selectivePopUp));
                 b.AppendLine(F("Ammo.ForcePopUp", ap._forcePopUp));
-                // v3: the rest of what Missile.CreateWaypointConfigs reads, so the lab can rebuild
-                // the waypoint route from the capture alone.
+                // v3: the rest of what Missile.CreateWaypointConfigs reads, so the lab can rebuild the route.
                 b.AppendLine(F("Ammo.TerminalDiveDistance", ap._terminalDiveDistance));
                 b.AppendLine(F("Ammo.MaxLoftAltUnity", ap._maxLoftAltUnity));
                 b.AppendLine(F("Ammo.GroupLeaderAltUnity", ap._groupLeaderAltUnity));
-                // A ForceDirectPoint round never updates its intercept point after launch
-                // (Missile.cs:2441), so its switches are not measured to a lead.
+                // A ForceDirectPoint round never updates its intercept point (Missile.cs:2441), so its
+                // switches are not measured to a lead.
                 b.AppendLine(F("Ammo.ForceDirectPoint", ap._forceDirectPoint));
 
                 b.AppendLine(F("AmmoLabel", i.AmmoLabel));
@@ -161,9 +139,8 @@ namespace AutoTOT
                 b.AppendLine(F("LoftAlt", i.LoftAlt));
                 b.AppendLine(F("LoftEntryDist", i.LoftEntryDist));
                 b.AppendLine(F("LoftSpeedHoldDist", i.LoftSpeedHoldDist));
-                // Resolved once at setup, the way LoftSpeedHoldDist is: 0 means no drag-brake
-                // window can exist for this ammunition, and a positive value is the range that
-                // opens the window on flat distance and closes it on slant.
+                // Resolved at setup: 0 means no drag-brake window can exist; a positive value is the range
+                // that opens it on flat distance and closes it on slant.
                 b.AppendLine(F("SeekerBrakeRange", i.SeekerBrakeRangeU));
                 b.AppendLine(F("LoftVelKn", i.LoftVelKn));
                 b.AppendLine(F("BallisticLoft", i.BallisticLoft));
@@ -177,12 +154,12 @@ namespace AutoTOT
                 b.AppendLine(F("TargetAlt0", i.TargetAlt0));
                 b.AppendLine(F("TargetPos", i.TargetPos));
                 b.AppendLine(F("TargetVel", i.TargetVel));
-                // A capture that carries these was solved on the rounded target velocity (see
-                // FlightTime.TargetMapVelocity). tools/lab score rounds older captures that do not.
+                // Present when the capture was solved on the rounded target velocity
+                // (FlightTime.TargetMapVelocity); tools/lab score rounds older captures.
                 b.AppendLine(F("TargetVelReported", i.TargetVelReported));
                 b.AppendLine(F("TargetMoveStep", i.TargetMoveStep));
-                // What the stage switches were measured to, and the lead's own inputs. tools/lab
-                // derives these for a capture that predates them.
+                // What the stage switches were measured to, and the lead's inputs; tools/lab derives them for
+                // older captures.
                 b.AppendLine(F("StageSwitchTarget", i.StageSwitchTarget.ToString()));
                 b.AppendLine(F("SeekerLockRange", i.SeekerLockRangeU));
                 b.AppendLine(F("LeadLoftAlt", i.LeadLoftAltU));
@@ -244,10 +221,7 @@ namespace AutoTOT
             }
         }
 
-        /// <summary>
-        /// Records what actually happened to a round, beside the input it was solved from. An input
-        /// with no outcome is not a test case; this is the half that makes the pair scoreable.
-        /// </summary>
+        /// <summary>What actually happened to a round, beside the input it was solved from.</summary>
         internal static void WriteResult(string key, string ammoLabel, string ammoFingerprint,
                                          string targetName,
                                          float actualFlight, bool arrived, float finalRangeM,
@@ -272,13 +246,12 @@ namespace AutoTOT
                                          float targetCourse1, float targetSpeed1,
                                          float targetMovedU,
                                          bool hasSpeedCommand,
-                                         TargetMotionProbe.SpeedCommand speedCommand,
+                                         LaunchDiagnostics.SpeedCommand speedCommand,
                                          List<string> speedCommandChanges,
                                          string launchCellBlock,
                                          float flightEndGone = -1f, float flightEndImpact = -1f)
         {
-            // A round that finished with no input to pair against is a hole in the corpus, and the
-            // only way to notice is to say so. Silence here cost six of seven rounds once.
+            // A finished round with no input to pair against is a hole in the corpus; say so.
             if (string.IsNullOrEmpty(key))
             {
                 Bootstrap.Log.LogWarning(
@@ -298,47 +271,37 @@ namespace AutoTOT
                 b.AppendLine(F("AmmoFingerprint", ammoFingerprint));
                 b.AppendLine(F("Target", targetName));
                 b.AppendLine(F("ActualFlight", actualFlight));
-                // ActualFlight ends at the last frame the round was seen alive. The collision lies
-                // between that and FlightEndGone, the first frame it was missed; FlightEndImpact is
-                // the collision itself, from a raycast along the last-sighted path against the
-                // target's colliders, or -1 when the cast met none. All three are seconds since launch.
+                // ActualFlight ends at the last frame the round was seen; the collision lies between that and
+                // FlightEndGone, the first frame it was missed. FlightEndImpact is the collision from a
+                // raycast along the last-sighted path, or -1. All in seconds since launch.
                 b.AppendLine(F("FlightEndGone", flightEndGone));
                 b.AppendLine(F("FlightEndImpact", flightEndImpact));
                 b.AppendLine(F("Arrived", arrived));
                 b.AppendLine(F("FinalRangeM", finalRangeM));
                 b.AppendLine(F("Retargeted", retargeted));
-                // The game rolls this per round (Missile.cs:62) and multiplies thrust by it. The
-                // estimator cannot know it in advance and correctly assumes 1.0, but a replay can
-                // use the recorded value to remove the +/-2% that otherwise swamps kinematic rounds.
+                // The game's per-round thrust roll (Missile.cs:62). The estimator assumes 1.0; a replay uses
+                // the recorded value to remove the +/-2% spread.
                 b.AppendLine(F("MotorPerformance", motorPerformance));
-                // Above 10x the game enlarges its own physics step, so the round really does fly a
-                // different trajectory and the actual time is not comparable.
+                // Above 10x the game enlarges its physics step, so the flight time is not comparable.
                 b.AppendLine(F("MinCompression", minCompression));
                 b.AppendLine(F("MaxCompression", maxCompression));
-                // What the round was actually integrated with. A replay at this step is comparing
-                // like with like, whatever compression produced it.
+                // The step the round was actually integrated with, for a like-for-like replay.
                 b.AppendLine(F("MinFlownStep", minFlownStep));
                 b.AppendLine(F("MaxFlownStep", maxFlownStep));
                 b.AppendLine(F("EstAtLaunch", estAtLaunch));
-                // Launch and impact, so a salvo can be reconstructed afterwards. Rounds of one
-                // group arrive TOGETHER, so a shared impact time is what identifies them, and the
-                // launch time is what says which of them waited and for how long.
+                // Launch and impact, so a salvo can be reconstructed: rounds of one group share an impact time.
                 b.AppendLine(F("LaunchTime", launchTime));
                 b.AppendLine(F("ImpactTime", launchTime + actualFlight));
-                // What the round actually did, against what the model says it should have. Without
-                // these an entry says only that the estimate was wrong, never where: a flight that
-                // is slow because it never reached its top speed and one that is slow because it
-                // flew a longer arc look identical from the flight time alone.
+                // What the round did against what the model expected: a round slow because it never reached
+                // top speed and one slow because it flew a longer arc look the same from the flight time alone.
                 b.AppendLine(F("PeakSpeedKn", peakSpeedKn));
                 b.AppendLine(F("PeakAltU", peakAltU));
                 b.AppendLine(F("TerminalSpeedKn", lastSpeedKn));
-                // "t:altU:speedKn" every few seconds. This is what says whether a round that fell
-                // short of its commanded altitude was still climbing when it nosed over, or had
-                // levelled off long before.
+                // "t:altU:speedKn" every few seconds: whether a round short of its commanded altitude was
+                // still climbing.
                 b.AppendLine(F("Track", track == null || track.Count == 0
                                         ? "" : string.Join(";", track)));
-                // Adaptive-cadence ground truth. Track is intentionally retained for compatibility
-                // with old corpus tools; FlightTrack contains the full target-relative state.
+                // Adaptive-cadence ground truth; Track is kept for older corpus tools.
                 b.AppendLine(F("FlightTrack", flightTrack == null || flightTrack.Count == 0
                                               ? "" : string.Join(";", flightTrack)));
                 // Field order is LaunchDiagnostics.GuardTrackFields. Vectors are x,y,z in Unity
@@ -350,56 +313,41 @@ namespace AutoTOT
                 // frame; field order in LaunchDiagnostics.MaybeRecordPitchRate.
                 b.AppendLine(F("PitchRateTrack", pitchRateTrack == null || pitchRateTrack.Count == 0
                                                  ? "" : string.Join(";", pitchRateTrack)));
-                // The other estimator tiers, as they stood at launch. Recording them lets a tier
-                // be compared against the others offline, on the whole corpus, without re-flying.
+                // The other estimator tiers at launch, so tiers can be compared across the corpus without re-flying.
                 b.AppendLine(F("WpEstAtLaunch", wpEst));
                 b.AppendLine(F("LegacyEstAtLaunch", legacyEst));
-                // Where the game changed flight stage. This is the ground truth the model's own
-                // phase boundaries have to be scored against.
+                // Where the game changed flight stage: the ground truth for the model's phase boundaries.
                 b.AppendLine(F("StageChanges", stageChanges == null || stageChanges.Count == 0
                                                ? "" : string.Join(";", stageChanges)));
                 b.AppendLine(F("StageEvents", stageEvents == null || stageEvents.Count == 0
                                               ? "" : string.Join(";", stageEvents)));
                 b.AppendLine(F("GroupChanges", groupChanges == null || groupChanges.Count == 0
                                                ? "" : string.Join(";", groupChanges)));
-                // "t:step" each time the game's physics step changed under this round, starting
-                // with the step it launched on. MinFlownStep and MaxFlownStep say only that a
-                // change happened; this says when, which separates a frame rate still settling
-                // after a mission load from real load at apex.
+                // "t:step" per physics-step change, starting with the launch step, so a change settling after
+                // mission load is distinguishable from one at apex.
                 b.AppendLine(F("StepChanges", stepChanges == null || stepChanges.Count == 0
                                               ? "" : string.Join(";", stepChanges)));
-                // What the coordinator predicted this round's order would cost
-                // before its first round left, and the impact it was released against. The delay
-                // residual is LaunchTime minus RegisteredSim, against StartupLead. Until now those
-                // lived only in a log overwritten every launch, so no delay residual survived a
-                // session. -1 on every field means the round matched no expectation, which is
-                // normal for a round this mod did not order.
+                // The delay terms the order was released on: the delay residual is LaunchTime - RegisteredSim
+                // against StartupLead. -1 everywhere means no matching expectation, normal for an uncoordinated round.
                 b.AppendLine(F("RegisteredSim", registeredSim));
                 b.AppendLine(F("StartupLead", startupLead));
                 b.AppendLine(F("EnvelopeLead", envelopeLead));
                 b.AppendLine(F("ReleaseLead", releaseLead));
                 b.AppendLine(F("ImpactAtSim", impactAtSim));
                 b.AppendLine(F("WasAnchor", wasAnchor));
-                // The hull the round actually had to reach. The model stops at a fixed radius from
-                // the target's centre; the game's arrival is the collider. Recorded so a hull-entry
-                // arrival can be tested offline against FinalRangeM instead of re-flown for it.
-                // The bounds are world-axis aligned, so they are a hull box only when read with
-                // TargetCourseAtEnd above.
+                // The target's hull, so a hull-entry arrival can be tested offline against FinalRangeM. The
+                // bounds are world-axis aligned, so read them with TargetCourseAtEnd.
                 b.AppendLine(F("TargetLengthM", targetLengthM));
                 b.AppendLine(F("TargetBoundsM",
                                $"{targetBoundsM.x:0.##},{targetBoundsM.y:0.##},{targetBoundsM.z:0.##}"));
-                // Target motion. A target that turned after launch was never predictable from a
-                // launch-time snapshot, so the lab can now exclude it rather than counting it as
-                // model error.
+                // Target motion, so the lab can exclude a target that turned after launch.
                 b.AppendLine(F("TargetCourseAtLaunch", targetCourse0));
                 b.AppendLine(F("TargetSpeedAtLaunch", targetSpeed0));
                 b.AppendLine(F("TargetCourseAtEnd", targetCourse1));
                 b.AppendLine(F("TargetSpeedAtEnd", targetSpeed1));
                 b.AppendLine(F("TargetMovedU", targetMovedU));
-                // D3 of max-solo-error-below-1s: the speed a surface target was converging on when
-                // the capture was solved, after applyMainThrust's caps, and each change after it as
-                // "t:wanted:converge:speed". A solve rounds the speed the ship has at that instant,
-                // which holds for the flight only if the ship keeps it. Written for a Vessel only.
+                // The speed a surface target was converging on when the capture was solved, after
+                // applyMainThrust's caps, and each change after as "t:wanted:converge:speed". Vessels only.
                 if (hasSpeedCommand)
                 {
                     b.AppendLine(F("TargetWantedAtLaunch", speedCommand.Wanted));
@@ -411,21 +359,19 @@ namespace AutoTOT
                                    speedCommandChanges == null || speedCommandChanges.Count == 0
                                    ? "" : string.Join(";", speedCommandChanges)));
                 }
-                // D-L of max-solo-error-below-1s: the launcher cell the round spawned in, against every
-                // cell the mod can resolve before launch. Preformatted lines, GuidanceStateProbe.
+                // The launcher cell the round spawned in, against every cell resolvable before launch
+                // (LaunchDiagnostics.DescribeLaunchCell).
                 if (!string.IsNullOrEmpty(launchCellBlock)) b.Append(launchCellBlock);
                 b.AppendLine(F("InGroup", inGroup));
                 b.AppendLine(F("GroupLeader", groupLeader));
                 b.AppendLine(F("MaxGroupSize", maxGroupSize));
-                // Provenance. A corpus outlives the build that produced it, so an entry has to say
-                // what it was captured against or a later disagreement is unattributable.
+                // Provenance: a corpus outlives the build that produced it.
                 b.AppendLine(F("GameVersion", Application.version));
                 b.AppendLine(F("GameBranch", FlightTime.SimIsBeta ? "beta" : "public"));
                 b.AppendLine(F("ModVersion", Bootstrap.Version));
                 b.AppendLine(F("ModBuild", ModBuildId));
                 b.AppendLine(F("CapturedAt", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss", Inv)));
-                // One input per round now, so this can no longer be ambiguous. Still written, so a
-                // corpus mixing old and new captures reads uniformly.
+                // One input per round, so this is always 1; still written so mixed-age corpora read uniformly.
                 b.AppendLine(F("Claims", 1));
 
                 string file = Path.Combine(Directory, key + ".result");
@@ -442,16 +388,14 @@ namespace AutoTOT
             }
         }
 
-        // "R" round-trips the float exactly, so a replay starts from the same bits the game solved
-        // with rather than from a printed approximation.
+        // "R" round-trips the float, so a replay starts from the exact bits the game solved with.
         private static string F(string k, float v) => k + " = " + v.ToString("R", Inv);
         private static string F(string k, int v) => k + " = " + v.ToString(Inv);
         private static string F(string k, bool v) => k + " = " + (v ? "true" : "false");
         private static string F(string k, string v) => k + " = " + (v ?? string.Empty);
 
-        // Beta-only ammunition fields (see FlightTime.BallisticLoftField). The same text as
-        // F(k, bool) where the field exists, so beta dumps and fingerprints do not change, and
-        // "n/a" on the public branch, where it does not.
+        // Beta-only ammunition fields (see FlightTime.BallisticLoftField): the same text as F(k, bool) where
+        // the field exists and "n/a" on public, so beta dumps and fingerprints are unchanged.
         private static string FOptionalBool(string k, System.Reflection.FieldInfo f, AmmunitionParameters ap)
             => f == null ? F(k, "n/a") : F(k, (bool)f.GetValue(ap));
 

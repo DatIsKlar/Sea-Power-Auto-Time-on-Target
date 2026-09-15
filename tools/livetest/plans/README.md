@@ -42,9 +42,6 @@ only that gate registers. The rest are plan keys, so each scenario asks for what
 | `AllowInsideMinRange` | false | Accept shot lines inside the weapon's minimum launch range at arm, so a plan can create the order the game turns to unmask and then never launches. Combine with `FireNow`: the coordinator refuses such orders. |
 | `ManualAtInbound<N>` | none | `Shooter | ammo | salvo`. Once a missile threatens that ship (`ObjectBase.ThreateningMissile`) and is inside the SAM's range, issue the order the way the game's own attack order does: `InsertEngageTask` with `autoAttack` false and `GetEngagePriority`, without the coordinator's bypass, so the mod's Harmony prefix sees a player order. Each line fires once and is noted in the result. With `CFG_OVERRIDE="AutoModeOnStart=true"` it shows whether AUTO collects manual orders. |
 | `TraceFlightModel` | true | Flight-model internals: the gap line, per-missile track, stage transitions, launch geometry, guard frames. Roughly ten times the log volume and extra sims per round. Turn it OFF for performance runs. |
-| `VerticalProfile` | false | One-second depth and altitude traces for submarines and aircraft. |
-| `AlignmentTrace` | false | Every alignment a surface ship starts and ends, with the game method that ended it, and a one-second steering and launcher-state trace while it turns. |
-| `AlignmentUidFix` | false | Counterfactual, test plans only: when two alignments of one ship share an order's uid, `EndAlignment` removes the one that is ending instead of its replacement. Changes game behaviour, so it exists only in the live test build and has no config entry. |
 | `Profiling` | false | Per-frame timing every 60 frames. |
 | `VerifySolve` | false | Re-runs every threaded simulation on the main thread and warns if the answers differ. Doubles simulation work. |
 

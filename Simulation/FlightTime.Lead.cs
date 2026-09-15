@@ -5,38 +5,33 @@ namespace AutoTOT
     /// <summary>
     /// The point the game measures a round's distance-keyed stage switches to.
     ///
-    /// <c>MaintainHeight.takeAction</c> tests the terminal, final-flight and sea-skimming boundaries,
-    /// and the seeker switch-on, against the FLAT distance to <c>_targetInterceptPosition</c>
-    /// (Missile.cs:374-376), and <c>Waypoint.UpdateAndGetActiveWaypoint</c> completes waypoint legs
-    /// against the same point. That point is not the ship. It is the target the missile believes in,
-    /// led by the velocity it believes the target has (<c>CalculateInterceptAimPoint</c>,
-    /// Missile.cs:2427-2468), and a round without launcher guidance believes in a target it
-    /// dead-reckoned from ToBearing entry at the REPORTED velocity. A ship whose float32 position
-    /// rounding moves it slower than it reports is overtaken by that estimate, so the switch comes
-    /// early against the real ship.
+    /// <c>MaintainHeight.takeAction</c> tests the terminal, final-flight and sea-skimming boundaries and the
+    /// seeker switch-on against the flat distance to <c>_targetInterceptPosition</c> (Missile.cs:374-376),
+    /// and <c>Waypoint.UpdateAndGetActiveWaypoint</c> completes legs against the same point. That point is
+    /// the target the missile believes in, led by the velocity it believes
+    /// (<c>CalculateInterceptAimPoint</c>, Missile.cs:2427-2468); a round without launcher guidance
+    /// dead-reckons it from ToBearing entry at the reported velocity, so a ship whose float32 rounding moves
+    /// it slower than it reports is overtaken and the switch comes early.
     ///
-    /// Every input is known at the point of fire: the target's reported velocity and position, the
-    /// shooter's own ammunition, and the round's own flight state. The random terms the game adds
-    /// (INS drift, aim deviation, the seeker's estimate once it locks) are left out, because a planner
-    /// cannot know them; measured on the YJ-18A they are a few metres.
-    ///
-    /// Everything here is plain arithmetic except the drag call, which goes through the same binding
-    /// as the step loop's, so the lab and the game run the same code.
+    /// Every input is known at the point of fire. The game's random terms (INS drift, aim deviation, the
+    /// seeker's estimate once locked) are left out because a planner cannot know them. Plain arithmetic
+    /// except the drag call, which uses the step loop's binding so the lab and the game run the same code.
     /// </summary>
     internal static partial class FlightTime
     {
         /// <summary>Which target position the step loop measures stage and waypoint switches to.</summary>
         internal enum SwitchTarget : byte
         {
-            /// <summary>The older law: flat range to the predicted ship. The struct default, so an
-            /// initializer or a capture that omits the field replays exactly as before. Setup also
-            /// picks it for an air target, whose semi-active homers measure to the target itself, for
-            /// a <c>ForceDirectPoint</c> round, which never updates its intercept point after launch
-            /// (Missile.cs:2441-2445), and when the game's drag method did not bind.</summary>
+            /// <summary>
+            /// Flat range to the predicted ship; the struct default, so a capture that omits the field
+            /// replays as before. Setup also picks it for an air target (semi-active homers measure to the
+            /// target itself), a <c>ForceDirectPoint</c> round (Missile.cs:2441-2445), and when the game's
+            /// drag method did not bind.
+            /// </summary>
             ShipCentre = 0,
-            /// <summary>A launcher-guided round. <c>OnUpdateEveryFrame</c> refreshes
-            /// <c>_lostGuidanceTime</c> while guidance holds (Missile.cs:1942-2027), so <c>CalcEstimatedTargetPosition</c>
-            /// reads the true position; the lead still uses the reported velocity.</summary>
+            /// <summary>A launcher-guided round. <c>OnUpdateEveryFrame</c> refreshes <c>_lostGuidanceTime</c>
+            /// while guidance holds (Missile.cs:1942-2027), so <c>CalcEstimatedTargetPosition</c> reads the
+            /// true position; the lead still uses the reported velocity.</summary>
             Tracked = 1,
             /// <summary>Every other round: the target at ToBearing entry, advanced at the reported
             /// velocity (Missile.cs:2729-2731), until the seeker locks and the known position becomes

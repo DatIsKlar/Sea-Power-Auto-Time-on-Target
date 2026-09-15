@@ -158,7 +158,6 @@ simulated time. AutoTOT therefore does not model these turns, and instead relies
 anchoring, which re-predicts the impact from launches actually seen. The `commit` log line records
 `compression` and, when dilation exceeds 1, marks the order `PHYSICS APPROXIMATED`, so a report of a
 spread-out arrival can be told apart from a flight-time estimator error.
-`Diagnostics/VerticalProfiler.cs` applies the same marker to its own runs.
 
 ## 4. A slow ship's map speed depends on where it is
 

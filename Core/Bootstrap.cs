@@ -11,16 +11,14 @@ using UnityEngine;
 namespace AutoTOT
 {
     /// <summary>
-    /// Entry logic invoked by AnchorChain. Waits until the mod menu state is readable,
-    /// respects whether this mod is enabled, then installs the Harmony patch and starts
-    /// the per-frame coordination pump.
+    /// Entry logic invoked by AnchorChain: waits for the mod menu state, then installs the patches and
+    /// starts the per-frame pump.
     /// </summary>
     public static class Bootstrap
     {
         public const string Guid = "com.seapowermods.autotot";
 
-        // Mod version. Keep in sync with AutoTOT.csproj <Version> and the [ACPlugin]
-        // attribute in AnchorChainEntry.cs (which references this constant).
+        // Keep in sync with AutoTOT.csproj <Version>; AnchorChainEntry's [ACPlugin] references this.
         internal const string Version = "0.2.1";
 
         internal static ManualLogSource Log = BepInEx.Logging.Logger.CreateLogSource("AutoTOT");
@@ -38,9 +36,7 @@ namespace AutoTOT
         internal static float UiScale = 0f;              // 0 = auto (scale to screen height)
         internal static float UiScaleMultiplier = 1f;    // fine-tune on top of UiScale
 
-        // Config
-        // Only entries read after startup are fields; Enabled, AutoModeOnStart and EstimatorThreads
-        // are read once in LoadConfig and are locals there.
+        // Config entries read after startup. Enabled, AutoModeOnStart and EstimatorThreads are read once in LoadConfig.
         private static ConfigFile _config;
         private static ConfigEntry<bool> _cfgShowIndicator;
         private static ConfigEntry<KeyCode> _cfgToggleModifier;
@@ -54,8 +50,6 @@ namespace AutoTOT
         private static ConfigEntry<float> _cfgMaxWindow;
         private static ConfigEntry<bool> _cfgVerbose;
         private static ConfigEntry<bool> _cfgTraceFlightModel;
-        private static ConfigEntry<bool> _cfgVerticalProfile;
-        private static ConfigEntry<bool> _cfgAlignmentTrace;
         private static ConfigEntry<bool> _cfgProfiling;
         private static ConfigEntry<bool> _cfgVerifySolve;
 
@@ -116,9 +110,7 @@ namespace AutoTOT
             }
         }
 
-        // Live-adjust the panel scale multiplier from the HUD's on-panel –/+ buttons.
-        // Writing the ConfigEntry persists to disk and fires SettingChanged -> ApplyConfig,
-        // which refreshes the UiScaleMultiplier field the HUD reads.
+        // Writing the entry persists it and fires SettingChanged, which re-applies the config.
         internal static void SetUiScaleMultiplier(float v)
         {
             v = Mathf.Clamp(v, Hud.MinUiScaleMultiplier, Hud.MaxUiScaleMultiplier);
@@ -127,12 +119,8 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// One-time startup. Re-entrant by the <see cref="_initialized"/> guard, which is set only
-        /// once initialization has SUCCEEDED: setting it first meant a throw part way through left
-        /// the flag true and the mod half-built, with a config loaded, patches possibly applied and
-        /// no pump, and every later call turned away at the door. On failure the state is put back
-        /// to "not initialized" and the coordinator is disabled, so a broken load behaves like an
-        /// absent mod rather than like a live one with pieces missing.
+        /// One-time startup. <see cref="_initialized"/> is set only on success; a failure disables the
+        /// coordinator, so a broken load behaves like an absent mod.
         /// </summary>
         private static void Init()
         {
@@ -160,16 +148,13 @@ namespace AutoTOT
         {
             LoadConfig();
 
-            // Forward uncaught Unity/game-side exceptions into the BepInEx log so a
-            // crash triggered while this mod is active is captured with a full stack,
-            // even when it fires inside the game's own code rather than ours.
+            // Relay uncaught Unity exceptions whose stack involves AutoTOT to the BepInEx log.
             Application.logMessageReceived -= OnUnityLog; // guard against double-subscribe
             Application.logMessageReceived += OnUnityLog;
 
             Harmony = new Harmony(Guid);
 
-            // A null target here means the game's InsertEngageTask signature changed
-            // (e.g. after a game update) ; PatchAll would then fail. Log it either way.
+            // Null means InsertEngageTask's signature changed in a game update, and PatchAll would fail.
             var patchTarget = AccessTools.Method(typeof(ObjectBase), nameof(ObjectBase.InsertEngageTask));
             if (patchTarget == null)
                 Log.LogError("[AutoTOT] patch target ObjectBase.InsertEngageTask NOT found. The game version may be incompatible, and patching will likely fail.");
@@ -187,17 +172,12 @@ namespace AutoTOT
                 throw;
             }
 
-            // Shield the DOTS assembly scan (multiplayer mission-load crash). Done explicitly
-            // rather than via PatchAll: the exact target differs between Entities versions and
-            // Unity.Entities.dll may not be loaded yet at this point ; Install handles both.
+            // Installed explicitly, not by PatchAll: the target differs between Entities versions, and
+            // Unity.Entities may not be loaded yet.
             DotsScanHardening.Install(Harmony);
 
-            // Diagnostic for the multiplayer mission-load crash: DOTS re-init
-            // (PlottingTableSerializer.RecreateWorldUsingTemp) enumerates every AppDomain
-            // assembly and calls GetName() on each; one bad-culture assembly makes that throw
-            // and aborts mission load. Name any such assembly up front so the real culprit is
-            // identifiable even before the DOTS scan runs. DotsScanHardening then shields the
-            // actual scan so load survives regardless.
+            // Name any assembly whose GetName() throws: one such assembly aborts the DOTS world re-init
+            // during multiplayer mission load.
             LogAssembliesThatFailGetName();
 
             GameObject pump = new GameObject("AutoTOTPump");
@@ -211,10 +191,8 @@ namespace AutoTOT
             Log.LogInfo($"Auto Time-on-Target v{Version} loaded (Enabled={Coordinator.Enabled}, Armed={Coordinator.Active}, Unity={Application.unityVersion}).");
         }
 
-        // One-shot sweep mirroring what Unity's DOTS TypeManager does during multiplayer
-        // world re-init: call GetName() on every loaded assembly and report the ones that
-        // throw (the "Parameter name: name" / invalid-culture case). Purely diagnostic ;
-        // never throws itself.
+        // Calls GetName() on every loaded assembly, as the DOTS TypeManager does, and reports the ones that
+        // throw. Never throws itself.
         private static void LogAssembliesThatFailGetName()
         {
             try
@@ -298,18 +276,6 @@ namespace AutoTOT
                 "when a flight time looks wrong. It is roughly ten times the volume of ordinary " +
                 "verbose logging and runs extra sims per round, so leave it off for normal play " +
                 "and for coordination debugging, which VerboseLogging already covers.");
-            _cfgVerticalProfile = _config.Bind("Debug", "VerticalProfile", false,
-                "Research tool, off by default. Logs a 1s trace of every submarine's depth change " +
-                "and every aircraft's altitude change, with the hull parameters each model is " +
-                "expressed in, so climb and dive behaviour can be characterised. Order a depth or " +
-                "altitude change with no engagement and one manoeuvre becomes one labelled block " +
-                "in the log. Verbose by design; leave it off for normal play.");
-            _cfgAlignmentTrace = _config.Bind("Debug", "AlignmentTrace", false,
-                "Research tool, off by default. Logs each time a surface ship starts or stops turning " +
-                "to bring a launcher to bear on an order, what ended the turn, and once a second the " +
-                "ship's heading, rudder, firing arcs and launcher states while it turns. Use it when a " +
-                "ship turns to fire and some of its rounds never leave. Verbose; leave it off for " +
-                "normal play.");
             _cfgProfiling = _config.Bind("Debug", "Profiling", false,
                 "Log per-frame timing every 60 frames to diagnose performance issues.");
             ConfigEntry<int> cfgEstimatorThreads = _config.Bind("Performance", "EstimatorThreads", -1,
@@ -325,10 +291,8 @@ namespace AutoTOT
                 "would. Doubles simulation work, so use it to check correctness, never to measure " +
                 "performance.");
 
-            // Threads are started once and not re-read on SettingChanged: stopping and restarting a
-            // pool mid-mission would strand queued work.
-            // A hand-set count is clamped too. The field is free text in a config file, and a
-            // mistyped 400 would start four hundred threads on a machine with sixteen cores.
+            // Started once: restarting a pool mid-mission would strand queued work. A hand-set count is
+            // clamped to the core count.
             int threads = cfgEstimatorThreads.Value;
             if (threads < 0) threads = Mathf.Clamp(SystemInfo.processorCount / 4, 1, 4);
             else threads = Mathf.Min(threads, Mathf.Max(1, SystemInfo.processorCount));
@@ -339,21 +303,13 @@ namespace AutoTOT
 
             ApplyConfig();
 
-            // One file-level subscription rather than twelve per-entry ones. ApplyConfig re-reads
-            // every setting it owns, so which entry changed does not matter.
-            //
-            // This also fires for the three entries ApplyConfig deliberately does NOT read, and that
-            // is safe precisely because it does not read them: AutoModeOnStart seeds
-            // Coordinator.Active once above and must not re-arm mid-mission, EstimatorThreads is
-            // read once because restarting a running pool would strand queued work, and Enabled is
-            // the master switch, which cannot change under work already scheduled.
+            // One file-level subscription; ApplyConfig re-reads every live setting. Enabled, AutoModeOnStart
+            // and EstimatorThreads are deliberately read only at startup.
             _config.SettingChanged += (_, __) => ApplyConfig();
         }
 
-        // Forwards uncaught Unity exceptions to the BepInEx log. Only LogType.Exception
-        // is relayed (real crashes / uncaught throws) to avoid drowning the log in the
-        // game's routine LogType.Error output. ManualLogSource does not route back
-        // through Debug.Log, so this cannot feed back on itself.
+        // Relays LogType.Exception with AutoTOT in the stack only. ManualLogSource does not route back
+        // through Debug.Log, so this cannot loop.
         private static void OnUnityLog(string condition, string stackTrace, LogType type)
         {
             if (type != LogType.Exception) return;
@@ -363,17 +319,11 @@ namespace AutoTOT
 
         private static void ApplyConfig()
         {
-            // Enabled is deliberately absent, and is seeded once in LoadConfig instead. Applying it
-            // live meant the coordinator could be switched off while orders were already scheduled:
-            // the tick kept running, and work committed before the switch could still reach a
-            // launcher afterwards. A master switch that only takes effect on the next start has no
-            // such window, and matches how the Mods menu already gates the mod.
+            // Enabled is read only at startup: switching it live could cut off work already scheduled.
             Coordinator.DebounceSeconds = _cfgDebounce.Value;
             Coordinator.MaxWindowSeconds = _cfgMaxWindow.Value;
             Coordinator.VerboseLog = _cfgVerbose.Value;
             Coordinator.TraceFlightModel = _cfgTraceFlightModel.Value;
-            VerticalProfiler.Enabled = _cfgVerticalProfile.Value;
-            AlignmentProbe.Enabled = _cfgAlignmentTrace.Value;
             Coordinator.ProfilingEnabled = _cfgProfiling.Value;
             FlightTime.VerifySolve = _cfgVerifySolve.Value;
             ShowIndicator = _cfgShowIndicator.Value;
@@ -419,27 +369,22 @@ namespace AutoTOT
         /// <summary>Drives the coordinator once per frame. Detects mission transitions for state reset.</summary>
         private sealed class Pump : MonoBehaviour
         {
-            // A menu-open/pause briefly nulls _mainGameViewModel while the SAME mission keeps running.
-            // We must NOT Reset() on that transient ; it wipes EngagementBoard + the flight tracker,
-            // discarding still-in-flight missiles. Only reset once the mission has been absent for a
-            // short debounce (a real exit stays absent; a menu/pause recovers next frame).
+            // A menu or pause briefly nulls _mainGameViewModel while the mission keeps running. Resetting
+            // then would drop missiles in flight, so reset only after the view model has been gone this long.
             private const float ExitDebounceSeconds = 0.5f;
 
             private bool _wasInMission;
             private bool _resetPending;   // mission absent, debounce not yet elapsed, reset not yet done
             private float _absentSince;   // Time.unscaledTime when the mission first went absent
 
-            // A tick that throws every frame used to log once and then go silent for the session, so
-            // a persistent fault read exactly like a one-off. A repeat is now counted and restated on
-            // a real-time cadence.
+            // A repeating tick error is counted and restated on this real-time cadence, not logged every frame.
             private const float ErrorRelogSeconds = 30f;
             private string _lastErrorMsg;
             private int _errorRepeats;
             private float _lastErrorLogReal;
 
-            // Diagnostic for a mission change the exit debounce did not see: the mission clock
-            // restarts from zero, so a large backwards step with no reset in between means the new
-            // mission is running on the old one's state. Warned, not acted on, until it is seen.
+            // A mission clock that jumps back with no reset means a new mission may be running on the old
+            // state. Warned only.
             private const float ClockBackwardsToleranceSeconds = 1f;
             private float _lastSimNow = -1f;
 
@@ -471,11 +416,9 @@ namespace AutoTOT
                     }
                     if (_resetPending && (Time.unscaledTime - _absentSince) >= ExitDebounceSeconds)
                     {
-                        // Each part guarded on its own, and the pending flag cleared regardless: a
-                        // reset that threw used to be retried on every frame in the menu.
+                        // Each part guarded and the pending flag cleared regardless, so a failing reset is
+                        // not retried every frame.
                         ResetSafely("coordinator", Coordinator.Reset);
-                        ResetSafely("vertical profiler", VerticalProfiler.Reset);   // run numbering restarts with the mission
-                        ResetSafely("alignment probe", AlignmentProbe.Reset);
                         _resetPending = false;
                         _lastErrorMsg = null;
                         _errorRepeats = 0;
@@ -497,8 +440,6 @@ namespace AutoTOT
                 try
                 {
                     Coordinator.Tick();
-                    VerticalProfiler.Tick(simNow);
-                    AlignmentProbe.Tick(simNow);
                 }
                 catch (Exception e)
                 {

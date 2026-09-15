@@ -6,11 +6,8 @@ using UnityEngine;
 namespace AutoTOT
 {
     /// <summary>
-    /// Per-missile and per-launcher tracing: engage-state sampling, the first-sighting card, stage
-    /// changes, throttled telemetry and the round-based prediction score. Everything here is gated
-    /// behind a diagnostic switch and exists to be read in the log, not acted on.
-    ///
-    /// Split out of LaunchDiagnostics.cs for size only.
+    /// Per-missile and per-launcher tracing: engage-state sampling, the first-sighting card, stage changes,
+    /// throttled telemetry and the recorded tracks. Everything here is gated behind a diagnostic switch.
     /// </summary>
     internal static partial class LaunchDiagnostics
     {
@@ -21,22 +18,9 @@ namespace AutoTOT
             new List<LauncherProbe.LauncherView>();
 
         /// <summary>
-        /// Trace the launcher's own state machine for the whole life of an order, logging each
-        /// transition, how long the previous state held, and the shot count at that moment.
-        ///
-        /// This exists because the measured order-to-first-round time on a guidance-requiring mount
-        /// is a repeatable 2.7 s that no modelled term accounts for: PreLaunchDelay, the reaction
-        /// draw and the whole OODA stack are all zero on those launchers. The states in
-        /// WeaponSystemLauncher.Update each carry a real duration, and this says WHICH one holds,
-        /// rather than inferring it from a total.
-        ///
-        /// It used to stop at the first round, which made the second half of a ripple invisible.
-        /// That is where the Kynda problem lives: it fires a linked fore/aft pair, turns the ship to
-        /// unmask again, then fires the rest, and the gap in the middle is a ship turn rather than
-        /// anything the launcher is doing. Covering the whole order is what makes that legible.
-        ///
-        /// Volume is bounded by logging transitions only, so a launcher sitting in one state is
-        /// silent no matter how long it sits. Verbose only.
+        /// Trace each launcher's state machine for the whole life of an order: every transition, how long the
+        /// previous state held, and the shot count. It shows which state an order-to-first-round delay sits
+        /// in, and covering the whole order shows a mid-ripple ship turn. Transitions only; verbose only.
         /// </summary>
         private static void SampleEngageStates(float simNow)
         {
@@ -59,8 +43,7 @@ namespace AutoTOT
                     LauncherProbe.LauncherView v = _probeScratch[k];
                     if (!_launcherTraces.TryGetValue(v.Id, out LauncherTrace t))
                     {
-                        // First sighting: record the state without logging a transition into it,
-                        // the same way the old code stayed silent until it had a previous state.
+                        // First sighting: record the state without logging a transition into it.
                         t = new LauncherTrace
                         {
                             Id = v.Id, SystemName = v.SystemName, State = v.State, SinceSim = simNow,
@@ -71,14 +54,12 @@ namespace AutoTOT
                         continue;
                     }
                     if (FindTrace(e.Launchers, v.Id) == null) e.Launchers.Add(t);
-                    // A launcher serving two orders is read once per tick, by whichever order
-                    // reached it first. The state it is in is the same either way.
+                    // A launcher serving two orders is read once per tick.
                     if (!_tracedThisTick.Add(v.Id)) continue;
                     if (t.State == v.State) continue;
 
                     float held = simNow - t.SinceSim;
-                    // D1: the observed side of the declared-versus-observed comparison. Captured on
-                    // the way OUT of the state, which is the only moment its full duration is known.
+                    // Observed warm-up, captured on the way out of the state, when its duration is known.
                     if (t.State == OnRailWarmupState) t.LastWarmupHold = held;
                     if (v.State == OnRailWarmupState) t.WarmupCount++;
 
@@ -94,31 +75,21 @@ namespace AutoTOT
             }
         }
 
-        /// <summary>The engage state whose duration this whole investigation turned on.</summary>
+        /// <summary>The engage state whose observed duration is compared with the declared warm-up.</summary>
         private const string OnRailWarmupState = "OnRailWarmup";
 
         private static LauncherTrace FindTrace(List<LauncherTrace> traces, int id)
         {
-            // Linear: a ship has single-digit launchers for one ammo, so this beats a dictionary
-            // and sidesteps the question of whether BaseSystem overrides Equals.
+            // Linear: single-digit launchers per ammo, and it avoids depending on BaseSystem's Equals.
             for (int i = 0; i < traces.Count; i++) if (traces[i].Id == id) return traces[i];
             return null;
         }
 
         /// <summary>
-        /// Training context for the engage-state line: where the target sits relative to the ship's
-        /// head, and whether the ship is currently steering to fix that.
-        ///
-        /// This is what tells an arc problem apart from a launcher problem. A Kynda's SS-N-3 mounts
-        /// bear only through FiringArcs=-105,-75|75,105, two 30-degree windows abeam, so the ship
-        /// must hold the target within 15 degrees of a beam to shoot at all. Its 8 rounds go out as
-        /// linked fore/aft pairs with a long turn in the middle, and without the relative bearing
-        /// there is no way to tell from a log whether it is still turning, has swung past the
-        /// window, or is waiting on something else.
-        ///
-        /// Relative bearing rather than a real arc test, deliberately: targetIsInFiringArc wants an
-        /// intercept point that does not exist before launch, and a bearing the reader can check
-        /// against the ammo's own FiringArcs is both cheaper and harder to get subtly wrong.
+        /// Training context for the engage-state line: the target's bearing relative to the ship's head, and
+        /// whether the ship is steering. It tells an arc problem from a launcher problem (a Kynda's SS-N-3
+        /// bears only through two 30-degree beam windows). A relative bearing rather than an arc test, since
+        /// targetIsInFiringArc needs an intercept point that does not exist before launch.
         /// </summary>
         private static string Unmasking(LaunchExpectation e)
         {
@@ -127,16 +98,14 @@ namespace AutoTOT
             Vector3 to = t.transform.position - u.transform.position;
             to.y = 0f;
             if (to.sqrMagnitude < 1e-6f) return "";
-            // Signed about world up: negative to port, positive to starboard, so it reads directly
-            // against the FiringArcs pairs in the ship's ini.
+            // Signed about world up: negative to port, positive to starboard, matching the ini's FiringArcs.
             float rel = Vector3.SignedAngle(u.transform.forward, to, Vector3.up);
             return $", target rel brg {rel:+0;-0} deg, aligning {u.Aligning}";
         }
 
         /// <summary>
-        /// Invokes <paramref name="visit"/> for every friendly missile currently tracked in flight
-        /// along with its live intended target (both guaranteed non-null and alive). Used by the
-        /// engagement overview to count in-flight rounds per target.
+        /// Visit every tracked friendly missile in flight with its live intended target (both non-null and
+        /// alive). Used by the engagement overview.
         /// </summary>
         internal static void ForEachInFlight(System.Action<WeaponBase, ObjectBase> visit)
         {
@@ -151,10 +120,8 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// True while at least one tracked friendly round is still flying at this target. The
-        /// single-target question behind <see cref="ForEachInFlight"/>, for the engagement board's
-        /// prune, which runs on the coordinator tick and so cannot use the display scratch the
-        /// visitor fills.
+        /// True while a tracked friendly round is still flying at this target. For the engagement board's
+        /// prune, which runs on the tick and cannot use the display scratch.
         /// </summary>
         internal static bool HasInFlightAt(ObjectBase target)
         {
@@ -170,12 +137,8 @@ namespace AutoTOT
 
 #if LIVETEST
         /// <summary>
-        /// True while any tracked round WE fired is still flying, whatever it is currently aimed
-        /// at. Deliberately not keyed on a target: a seeker that switches to a sibling in the
-        /// target's formation leaves <see cref="HasInFlightAt"/> false for the ordered ship while
-        /// the round is still very much in the air, so a caller asking "is the strike over" per
-        /// target concludes yes with rounds 25 km out. Defensive SAMs and the AI's own shots are
-        /// excluded by the Coordinated flag.
+        /// True while any round AutoTOT fired is still flying, whatever it is aimed at now. Not per target: a
+        /// seeker that switches to a formation sibling leaves <see cref="HasInFlightAt"/> false while the round flies.
         /// </summary>
         internal static bool AnyCoordinatedInFlight()
         {
@@ -189,8 +152,7 @@ namespace AutoTOT
         }
 #endif
 
-        // One-time per-missile line at first sighting: nominal speeds + our kinematic estimate, so a
-        // late group can be read against what the game's own solo sim predicted. Flight-model trace.
+        // One line per missile at first sighting: nominal speeds and the model's estimate. Flight-model trace.
         private static void LogTrackInit(WeaponBase w, float est, in FlightTime.LaunchState launch)
         {
             if (!Coordinator.TraceFlightModel) return;
@@ -202,12 +164,8 @@ namespace AutoTOT
                 $"nominal cruise {ap._maxVelocityInKnots:0}/loft {ap._maxLoftVelocityInKnots:0}/" +
                 $"term {ap._terminalVelocityInKnots:0} kn, kinEst {est:0.0}s, grouped {grouped}");
 
-            // Grounded-integrator per-phase breakdown ; pins WHICH loft phase (climb/cruise/descent)
-            // the model gets wrong when its intercept time disagrees with the actual flown time.
-            // peakAlt vs loftAlt = climb-height error; a slow VTerm + long DescentTime = descent error.
-            // Hoisted out of the `if` so the integrator run can be timed. TryIntegratedPhaseDiag
-            // calls IntegratedEndTimeCore directly rather than going through FlightTime.Estimate, so
-            // without this the profiler misses it and the stage totals fall short of `model: loop`.
+            // The integrator's per-phase breakdown, to say which loft phase disagrees. Hoisted so the run is
+            // timed, since it bypasses FlightTime.Estimate.
             bool phaseDiagOk = false;
             float intT = 0f;
             FlightTime.IntegratedPhases ph = default;
@@ -229,12 +187,8 @@ namespace AutoTOT
                     $"cruiseExit {ph.VCruiseExit:0}/term {ph.VTerm:0}kn, " +
                     $"finalDist {ph.FinalDistU:0}u/termDist {ph.TermDistU:0}u");
 
-                // The region model's phase boundaries, printed in the same units the `stage-obs`
-                // line reports so the two can be diffed directly. finalDist should line up with the
-                // real MaintainLoftAlt -> Maintain{SeaSkimming,FinalFlightAlt} transition, and
-                // diveStart with the real -> TerminalApproach transition. These boundaries are
-                // hand-derived from ini fields and are the most fragile part of the model, so this is the evidence
-                // that says whether they are right rather than merely tuned.
+                // The model's phase boundaries, in the units `stage-obs` prints, so the two can be diffed:
+                // finalDist against the real loft-to-final transition, diveStart against TerminalApproach.
                 Bootstrap.Log.LogInfo(
                     $"[AutoTOT] stage-model {ap._ammunitionFileName}#{w.GetInstanceID()}: " +
                     $"finalDist {ph.FinalDistU:0}u, termDist {ph.TermDistU:0}u, " +
@@ -244,18 +198,9 @@ namespace AutoTOT
 
         }
 
-        // Fires once per transition of the game's OWN flight-stage machine
-        // (Launch -> ToBearing -> MoveToLoftAlt -> MaintainLoftAlt -> ... -> TerminalApproach).
-        //
-        // The only direct ground truth for the boundaries the model derives from ini fields: where
-        // the real missile leaves the loft is the model's finalDist, and where it enters
-        // TerminalApproach is its diveStart. `track` prints the stage too, but samples every 15s,
-        // which on a Mach-10 lofter brackets a transition to a ~43km window.
-        //
-        // Distances are reported three ways because `track` logs 3D SLANT and `sim-track` logs flat;
-        // flat is the one comparable to the model's boundaries.
-        //
-        // Change-gated, so a full flight emits under a dozen lines. Flight-model trace + Coordinated only.
+        // Once per transition of the game's own flight-stage machine: the ground truth for the model's
+        // finalDist and diveStart. Distances three ways, since `track` logs slant and `sim-track` flat.
+        // Flight-model trace, coordinated rounds only.
         private static void MaybeLogStageChange(WeaponBase w, ObjectBase tgt, FlightSample s, float simNow)
         {
             if (!Coordinator.TraceFlightModel) return;
@@ -286,9 +231,8 @@ namespace AutoTOT
                 $"slant {slantM / 1000f:0.0}km, alt {altU:0.0}u, spd {w._velocityInKnots:0}kn");
         }
 
-        // Throttled per-missile telemetry: actual vs nominal speed, group/leader state, in-group
-        // commanded speed, flight stage, altitude, distance. Separates group-drag (leader spd ~0.6x
-        // nominal) from a solo estimate error. Flight-model trace. Updates the sample's throttle stamp.
+        // Throttled per-missile telemetry: speed against nominal, group state, stage, altitude, distance.
+        // Separates group drag from a solo estimate error. Flight-model trace.
         private static void MaybeLogTelemetry(WeaponBase w, ObjectBase tgt, FlightSample s, float distM, float simNow)
         {
             if (!Coordinator.TraceFlightModel) return;
@@ -312,26 +256,20 @@ namespace AutoTOT
 
         private const int MaxFlightTrackSamples = 256;
 
-        // Both by reflection: _prevPitch is private, and a branch without either member loses
-        // PitchRateTrack (or its ticks-per-frame field) and nothing else.
+        // By reflection: _prevPitch is private, and a branch without either member loses only PitchRateTrack.
         private static readonly FieldInfo MissilePrevPitch =
             typeof(Missile).GetField("_prevPitch", BindingFlags.Instance | BindingFlags.NonPublic);
         private static readonly PropertyInfo GameSimulationTick =
             typeof(GameTime).GetProperty("simulationTick", BindingFlags.Static | BindingFlags.Public);
 
         /// <summary>
-        /// Once a frame, the pitch rate the game's drag function reads on that frame's last tick,
-        /// pooled into one-second rows. Missile.OnFixedUpdate copies _currentPitch into _prevPitch
-        /// and re-reads the transform before the state action steers, and PerformMoveForward hands
-        /// (_currentPitch - _prevPitch) / fixedDeltaTime to CalculateDrag. With the motor off, that
-        /// function's stall term scales with the square of
-        /// clamp01(|cos pitch| - v 67.2 max(rate, 0) / g), which is convex in the rate, so jitter
-        /// from tick to tick raises the drag above what the mean rate alone gives.
+        /// Once a frame, the pitch rate the game's drag function reads on that frame's last tick, pooled into
+        /// one-second rows. With the motor off the drag's stall term is convex in the rate, so tick-to-tick
+        /// jitter raises drag above what the mean rate gives.
         ///
-        /// Fields are t:frames:meanRate:sdRate:minRate:maxRate:shareAtOrBelowZero:meanSquare:
-        /// squareAtMeanRate:meanPitch:meanSpeedKn:ticksPerFrame. t is the window's start in whole
-        /// seconds since launch. Rate and pitch carry the game's sign, nose down positive, in deg/s
-        /// and deg.
+        /// Fields: t:frames:meanRate:sdRate:minRate:maxRate:shareAtOrBelowZero:meanSquare:squareAtMeanRate:
+        /// meanPitch:meanSpeedKn:ticksPerFrame. t is whole seconds since launch; rate and pitch use the
+        /// game's sign (nose down positive), in deg/s and deg.
         /// </summary>
         private static void MaybeRecordPitchRate(WeaponBase w, FlightSample s, float simNow)
         {
@@ -390,19 +328,11 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// Persist the live trajectory and the target state that produced it. Fields are
-        /// t:px:py:pz:speed:pitch:heading:stage:flatM:slantM:tx:ty:tz:targetCourse:
-        /// targetSpeed:groupActive:groupLeader:groupSpeed:dragTargetAltU. Positions and altitude
-        /// are Unity units; distances are metres. The cadence is intentionally shared with
-        /// sim-track/track.
-        ///
-        /// dragTargetAltU is the game's own `y3` (Missile.cs:3170-3175), the altitude it hands
-        /// CalculateDrag as targetAltitude: the CurrentTarget's when there is one and the round's
-        /// own when there is not. Its air density sits in a denominator floored at 0.001, so that
-        /// one choice swings the lift-induced term by up to 800 times and it is what the model's
-        /// vacuum brake is trying to predict. Recording it turns "should the brake be firing here"
-        /// into a direct read. CurrentTarget returns null in exactly one case (WeaponBase.cs:362):
-        /// the seeker is on, it holds no echo, and the ammunition declares no TargetMemory.
+        /// Record the live trajectory and target state. Fields:
+        /// t:px:py:pz:speed:pitch:heading:stage:flatM:slantM:tx:ty:tz:targetCourse:targetSpeed:groupActive:
+        /// groupLeader:groupSpeed:dragTargetAltU (Unity units for positions, metres for distances), on the
+        /// sim-track and track cadence. dragTargetAltU is the game's y3 (Missile.cs:3170-3175), the altitude
+        /// CalculateDrag is given: the CurrentTarget's, or the round's own when CurrentTarget is null.
         /// </summary>
         private static void MaybeRecordFlightTrack(WeaponBase w, ObjectBase tgt, FlightSample s,
                                                    float simNow)
@@ -443,16 +373,10 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// Record the exact moment the game's drag target altitude changes hands. Written into
-        /// StageEvents, whose six fields it shares, with the transition token naming the two seeker
-        /// bits instead of a flight stage: `seekOn,echo>seekOn,echo`.
-        ///
-        /// CurrentTarget is null in one case only (WeaponBase.cs:362): the seeker is on, it holds
-        /// no echo, and the ammunition declares no TargetMemory. In that window the live mover
-        /// hands CalculateDrag the round's OWN altitude instead of the target's, and since that
-        /// altitude's air density sits in a denominator floored at 0.001 the lift-induced term
-        /// grows by up to 800 times. A sampled series cannot pin the transition: at 7000 kn the
-        /// adaptive cadence is 7 s apart, which is 375 u of travel. This is exact.
+        /// Record the moment the drag target altitude changes hands, into StageEvents with a
+        /// `seekOn,echo>seekOn,echo` token. CurrentTarget is null only when the seeker is on, holds no echo
+        /// and the ammunition declares no TargetMemory (WeaponBase.cs:362); the round's own altitude then
+        /// feeds CalculateDrag, which swings the lift-induced term sharply. A sampled series cannot pin that moment.
         /// </summary>
         private static void MaybeRecordSeekerEvent(WeaponBase w, ObjectBase tgt, FlightSample s,
                                                    float simNow)
@@ -500,8 +424,7 @@ namespace AutoTOT
             "rate:num2:num3:num4:num6:num7:num8:x:desiredNeFuture:fired:tgtType:inGroup:" +
             "knownTgt:knownVel:trueTgt:travel:speedU:insDrift:leadOn:why";
 
-        // Dense through the climb, the apex and the first step-down of every round in the corpus
-        // (SS-N-19's apex is near t+80), sparse after. Transitions are written at any age.
+        // Dense through the climb, apex and first step-down, sparse after; transitions are written at any age.
         private const float GuardDenseEndSim = 120f;
         private const float GuardDenseIntervalSim = 0.5f;
         private const float GuardSparseIntervalSim = 5f;
@@ -519,14 +442,9 @@ namespace AutoTOT
             typeof(Missile).GetField("_launchArcComplete", BindingFlags.Instance | BindingFlags.NonPublic);
 
         /// <summary>
-        /// Recompute Missile.SetMissileCourse's surface-target pre-apex guard (Missile.cs:2559-2581)
-        /// from the live waypoint, term for term, and record it with everything that fed it.
-        ///
-        /// Recorded from launch on. The earlier recorder only covered t+35..65, and SS-N-19's
-        /// unexplained nose-down from 45 to 4 degrees happens at t+15..27, before its window opens.
-        /// The discrete state (waypoint, stage, the guard's three tests and its result) is keyed
-        /// every frame; when the key changes, the previous frame's line is written as well, so
-        /// both sides of each transition survive.
+        /// Recompute Missile.SetMissileCourse's surface-target pre-apex guard (Missile.cs:2559-2581) from the
+        /// live waypoint, term for term, and record it with its inputs from launch on. The discrete state is
+        /// keyed every frame; on a change the previous frame is written too, so both sides of a transition survive.
         /// </summary>
         private static void RecordGuardTrack(WeaponBase w, FlightSample s, float simNow)
         {
@@ -549,15 +467,14 @@ namespace AutoTOT
             if (f.HasTarget) f.TgtType = m.CurrentTarget._type;
             f.InGroup = m._inMissileGroup;
             f.Intercept = m._targetInterceptPosition.ToUnity();
-            // D-L of max-solo-error-below-1s: what the game builds the intercept point from, beside
-            // where the target really is. Written on every frame, whatever the waypoint count.
+            // What the game builds the intercept point from, beside where the target really is; every frame.
             f.KnownTgt = m._currentKnownTargetPosition;
             f.KnownVel = m._lastKnownTargetVelocity;
             ObjectBase intended = m.CurrentIntendedTargetObject;
             f.TrueTgt = intended != null && intended.transform != null ? intended.transform.position : Vector3.zero;
             f.Travel = m._traveledDistance;
             f.SpeedU = m._velocityInUnity;
-            f.InsDrift = GuidanceStateProbe.InsDrift(m);
+            f.InsDrift = InsDrift(m);
             f.LeadOn = m._leadTarget;
             f.WpCount = m.Waypoints != null ? m.Waypoints.Count : 0;
 
@@ -569,8 +486,8 @@ namespace AutoTOT
                 Vector3 future = wp.WpStatus.FuturePosition.ToUnity();
                 bool kappa = set.PitchMode == Waypoint.ToHeightType.KappaLoft;
 
-                // The guard, as the game writes it. `rate` is the raw ini value, or the ToBearing
-                // override in that state: no G-derate and no banking roll addend.
+                // The guard as the game writes it: `rate` is the raw ini value, or the ToBearing override in
+                // that state, with no G-derate or roll addend.
                 float rate = m._ap._maxTurnRateDegrees;
                 if (m._flightStage == WeaponBase.FlightStage.ToBearing &&
                     m._ap._toBearingTurnRateDegrees > 0f)
@@ -643,11 +560,8 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// One tick of the values a guard-track line prints. The recorder keeps roughly one tick in
-        /// fifty (a change of state, the cadence, or the tick just before a change), and it used to
-        /// format its state key and its whole 37-field line on every tick to decide. Now each tick
-        /// is captured into a reused frame and formatted only when kept. <see cref="Format"/> is the
-        /// same expression the recorder always used, so the corpus lines are unchanged.
+        /// One tick of the values a guard-track line prints, captured into a reused frame and formatted only
+        /// when kept. <see cref="Format"/> is the recorder's original expression, so corpus lines are unchanged.
         /// </summary>
         internal sealed class GuardFrame
         {
@@ -665,15 +579,14 @@ namespace AutoTOT
             internal float ClimbAngle, DescentAngle, EndAlt, Boundary, Pct, Total, CtxV;
             internal Vector3 Goal, Future, LastWp;
             internal float Rate, Num2, Num3, Num4, Num6, Num7, Num8, X;
-            // D-L: the missile's guidance state (see RecordGuardTrack).
+            // The missile's guidance state (see RecordGuardTrack).
             internal Vector3 KnownTgt, KnownVel, TrueTgt;
             internal float Travel, SpeedU, InsDrift;
             internal bool LeadOn;
 
             /// <summary>
-            /// The discrete state a change is detected on, which is exactly what the key string
-            /// used to hold: stage and waypoint count, and with a waypoint its type, pitch mode,
-            /// done flag and the four guard tests.
+            /// The discrete state a change is detected on: stage and waypoint count, and with a waypoint its
+            /// type, pitch mode, done flag and the four guard tests.
             /// </summary>
             internal bool SameState(GuardFrame o)
             {
@@ -714,5 +627,180 @@ namespace AutoTOT
 
         // A ship's velocity is a few hundredths of a unit per second; three decimals would round it away.
         private static string V5(Vector3 v) => $"{v.x:0.00000},{v.y:0.00000},{v.z:0.00000}";
+
+        // ---- Capture helpers: a Vessel target's speed command, a missile's INS drift and the launcher cell
+        // a round spawned in. Written into the .result of a traced round; the corpus scripts read them.
+
+        private static readonly System.Globalization.CultureInfo CellInv = System.Globalization.CultureInfo.InvariantCulture;
+
+        /// <summary>
+        /// The speed a surface target is converging on, beside its current speed. Vessel.OnFixedUpdate
+        /// refreshes the wanted speed each tick; applyMainThrust caps it for sea state and rudder and
+        /// accelerates toward it, or multiplies speed by _linearDamping (LinearDrag^fixedDeltaTime, fixed at
+        /// spawn) while at or above it (Vessel.cs:352-436).
+        /// </summary>
+        internal struct SpeedCommand
+        {
+            public float Speed;          // _velocityInKnots
+            public float Wanted;         // Compartments.WantedVelocityInKnots, as the speed command set it
+            public float Converge;       // Wanted after applyMainThrust's sea-state and rudder caps
+            public float Rudder;         // _currentRudderAngle in degrees, NaN when unreadable
+            public int SeaState;         // -1 when the environment is not up
+            public float DampingPerTick; // _linearDamping, NaN when unreadable
+        }
+
+        private static FieldInfo _rudderField, _dampingField;
+        private static bool _speedFieldsResolved;
+
+        /// <summary>Read a <see cref="Vessel"/> target's <see cref="SpeedCommand"/>. False for anything else.</summary>
+        internal static bool TryReadSpeedCommand(ObjectBase target, out SpeedCommand c)
+        {
+            c = default;
+            Vessel v = target as Vessel;
+            if (v == null || v.IsDestroyed || v._compartments == null || v.VP == null) return false;
+            if (!_speedFieldsResolved)
+            {
+                _speedFieldsResolved = true;
+                // Both protected, on both branches.
+                const BindingFlags Inst = BindingFlags.Instance | BindingFlags.NonPublic;
+                _rudderField = typeof(Vessel).GetField("_currentRudderAngle", Inst);
+                _dampingField = typeof(Vessel).GetField("_linearDamping", Inst);
+            }
+            try
+            {
+                c.Speed = v._velocityInKnots;
+                c.Wanted = v._compartments.WantedVelocityInKnots;
+                c.Rudder = _rudderField?.GetValue(v) is float r ? r : float.NaN;
+                c.DampingPerTick = _dampingField?.GetValue(v) is float d ? d : float.NaN;
+                c.SeaState = Singleton<SeaPower.Environment>.InstanceExists()
+                           ? Singleton<SeaPower.Environment>.Instance.SeaState : -1;
+                c.Converge = CappedWanted(v, c.Wanted, c.SeaState, c.Rudder);
+                return true;
+            }
+            catch (System.Exception)
+            {
+                return false;
+            }
+        }
+
+        /// <summary>applyMainThrust's two caps on the wanted speed, in its order (Vessel.cs:352-386).</summary>
+        private static float CappedWanted(Vessel v, float wanted, int seaState, float rudder)
+        {
+            float num = wanted;
+            VesselParameters vp = v.VP;
+            if (seaState > 3)
+            {
+                float forwardCap = vp._maxForwardVelocityInKnots - (seaState - 3f) * vp._displacementCoeff;
+                float backwardCap = -vp._maxBackwardVelocityInKnots + (seaState - 3f) * vp._displacementCoeff;
+                if (num > 0f && num > forwardCap) num = forwardCap > 5f ? forwardCap : 5f;
+                if (num < 0f && num < backwardCap) num = backwardCap < -2f ? backwardCap : -2f;
+            }
+            // NaN compares false, so an unreadable rudder applies no cap.
+            float absRudder = Mathf.Abs(rudder);
+            if (absRudder > 1f)
+            {
+                float fraction = Mathf.Min(absRudder / 25f, 1f);
+                float rudderCap = v.MaxForwardSpeedInKnots - fraction * v.MaxForwardSpeedInKnots / 2f;
+                if (rudderCap < num) num = rudderCap;
+            }
+            return num;
+        }
+
+        private static FieldInfo _insDriftField;
+        private static bool _resolved;
+
+        /// <summary>The INS drift the game rolls per missile at launch (private on both branches); NaN when
+        /// unreadable.</summary>
+        internal static float InsDrift(Missile m)
+        {
+            if (!_resolved)
+            {
+                _resolved = true;
+                _insDriftField = typeof(Missile).GetField("_insDriftValue", BindingFlags.Instance | BindingFlags.NonPublic);
+            }
+            try { return _insDriftField?.GetValue(m) is float f ? f : float.NaN; }
+            catch (System.Exception) { return float.NaN; }
+        }
+
+        /// <summary>
+        /// Preformatted <c>.result</c> lines: where the round is at first sighting, against every cell of
+        /// the weapon system it left from and against the launching ship's centre, and whether the
+        /// launcher the mod picks by firing arc is the one it left.
+        /// </summary>
+        internal static string DescribeLaunchCell(WeaponBase w, ObjectBase tgt)
+        {
+            try
+            {
+                var b = new System.Text.StringBuilder();
+                Vector3 spawn = w.transform.position;
+                ObjectBase platform = w._launchPlatform;
+                b.AppendLine("LaunchSpawnPosU = " + CellV(spawn));
+                if (platform != null && platform.transform != null)
+                    b.AppendLine("LaunchCentreDistM = " + CellM(spawn - platform.transform.position));
+
+                WeaponSystem ws = w._weaponSystem;
+                if (ws == null)
+                {
+                    b.AppendLine("LaunchSystem = none");
+                    return b.ToString();
+                }
+                string name;
+                try { name = ws._vwp?._systemName ?? "?"; } catch (System.Exception) { name = "?"; }
+                b.AppendLine("LaunchSystem = " + name);
+
+                int cells = 0, bestContainer = -1, bestCell = -1;
+                float best = float.MaxValue;
+                Vector3 sum = Vector3.zero, bestResidualLocal = Vector3.zero;
+                if (ws._containers != null)
+                {
+                    for (int c = 0; c < ws._containers.Count; c++)
+                    {
+                        WeaponContainer container = ws._containers[c];
+                        if (container == null || container._gunObject == null || container._attachmentPositions == null)
+                            continue;
+                        Transform gun = container._gunObject.transform;
+                        for (int a = 0; a < container._attachmentPositions.Count; a++)
+                        {
+                            Vector3 world = gun.TransformPoint(container._attachmentPositions[a]);
+                            sum += world;
+                            cells++;
+                            float d = (world - spawn).magnitude;
+                            if (d < best)
+                            {
+                                best = d;
+                                bestContainer = container._containerIndex;
+                                bestCell = a;
+                                bestResidualLocal = gun.InverseTransformPoint(spawn) - container._attachmentPositions[a];
+                            }
+                        }
+                    }
+                }
+                b.AppendLine("LaunchCellCount = " + cells.ToString(CellInv));
+                if (cells > 0)
+                {
+                    b.AppendLine($"LaunchCellNearest = {bestContainer}:{bestCell}:{(best * GameUnits.MetersPerUnity).ToString("0.00", CellInv)}");
+                    b.AppendLine("LaunchCellResidualLocal = " + CellV(bestResidualLocal));
+                    b.AppendLine("LaunchCellsMeanDistM = " + CellM(sum / cells - spawn));
+                }
+
+                if (platform != null && tgt != null && w._ap != null)
+                {
+                    var picks = WeaponSelector.GetWeaponSystemsForAmmunition(
+                        platform, tgt.transform.position, w._ap._ammunitionFileName, null);
+                    bool match = picks != null && picks.Count > 0 && ReferenceEquals(picks[0], ws);
+                    b.AppendLine("LaunchPickMatches = " + (match ? "true" : "false"));
+                }
+                return b.ToString();
+            }
+            catch (System.Exception e)
+            {
+                return "LaunchCellError = " + e.GetType().Name + System.Environment.NewLine;
+            }
+        }
+
+        private static string CellV(Vector3 v) =>
+            v.x.ToString("0.000", CellInv) + "," + v.y.ToString("0.000", CellInv) + "," + v.z.ToString("0.000", CellInv);
+
+        private static string CellM(Vector3 d) => (d.magnitude * GameUnits.MetersPerUnity).ToString("0.00", CellInv);
     }
 }

@@ -3,20 +3,15 @@ using UnityEngine;
 namespace AutoTOT
 {
     /// <summary>
-    /// The waypoint route a non-kinematic round flies against a surface target, and the point on it
-    /// the round steers at.
+    /// The waypoint route a non-kinematic round flies against a surface target, and the point on it the round
+    /// steers at. Each leg is an Immediate (or Linear) waypoint, and the missile steers at a look-ahead point
+    /// that <c>Waypoint.CalculatePointAtTime</c> (Waypoint.cs:423) places by lerping from the missile toward
+    /// the target by <c>flatV * T / distance-to-waypoint</c>, so the lead grows without limit as a boundary
+    /// nears and the round flattens before every boundary.
     ///
-    /// A cruise missile does not fly a climb command to an altitude. Each leg of its route is an
-    /// Immediate (or Linear) waypoint, and the missile steers at a look-ahead point that
-    /// <c>Waypoint.CalculatePointAtTime</c> (Waypoint.cs:423) places by lerping from the missile
-    /// toward the TARGET by <c>flatV * T / distance-to-waypoint</c>. The lead therefore grows without
-    /// limit as a boundary nears, and the round flattens before every boundary. Measured on six
-    /// rounds flown with GuardTrack, the lead matches this to about 1%.
-    ///
-    /// Everything here is a pure function of values resolved at setup, so it runs in the lab and on
-    /// the estimator threads. <c>WaypointSim</c> covers the same game code a second way, by driving
-    /// the game's own Waypoint objects through reflection for the fallback tier; see its header for
-    /// why the two stay separate.
+    /// Pure functions of values resolved at setup, so this runs in the lab and on the estimator threads.
+    /// <c>WaypointSim</c> covers the same game code by driving the game's Waypoint objects through reflection for the
+    /// fallback tier; see its header for why the two stay separate.
     /// </summary>
     internal static partial class FlightTime
     {
@@ -61,20 +56,15 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// Missile.CreateWaypointConfigs (Missile.cs:2145-2425) for a non-kinematic round against a
-        /// surface target, followed by FastForwardWaypoints (Missile.cs:2809). Takes the raw
-        /// ammunition values, in Unity units and degrees, so the lab can rebuild the route from a
-        /// capture. Returns null when there is no route to fly.
-        ///
-        /// A terrain follower's heights are AboveTerrain. Over open sea that is the same value as an
-        /// absolute height plus the wave height (TerrainUtils.cs:1590-1607), about 0.01u, so the
-        /// route is shared; flight over land is not modelled.
-        ///
-        /// A group leader's final-flight and terminal legs fly GroupLeaderAlt (Missile.cs:2245,
-        /// :2310). Pass a negative <paramref name="groupLeaderAlt"/> for a round that does not lead.
-        /// Every round of an ammunition with GroupSize above 1 joins or creates a group
-        /// (Missile.cs:2129, :3244), so a single round leads a group of one, and in a salvo the
-        /// followers form on the leader, whose flight is the one the salvo keeps time to.
+        /// Missile.CreateWaypointConfigs (Missile.cs:2145-2425) for a non-kinematic round against a surface
+        /// target, followed by FastForwardWaypoints (Missile.cs:2809). Takes the raw ammunition values, in
+        /// Unity units and degrees, so the lab can rebuild the route from a capture; null when there is no
+        /// route. A terrain follower's AboveTerrain heights equal absolute height plus the wave height over
+        /// open sea (TerrainUtils.cs:1590-1607), so the route is shared; flight over land is not modelled. A
+        /// group leader's final-flight and terminal legs fly GroupLeaderAlt (Missile.cs:2245, :2310); pass a
+        /// negative <paramref name="groupLeaderAlt"/> for a round that does not lead. Every round of an
+        /// ammunition with GroupSize above 1 joins or creates a group (Missile.cs:2129, :3244), so a single
+        /// round leads a group of one.
         /// </summary>
         internal static WaypointLeg[] BuildNonKinLegs(
             float launchFlat, float targetAlt,
@@ -238,8 +228,7 @@ namespace AutoTOT
         /// through its waypoint (Waypoint.cs:444).</summary>
         private const float WaypointClampProgressLimit = 0.95f;
 
-        /// <summary>A completed leg hands on its settings only past this progress
-        /// (Waypoint.cs:687).</summary>
+        /// <summary>A completed leg hands on its settings only past this progress (Waypoint.cs:687).</summary>
         private const float LegSkipCopyProgress = 0.01f;
 
         /// <summary>Unity's Vector3 equality threshold on the squared difference.</summary>

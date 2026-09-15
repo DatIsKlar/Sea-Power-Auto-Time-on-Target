@@ -6,17 +6,16 @@ using UnityEngine;
 namespace AutoTOT
 {
     /// <summary>
-    /// Hud (partial) ; row data: which ships can shoot, the missile rows each offers with stock,
-    /// range and guidance channels applied, the per-frame caches behind them, the shared-group
-    /// check, and the selection prune.
+    /// Hud (partial): row data, meaning the ships that can shoot, the missile rows each offers with stock,
+    /// range and guidance channels applied, the per-frame caches behind them, the shared-group check and the
+    /// selection prune.
     /// </summary>
     internal sealed partial class Hud
     {
-        // The slower per-row questions a drawn row asks the game, answered once per frame. OnGUI
-        // makes two to four passes a frame and every pass used to ask again; the launch-envelope one
-        // integrates a submarine's ascent or an aircraft's descent step by step. Answering once also
-        // keeps the Layout and Repaint passes agreeing on which warning lines exist. Keyed like
-        // _checked and pruned with it; an entry is reused across frames, so a row allocates once.
+        // The slower questions a drawn row asks the game, answered once per frame: OnGUI makes several passes
+        // a frame, the launch-envelope question steps a whole ascent or descent, and one answer keeps the
+        // Layout and Repaint passes agreeing on which warnings exist. Keyed and pruned like _checked; entries
+        // are reused across frames.
         private sealed class RowFacts
         {
             internal int Frame = -1;
@@ -29,8 +28,8 @@ namespace AutoTOT
         private readonly Dictionary<string, RowFacts> _rowFacts = new Dictionary<string, RowFacts>();
 
         /// <summary>
-        /// A shared-missile-group finding for one row: several checked shooters are close enough to
-        /// feed ONE group, and between them they have staged more rounds than that group can hold.
+        /// A shared-missile-group finding for one row: checked shooters close enough to feed one group have
+        /// staged more rounds than that group can hold.
         /// </summary>
         private struct GroupShare
         {
@@ -40,9 +39,8 @@ namespace AutoTOT
             public int Shooters;    // how many shooters are inside that radius, this one included
         }
 
-        // Rebuilt once per drawn frame, keyed like _checked/_salvo. Cross-shooter by nature, so it
-        // cannot be computed from inside a single row. Frame-gated like _rowCache: this pass is
-        // O(shooters^2) and OnGUI fires several events per frame.
+        // Rebuilt once per drawn frame, keyed like _checked and _salvo. It spans shooters, so no single row
+        // can compute it, and it is frame-gated because the pass is O(shooters^2).
         private readonly Dictionary<string, GroupShare> _groupShare = new Dictionary<string, GroupShare>();
 
         private int _groupShareFrame = -1;
@@ -51,10 +49,9 @@ namespace AutoTOT
         {
             _shootersCache.Clear();
 
-            // A group, once assembled, IS the shooter list. Members are listed even when they carry
-            // nothing that can engage the current target: the per-ship "no missiles that can engage
-            // this target" line is the answer the player needs, and silently dropping the ship
-            // instead looks like the group forgot it.
+            // An assembled group is the shooter list. Members that cannot engage the current target stay
+            // listed: their "no missiles that can engage this target" line answers the player, and dropping
+            // them looks like the group forgot them.
             if (_group.Count > 0)
             {
                 for (int i = 0; i < _group.Count; i++)
@@ -67,32 +64,22 @@ namespace AutoTOT
 
             if (_anchor == null || _anchor.IsDestroyed) return _shootersCache;
 
-            // No roster means "follow the selection", and the selection is one ship. Shooting with
-            // more than one hull goes through the roster, which is the only place the panel keeps
-            // a shooter list; there is no second, invisible way to assemble one.
+            // No roster means the shooter is the selected ship; several hulls shoot only through the roster.
             if (IsMissileShip(_anchor)) _shootersCache.Add(_anchor);
             return _shootersCache;
         }
 
         /// <summary>
-        /// Finds rows whose shooters will share one missile group and have staged more rounds than
-        /// the group can hold. Rebuilt once per drawn frame, before the row loop.
+        /// Finds rows whose shooters will share one missile group and have staged more rounds than it can
+        /// hold. Rebuilt once per drawn frame, before the row loop.
         ///
-        /// Grouped ammo (GroupSize > 1) does not consume a fire-control channel per round: the first
-        /// round away forms a group and holds one channel, and every later round that JOINS that
-        /// group skips the channel check entirely. One ship therefore empties its magazine through a
-        /// single channel, which is why a lone Slava fires all 16 SS-N-12.
-        ///
-        /// The trap is a second shooter within the ammo's GroupJoinRange. Its rounds join the FIRST
-        /// ship's group instead of forming their own, so it never engages its own channels; the
-        /// shared group fills at GroupSize, nothing more can join, and neither ship has a spare
-        /// channel left. Both launchers then sit in the game's ReadyUpWhileWaiting with loaded tubes.
-        /// Measured: two Slavas 8 or 13 nm apart put up 16 rounds between them, the same pair at 25
-        /// or 40 nm put up all 32. Beyond the join range each ship forms its own group and is fine.
-        ///
-        /// The game measures group leader to firing mount, not ship to ship. Ship separation is the
-        /// proxy used here because the leader starts at its shooter, and at decision time (before
-        /// anything has launched) there is no leader to measure against.
+        /// Grouped ammo (GroupSize > 1) forms a group with its first round, which holds one fire-control
+        /// channel; later rounds that join skip the channel check, so one ship can empty its magazine through
+        /// a single channel. A second shooter inside the ammo's GroupJoinRange joins the first ship's group
+        /// instead of forming its own: the group fills at GroupSize, nothing more can join, and both
+        /// launchers sit in ReadyUpWhileWaiting with loaded tubes. The game measures group leader to firing
+        /// mount; ship separation is the proxy here, because the leader starts at its shooter and nothing has
+        /// launched at decision time.
         /// </summary>
         private void RecomputeGroupSharing(List<ObjectBase> shooters)
         {
@@ -115,8 +102,8 @@ namespace AutoTOT
                     LauncherFactsSource.Facts f = LauncherFactsSource.Get(a, r.AmmoId);
                     if (!f.Valid || !f.CanGroup || f.MaxGroupSize <= 1 || f.GroupJoinRangeU <= 0f) continue;
 
-                    // The game groups on _ammunitionFileName, not on the ammo id, and the two are
-                    // not interchangeable elsewhere in this codebase. Resolve both sides.
+                    // The game groups on _ammunitionFileName, not the ammo id, and the two are not
+                    // interchangeable; resolve both sides.
                     string ammoFile = a.getAmmunitionByName(r.AmmoId)?._ap?._ammunitionFileName;
                     if (string.IsNullOrEmpty(ammoFile)) continue;
 
@@ -160,12 +147,10 @@ namespace AutoTOT
             public string AmmoId;
             public int Count;          // rounds selectable here: stock, launcher and channels applied
             public bool InRange;
-            // Which of the two bounds an unselectable row failed. The row states it as a
-            // comparison against the live range ("312.0nm > max range", "12.4nm < min range"), so
-            // the near and far cases read the same way round.
+            // Which bound an unselectable row failed; the row prints the live range against it ("312.0nm >
+            // max range", "12.4nm < min range").
             public bool TooClose;      // inside the weapon's minimum, rather than beyond its maximum
-            // Guidance-channel state, carried so the row can EXPLAIN a count of zero instead of
-            // vanishing. int.MaxValue = this ammunition is not channel-limited at all.
+            // Guidance-channel state, so the row can explain a count of zero. int.MaxValue: not channel-limited.
             public int ChannelCap;
             public int ChannelsElsewhere;   // rounds of it already staged at other targets
         }
@@ -178,8 +163,8 @@ namespace AutoTOT
             return false;
         }
 
-        // Cached wrapper around EngageRows ; materialises the IEnumerable to a list once per
-        // ship per frame, then returns the same list for all callers within that frame.
+        // Cached wrapper around EngageRows: materialised once per ship per frame and shared by every caller
+        // in that frame.
         private List<Row> CachedEngageRows(ObjectBase ship)
         {
             int id = ship.GetInstanceID();
@@ -191,10 +176,9 @@ namespace AutoTOT
             }
             catch (System.Exception e)
             {
-                // One unreadable ship used to take the whole panel down through DrawWindow, and the
-                // stack that came out named neither the ship nor the ammo. Contain it here: the ship
-                // lists as carrying nothing, everything else still draws, and the log says which hull
-                // and how many rows it managed before it threw.
+                // Contained here so one unreadable ship cannot take the panel down through DrawWindow: the
+                // ship lists as carrying nothing, the rest draws, and the log names the hull and how many
+                // rows it built before the throw.
                 list.Clear();
                 if (_rowErrorLogged.Add(id))
                     Bootstrap.Log.LogError(
@@ -205,30 +189,26 @@ namespace AutoTOT
             return list;
         }
 
-        // Ships whose row build already threw, so the log carries one report each rather than one
-        // per frame. Instance ids, cleared with the rest of the selection state.
+        // Ships whose row build already threw, so each is reported once. Instance ids, cleared with the
+        // selection state.
         private readonly HashSet<int> _rowErrorLogged = new HashSet<int>();
 
         /// <summary>
-        /// Rounds of this ammo this ship already has staged at OTHER targets. Entries for the
-        /// current target are excluded because committing the current selection replaces them
-        /// (AddToStrike removes the matching Unit+Ammo+Target entry first), so counting them would
-        /// charge the same rounds twice while the player edits a row they have already staged.
+        /// Rounds of this ammo this ship already has staged at other targets. The current target's entries
+        /// are excluded: staging the selection replaces them (AddSelectionToStrike), so counting them would
+        /// charge the same rounds twice.
         /// </summary>
         private int StagedElsewhere(ObjectBase ship, string ammoId)
         {
-            // Rounds the coordinator is already holding for this ship count too. They are a
-            // different pool (orders taken in through Alt+H or auto-coordination, plus anything
-            // committed and not yet away) and the panel used to ignore them entirely, so four
-            // rounds collected in-game still left the panel offering four more.
+            // Rounds the coordinator already holds for this ship count too: orders taken in through Alt+H or
+            // AUTO, plus anything committed and not yet away.
             return Coordinator.HeldRounds(ship, ammoId) + StrikeRounds(ship, ammoId, _target);
         }
 
         /// <summary>
-        /// Rounds of this ammunition the ship owes to orders that are not this target's: staged in
-        /// the panel against another target, plus everything the coordinator is holding or has
-        /// dispatched without seeing away. The magazine analogue of <see cref="StagedElsewhere"/>,
-        /// which answers the same question for guidance channels.
+        /// Rounds of this ammunition the ship owes elsewhere: staged in the panel at another target, plus
+        /// everything the coordinator holds or has dispatched without seeing away. The magazine counterpart
+        /// of <see cref="StagedElsewhere"/>.
         /// </summary>
         private int AmmoCommittedElsewhere(ObjectBase ship, string ammoId)
         {
@@ -236,9 +216,8 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// True if anything staged in the panel has filled its shooter's guidance channels. The
-        /// coordinator's own flag cannot see planner picks until the strike is fired, and the title
-        /// bar is the only place this is readable with the panel collapsed.
+        /// True if anything staged in the panel has filled its shooter's guidance channels. The coordinator's
+        /// flag cannot see planner picks until the strike fires, and the title bar shows this with the panel collapsed.
         /// </summary>
         private bool AnyStagedChannelCap()
         {
@@ -251,16 +230,14 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// Rounds staged in the panel for this ship and ammunition, across every target. Published
-        /// to the coordinator so the intake gate can see picks that have not been fired yet; the
-        /// mirror of <see cref="StagedElsewhere"/> reading the coordinator's own holdings.
+        /// Rounds staged in the panel for this ship and ammunition at every target, published so the
+        /// coordinator's intake gate sees picks not yet fired.
         /// </summary>
         private int StagedRoundsFor(ObjectBase ship, string ammoId) => StrikeRounds(ship, ammoId, null);
 
         /// <summary>
-        /// Rounds staged in the panel for this ship and ammunition, skipping the entries aimed at
-        /// <paramref name="exceptTarget"/> (null counts every target). The walk behind the three
-        /// helpers above.
+        /// Rounds staged in the panel for this ship and ammunition, skipping entries aimed at
+        /// <paramref name="exceptTarget"/> (null counts every target).
         /// </summary>
         private int StrikeRounds(ObjectBase ship, string ammoId, ObjectBase exceptTarget)
         {
@@ -275,9 +252,8 @@ namespace AutoTOT
             return n;
         }
 
-        // Missiles this ship carries that can engage the current target (by type). Each row
-        // also reports whether the target is within that missile's max range. With no target,
-        // all missiles are listed and treated as in range.
+        // Missiles this ship carries that can engage the current target, each with whether the target is in
+        // range. With no target, all missiles are listed as in range.
         private IEnumerable<Row> EngageRows(ObjectBase ship)
         {
             if (ship == null) yield break;
@@ -299,12 +275,9 @@ namespace AutoTOT
                     if (!ship.DoesAmmoMatchTarget(a._ap, _target, out _))
                         continue;
                     inRange = dist <= ship.GetMaxRangeForAmmo(a, _target);
-                    // The near bound, which the game enforces just as hard as the far one and
-                    // which this panel used to ignore entirely: 290 of the game's 437 ammunition
-                    // files carry a minimum, and inside it the launcher turns the ship to unmask
-                    // and then refuses to fire, forever. Folded into the SAME flag as the far
-                    // bound on purpose, so every caller that already filters on InRange (+ TARGET,
-                    // + FORMATION, the fire buttons) is covered without touching any of them.
+                    // The near bound: inside a weapon's minimum range the launcher turns the ship to unmask
+                    // and then never fires. Folded into the same flag as the far bound, so every caller
+                    // filtering on InRange (+ TARGET, + FORMATION, the fire buttons) is covered.
                     if (inRange &&
                         LaunchEnvelope.IsInsideMinimumRange(ship, a._ap, _target, out _, out _))
                     {
@@ -313,36 +286,26 @@ namespace AutoTOT
                     }
                 }
 
-                // Cap the selectable count at what the serving launchers can actually fire (loaded +
-                // magazine reserve), not the ship-wide inventory ; otherwise the salvo picker could
-                // request rounds sitting behind an unusable launcher, and the strike fires short.
+                // Cap at what the serving launchers can fire (loaded plus magazine reserve), not the
+                // ship-wide inventory, or the picker could ask for rounds behind an unusable launcher and the
+                // strike would fire short.
                 int stock = Mathf.Min(kv.Value, LauncherFactsSource.AvailableRounds(ship, kv.Key));
-                // Rounds of this ammunition already spoken for elsewhere: staged at ANOTHER target
-                // in this panel, held by the coordinator, or dispatched and not yet away. The
-                // channel cap below subtracts its own kind of commitment, but ordinary ammunition
-                // has no channel cap at all, so before this a ship could be staged past its
-                // magazine by visiting two targets.
+                // Minus rounds already spoken for: staged at another target, held by the coordinator, or
+                // dispatched and not yet away. Ordinary ammunition has no channel cap, so without this a ship
+                // could be staged past its magazine.
                 stock = Mathf.Max(0, stock - AmmoCommittedElsewhere(ship, kv.Key));
                 if (stock <= 0) continue;   // nothing physically firable: the row has no purpose
-                // Second cap: a radio-command weapon that cannot group holds one fire-control
-                // channel per round in flight, so the boat physically cannot put up more than it
-                // has channels. Offering more cannot deliver them: the surplus launches, fails to
-                // win a channel and self-destructs. See LauncherFactsSource.GuidanceChannelCap.
-                //
-                // Budget is per SHIP, not per target, so rounds this ship already has staged at
-                // other targets come off the count offered here. Without that subtraction each
-                // target was offered the full budget and a multi-target strike quietly ordered a
-                // multiple of it. Coordinator.ClampToGuidanceChannels is the backstop that also
-                // covers orders issued in the game's own interface; this only keeps the number the
-                // panel shows honest while staging.
+                // Second cap: a radio-command weapon that cannot group holds one fire-control channel per
+                // round in flight, and surplus rounds launch, fail to win a channel and self-destruct (see
+                // LauncherFactsSource.GuidanceChannelCap). The budget is per ship, so rounds staged at other
+                // targets come off it. Coordinator.ClampToGuidanceChannels is the backstop and also covers
+                // orders from the game's own interface.
                 int cap = LauncherFactsSource.GuidanceChannelCap(ship, kv.Key);
                 int elsewhere = cap == int.MaxValue ? 0 : StagedElsewhere(ship, kv.Key);
                 int left = cap == int.MaxValue ? int.MaxValue : Mathf.Max(0, cap - elsewhere);
 
-                // Count may legitimately be 0 here, and the row is still emitted. Dropping it left
-                // the ammunition simply missing from the list the moment its channels were spent at
-                // another target, with nothing to say why; the row explains itself instead and
-                // renders unselectable, the same way an out-of-range one does.
+                // Count may be 0 and the row is still emitted, unselectable, so it explains itself instead of
+                // vanishing.
                 yield return new Row
                 {
                     AmmoId = kv.Key,
@@ -355,11 +318,10 @@ namespace AutoTOT
             }
         }
 
-        // Remove entries from _checked/_salvo for ships that no longer exist, preventing unbounded
-        // dictionary growth over long sessions. Liveness is tested against the game's own unit list
-        // (ObjectsManager._listOfAllUnits, which drops an object on destruction) ; NOT against the
-        // currently-selected shooters, which would wrongly wipe saved selections for every ship the
-        // player isn't looking at right now.
+        // Drop _checked and _salvo entries for ships that no longer exist, so they do not grow over a long
+        // session. Liveness is tested against the game's unit list (ObjectsManager._listOfAllUnits drops an
+        // object on destruction), not the current shooters, which would wipe the saved selections of every
+        // ship out of view.
         private static readonly HashSet<int> _liveIdScratch = new HashSet<int>();
 
         private readonly List<string> _deadKeyScratch = new List<string>();
@@ -391,8 +353,8 @@ namespace AutoTOT
                 _rowFacts.Remove(_deadKeyScratch[i]);
             }
 
-            // Same liveness test for the staged strike: a shot whose shooter or target has died can
-            // never be fired, and holding the reference keeps a destroyed object alive.
+            // Same liveness test for the staged strike: a shot with a dead shooter or target can never fire,
+            // and the reference would keep a destroyed object alive.
             _strike.RemoveAll(sh =>
                 sh.Unit == null || sh.Target == null ||
                 !_liveIdScratch.Contains(sh.Unit.GetInstanceID()) ||
@@ -410,9 +372,8 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// True if a direct fire at the current target would fire anything: a checked, in-range row
-        /// with rounds left that is not already staged against this target. Ticks outlive + TARGET,
-        /// so without the staged test the fire buttons stayed live for rows the strike will fire.
+        /// True if a direct fire at the current target would fire anything: a checked, in-range row with
+        /// rounds left that is not already staged at this target (ticks outlive + TARGET).
         /// </summary>
         private bool AnyFireable(List<ObjectBase> shooters)
         {

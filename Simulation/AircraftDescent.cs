@@ -6,12 +6,10 @@ using UnityEngine;
 namespace AutoTOT
 {
     /// <summary>
-    /// How long an aircraft needs to reach a commanded altitude, by stepping the game's own pitch
-    /// logic. Written for DESCENT, which is the direction a launch envelope needs: an aircraft above
-    /// its weapon's launch band must come down before it can fire.
+    /// How long an aircraft needs to reach a commanded altitude, by stepping the game's own pitch logic. Written for
+    /// descent, the direction a launch envelope needs: an aircraft above its weapon's launch band must come down first.
     ///
-    /// The whole vertical answer is <c>FixedWingFlightPhysics.GetDesiredPitch()</c>, which is a
-    /// LIMIT times a PROXIMITY TAPER:
+    /// The vertical answer is <c>FixedWingFlightPhysics.GetDesiredPitch()</c>, a limit times a proximity taper:
     ///
     ///   taper = clamp(err / thresholdAltitude, -1, 1)          // err = commanded - current
     ///   limit = (descend) min(|_maxOutOfCombatDescentPitch|, maxDivePitchDeg)     // a parameter
@@ -19,19 +17,14 @@ namespace AutoTOT
     ///   pitch -> limit * taper, rate-limited by _maxTurnRates.x
     ///   verticalRate = TAS * sin(pitch)
     ///
-    /// then tightened near the target by a G-limited pull-out term built from _maxG / _minG. Note
-    /// the asymmetry: CLIMB is energy-limited (thrust, drag, air density) while DESCENT is merely
-    /// parameter-limited, so descent is both the easier half and the one that matters here. Climb
-    /// is not implemented; it needs GetMaxClimbPitch, whose _dragPower is private.
+    /// then tightened near the target by a G-limited pull-out term built from _maxG / _minG; in combat the
+    /// game uses the combat pitch pair. Climb is energy-limited (thrust, drag, air density) and not
+    /// implemented, since GetMaxClimbPitch needs the private _dragPower; descent is only parameter-limited.
     ///
-    /// TAS is derived from MACH, not held in knots. Aircraft hold a commanded Mach, so true airspeed
-    /// changes with altitude purely because the speed of sound does: a measured descent held Mach
-    /// 0.964 to 0.957 from 64k to 20k ft while TAS rose from 552 to 586 kn.
-    ///
-    /// ACCURACY: mean absolute error 5.2% over four measured descents on two airframes, 64k to 3k ft
-    /// (submarine ascent, for comparison, is 1.4%). The residual is consistently positive, so this
-    /// runs slightly slow. Do not tune it out; the remaining terms are known and unmodelled, chiefly
-    /// that the game's pitch controller is a proportional loop rather than the rate limit used here.
+    /// TAS is derived from Mach, not held in knots: aircraft hold a commanded Mach, so true airspeed changes
+    /// with altitude as the speed of sound does. The estimate runs consistently slightly slow (about 5%); the
+    /// known unmodelled term is that the game's pitch controller is a proportional loop rather than the rate
+    /// limit used here, so do not tune it out.
     ///
     /// Pure arithmetic apart from the atmosphere lookups, matching <see cref="SubmarineAscent"/>.
     /// </summary>
@@ -45,14 +38,11 @@ namespace AutoTOT
         internal struct State
         {
             public float AltitudeU;        // current, unity units, positive up
-            // Two DIFFERENT altitudes, and conflating them was worth 14s on a 40s estimate.
-            // GateAltU is the launch ceiling: a THRESHOLD to cross, after which the weapon can fire.
-            // CommandAltU is what the aircraft is actually flying to, and it is the only thing
-            // GetDesiredPitch tapers against. For an anti-ship strike the hardpoint explicitly does
-            // NOT clamp the commanded altitude to the ceiling (WeaponSystemHardpoint.cs:1147, the
-            // EngageSurfaceContact exclusion), so the aircraft descends through the ceiling at full
-            // pitch instead of levelling onto it. Tapering against the ceiling invented a long
-            // asymptotic settle that never happens.
+            // Two different altitudes. GateAltU is the launch ceiling, a threshold to cross before the weapon
+            // can fire. CommandAltU is what the aircraft flies to and the only thing GetDesiredPitch tapers
+            // against; on an anti-ship strike the hardpoint does not clamp it to the ceiling
+            // (WeaponSystemHardpoint.cs:1147, the EngageSurfaceContact exclusion), so the aircraft crosses
+            // the ceiling at full pitch instead of levelling onto it.
             public float GateAltU;         // launch ceiling, the altitude to get below
             public float CommandAltU;      // the aircraft's own commanded altitude, drives the taper
             public float Mach;             // held constant; TAS follows the atmosphere
@@ -64,12 +54,11 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// Seconds to descend below <see cref="State.GateAltU"/>, the launch ceiling. False when the seed is unusable or the
-        /// aircraft makes no progress. Only descent is modelled: a climb request returns false rather
-        /// than a wrong answer.
+        /// Seconds to descend below <see cref="State.GateAltU"/>, the launch ceiling. False when the seed is
+        /// unusable or the aircraft makes no progress; a climb request returns false rather than a wrong answer.
         ///
-        /// <para><paramref name="trace"/> collects a sampled profile for the envelope-sim
-        /// diagnostic. Pass null on any path that runs per frame.</para>
+        /// <para><paramref name="trace"/> collects a sampled profile for the envelope-sim diagnostic. Pass null on any
+        /// per-frame path.</para>
         /// </summary>
         internal static bool TryEstimate(State s, out float seconds, StringBuilder trace)
         {
@@ -77,8 +66,7 @@ namespace AutoTOT
             if (!GameMath.IsFinite(s.AltitudeU) || !GameMath.IsFinite(s.GateAltU) || !GameMath.IsFinite(s.CommandAltU) || s.Mach <= 0f ||
                 s.PitchRateDeg <= 0f || s.DescentLimitDeg <= 0f || s.ThresholdAltU <= 0f) return false;
             if (s.GateAltU >= s.AltitudeU) return false;     // already inside the band
-            // Commanded no lower than the ceiling: the aircraft is not descending far enough to get
-            // under the gate on its own, so it never arrives. Same answer, and same meaning, as the
+            // Commanded no lower than the ceiling: the aircraft never gets under the gate on its own, like a
             // submarine parked above its launch depth.
             if (s.CommandAltU >= s.GateAltU) return false;
 
@@ -91,9 +79,8 @@ namespace AutoTOT
                 float err = s.CommandAltU - alt;               // negative while descending
 
                 float taper = Mathf.Clamp(err / s.ThresholdAltU, -1f, 1f);
-                // Read once per step. The altitude does not move between here and the rate
-                // integration below, only the pitch does, so a second call would return the same
-                // number for another Atmosphere.SpeedOfSound trip into the game.
+                // Read once per step: only the pitch moves before the rate integration below, so a second
+                // call returns the same number.
                 float tasU = TrueAirspeedU(s.Mach, alt);
                 float vsp = (float)Math.Sin(pitch * Math.PI / 180.0) * tasU;
 

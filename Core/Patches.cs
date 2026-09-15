@@ -17,8 +17,7 @@ namespace AutoTOT
         // intercept our own call recursively.
         [System.ThreadStatic] internal static bool Bypass;
 
-        // Fault messages already logged, so a fault that repeats on every order is reported once.
-        // Capped: the set only has to stop a flood, not remember a whole session.
+        // Fault messages already logged (capped), so a repeating fault is reported once.
         private const int MaxFaultMessages = 32;
         private static readonly HashSet<string> _faultsLogged = new HashSet<string>();
 
@@ -46,31 +45,26 @@ namespace AutoTOT
                     return true; // not a coordinated player group missile attack ; run normally
                 }
 
-                // Deferred. Hand back a valid (but un-queued) EngageTask so the caller's
-                // logging (which reads engageTask._uid) doesn't NRE. It is never added to
-                // the ship's task list; the real task is created later by the Coordinator.
+                // Deferred: hand back an unqueued EngageTask so the caller's logging does not throw. The
+                // coordinator issues the real task later.
                 __result = new EngageTask(ammoId, targetObject, __instance, shotsToFire, priority, autoAttack, isFormationAttack);
                 return false;
             }
             catch (Exception e)
             {
-                // Never re-throw. InsertEngageTask is also reached from inside the game's per-object
-                // update, and GameMain.Update walks its objects with no try/catch, so an exception
-                // escaping here would stop every object after this one from updating for as long as
-                // the fault repeats: radars, AI and engage handling included. What happens to the
-                // order depends on how far TryIntercept got before it threw.
+                // Never re-throw: this can run inside GameMain.Update's per-object loop, which has no
+                // try/catch, so a throw would stop every later object updating. What happens to the order
+                // depends on how far TryIntercept got.
                 bool held = Coordinator.InterceptQueued;
                 LogFault(e, __instance, targetObject, ammoId, shotsToFire, isFormationAttack, autoAttack, held);
                 if (!held)
                 {
-                    // Nothing was held, so the game fires the order itself, as it would without the
-                    // mod. A batch this call opened for the target is still empty and is dropped.
+                    // Nothing held: the game fires the order itself. Drop the empty batch this call may have opened.
                     Coordinator.DiscardEmptyBatch(targetObject);
                     return true;
                 }
 
-                // The order is already held and the coordinator will release it. Letting the game
-                // run it as well would fire it twice.
+                // Already held and released later by the coordinator; letting the game run it too would fire it twice.
                 try { __result = new EngageTask(ammoId, targetObject, __instance, shotsToFire, priority, autoAttack, isFormationAttack); }
                 catch { }
                 return false;

@@ -15,10 +15,9 @@ namespace AutoTOT
         // brake, so it is declared once for the whole partial class rather than in each.
         internal const float ZeroDensityAltU = 1f / 0.00163f;
         private const float AltToleranceU = 0.5f;
-        // The game's OWN ini defaults, from AmmunitionParameters' ini reads: MaxLoftAngle 30,
-        // SeaSkimmingMaxDescentAngle 30, FinalFlightPhaseMaxAngle 30. Cited by KEY rather than by
-        // line: the decompile renumbers on every beta bump, and these four citations were already
-        // pointing at the previous one. Grep the key in AmmunitionParameters.cs to find the read.
+        // The game's own ini defaults (AmmunitionParameters' ini reads): MaxLoftAngle 30,
+        // SeaSkimmingMaxDescentAngle 30, FinalFlightPhaseMaxAngle 30. Cited by key rather than line, since
+        // the decompile renumbers on every game update.
         private const float DefaultClimbDeg = 30f;
         private const float DefaultDescentDeg = 30f;
         private const float BoostClimbDeg = 90f;
@@ -30,10 +29,11 @@ namespace AutoTOT
         // An ini angle field left at its default reads as 0. This is the "was it actually set"
         // threshold, well under any angle a real round commands.
         internal const float SetAngleEpsilonDeg = 0.01f;
-        /// <summary>SolveInput.SeekerBrakeRangeU for an ammunition that can never open the drag
-        /// brake window. Negative rather than zero, because zero is the struct's own default and has
-        /// to keep meaning "not known", so an object initializer that omits the field falls back to
-        /// the older altitude gate instead of silently claiming there is no window.</summary>
+        /// <summary>
+        /// SolveInput.SeekerBrakeRangeU for an ammunition that can never open the drag brake window.
+        /// Negative, because zero is the struct default meaning "not known", so an initializer that omits the
+        /// field falls back to the altitude gate.
+        /// </summary>
         internal const float NoSeekerBrakeWindow = -1f;
         /// <summary>g in knots per second, for converting an ini deceleration in g into knots/s.
         /// Shared with WaypointSim, which computes the same decel from the same two factors.</summary>
@@ -43,10 +43,8 @@ namespace AutoTOT
         /// <summary>Share of the launch range a round must take off the range before the
         /// closest-approach guard will believe it has closed. See the latch note in Solve.</summary>
         private const float RecedeCloseFraction = 0.002f;
-        // Sampling cadence for the `sim-track` trace. Defined once in TelemetryCadence, because the
-        // live `track` trace in LaunchDiagnostics has to sample at the same offsets for the two to
-        // be comparable. Aliased here rather than called directly so the step loop, which reads
-        // these, keeps its existing identifiers and generated code.
+        // Sampling cadence for the `sim-track` trace, defined once in TelemetryCadence so the live `track`
+        // trace samples at the same offsets. Aliased so the step loop keeps its identifiers and generated code.
         private const float TelemetrySampleIntervalSim = TelemetryCadence.SampleIntervalSim;
         private const float LaunchBurstWindowSim = TelemetryCadence.LaunchBurstWindowSim;
         private const float LaunchBurstIntervalSim = TelemetryCadence.LaunchBurstIntervalSim;
@@ -55,16 +53,13 @@ namespace AutoTOT
         private const float VacuumDivePitchThreshold = -40f;
         private const float VelocityEpsilonKn = 0.001f;
         private const float MinSpeedKn = 1f;
-        // The altitude controller's horizon is 2.0s of flight, which used to be spelt as
-        // 20 steps of the production 0.1s step. Held in seconds so changing the step changes
-        // only the numerical resolution, not the controller.
+        // The altitude controller's horizon, in seconds, so changing the step changes only the numerical resolution.
         private const float LookaheadSim = 2f;
         private const float MinLookaheadU = 50f;
         // Waypoint laws shared by every waypoint type, Kappa and Immediate alike. UpdateWaypoint
         // advances a waypoint's progress by at most 2.5 times this tick's flat travel, and steers at
         // a point 1.5 s ahead (DesiredPosition) while the pre-apex guard looks 8 s ahead
-        // (FuturePosition), Waypoint.cs:383-387. Named so they cannot be mistaken for per-weapon
-        // tuning.
+        // (FuturePosition), Waypoint.cs:383-387. Named so they cannot be mistaken for per-weapon tuning.
         private const float WaypointProgressCatchupMultiplier = 2.5f;
         private const float WaypointSteeringLookaheadSim = 1.5f;
         private const float WaypointFutureLookaheadSim = 8f;
@@ -78,13 +73,12 @@ namespace AutoTOT
         // BuildAltitudeNodes only constructs a loft curve when its loft leg exceeds one game unit.
         private const float MinimumLoftLegDistanceU = 1f;
 
-        // Isolation gates. Each mirrors one piece of the live mover's behaviour, kept separate
-        // so a single rebuild can A/B them independently. Every one below is validated and on.
-        // What each models: docs/model/03-trajectory.md.
+        // Isolation gates: each mirrors one piece of the live mover's behaviour, kept separate so one rebuild
+        // can A/B them. All are validated and on; what each models is in docs/model/03-trajectory.md.
 
-        // Bang-bang altitude control while TRANSITING, proportional once HOLDING, latched on first
-        // arrival. The real round holds full climb and only then noses over at _maxTurnRateDegrees,
-        // so the overshoot is the turn rate, not a defect.
+        // Bang-bang altitude control while transiting, proportional once holding, latched on first arrival.
+        // The real round holds full climb and then noses over at _maxTurnRateDegrees, so the overshoot is the
+        // turn rate, not a defect.
         private const bool LatchedProportionalHold = true;
 
         // TerminalApproach needs the seeker to hold an echo for SearchForTargetsTime, not just the
@@ -92,22 +86,20 @@ namespace AutoTOT
         // missile closes at CRUISE speed past its nominal _terminalApproachDist.
         private const bool SearchTimeTerminalOnset = true;
 
-        // Launch-phase fidelity. The game runs Launch -> ToBearing before any cruise/loft
-        // command, and both the commanded speed and the attitude the round leaves with differ
-        // there. Those first seconds become a fixed offset carried for the rest of the flight.
+        // Launch-phase fidelity: the game runs Launch -> ToBearing before any cruise or loft command, with a different
+        // commanded speed and attitude, and those first seconds carry as a fixed offset for the whole flight.
 
-        // ToBearing's exit condition, which decides WHEN the launch stage ends. It selects the
-        // commanded speed below; it does NOT command an attitude (reading it as one was falsified).
+        // ToBearing's exit condition, which decides when the launch stage ends. It selects the commanded
+        // speed below; it does not command an attitude.
         private const float ToBearingConeDeg = 5f;      // Missile.cs:343
         private const float ToBearingMaxSeconds = 10f;  // Missile.cs:343
 
-        // Launch/ToBearing command _maxVelocityInKnots; loft speed waits for MaintainLoftAlt
-        // (Missile.cs:3142-3145).
+        // Launch/ToBearing command _maxVelocityInKnots; loft speed waits for MaintainLoftAlt (Missile.cs:3142-3145).
         private const bool LaunchStageSpeed = true;
 
-        // Launch elevation from the launcher's container transform, NOT `_fixVerticalLaunchAngle`,
-        // which reads 35 deg for every launcher in the game because that is the ini default and its
-        // gating bool also defaults true (ObjectBaseLoader, ini key "FixVerticalLaunchAngle").
+        // Launch elevation from the launcher's container transform, not `_fixVerticalLaunchAngle`, which
+        // reads 35 deg for every launcher (the ini default, with its gating bool also defaulting true;
+        // ObjectBaseLoader, "FixVerticalLaunchAngle").
         private const bool LauncherTransformLaunchAngle = true;
 
         // A launcher that cannot train fires along its OWN bearing, so an off-bearing shot flies its
@@ -117,70 +109,49 @@ namespace AutoTOT
         // A vertical rail has no bearing of its own, so the round leaves carrying the SHIP's yaw.
         private const bool VerticalLaunchInheritsShipHeading = true;
 
-        // Pitch, yaw and roll share ONE rotation budget, so modelling the axes independently spends
-        // it twice: 90 deg of pitch with 90 deg of heading error is 120 deg of quaternion travel,
-        // not 90. An on-bearing shot is unaffected, the step reducing to MoveTowards. Requires the
-        // attitude to PERSIST across steps, or the budget spent on roll is refunded every step and
-        // the gate goes inert.
+        // Pitch, yaw and roll share one rotation budget, so independent axes would spend it twice: 90 deg of
+        // pitch with 90 deg of heading error is 120 deg of quaternion travel. An on-bearing shot reduces to
+        // MoveTowards. The attitude must persist across steps, or the budget spent on roll is refunded every step.
         //
-        // Both mover paths spend one budget, which is why this is NOT scoped to Kinematics == None.
-        // Legacy (Kinematics == None) takes one Quaternion.RotateTowards over the whole rotation
-        // (WeaponBase.setCourseTowardsPositionLegacy, the else of its split); Kinematics == Full
-        // takes one Vector3.RotateTowards over the forward vector for a surface target, or one
-        // Quaternion.AngleAxis cone for an air target (setCourseTowardsPosition). The Full path
-        // excludes roll from that budget and levels separately, so the mod's coupled path rotating
-        // an attitude with roll zero is the matching shape. Only the per-axis split is different,
-        // and it needs a TerminalVerticalTurnRate diverging from MaxTurnRate by more than 1 deg/s,
-        // which 6 of 446 shipped ammunition declare.
+        // Not scoped to Kinematics == None, because both mover paths spend one budget: Legacy takes one
+        // Quaternion.RotateTowards over the whole rotation (WeaponBase.setCourseTowardsPositionLegacy), Full
+        // one Vector3.RotateTowards over the forward vector for a surface target or one Quaternion.AngleAxis
+        // cone for an air target (setCourseTowardsPosition). Full levels roll separately, which matches
+        // rotating an attitude with roll zero. Only the per-axis split differs, needing a
+        // TerminalVerticalTurnRate more than 1 deg/s from MaxTurnRate (6 of 446 ammunition).
         private const bool CoupledPitchYawRateLimit = true;
 
-        // While in ToBearing the mover floors the turn rate at LaunchTurnRate when the ini sets it
-        // above the ordinary rate (WeaponBase.setCourseTowardsPosition, the toBearingState branch).
-        // Three shipped ammunition set it, and one of them is a mainstream strike round:
-        // usn_rgm-84a at 40 deg/s against a MaxTurnRate of 15, wp_sa-n-6 at 40 against 20,
-        // wp_sa-n-9 at 360 against 30. Left unmodelled the round turns onto its target too slowly,
-        // flies further off-axis, and the estimate runs LATE. rgm-84c and rgm-84d leave the key at
-        // its default, so the error shows on the A-variant alone and reads as scatter.
+        // In ToBearing the mover floors the turn rate at LaunchTurnRate when the ini sets it above the
+        // ordinary rate (WeaponBase.setCourseTowardsPosition, the toBearingState branch). Three shipped
+        // ammunition set it (usn_rgm-84a 40 deg/s against MaxTurnRate 15, wp_sa-n-6 40 against 20, wp_sa-n-9
+        // 360 against 30); unmodelled, the round turns onto its target too slowly and the estimate runs late.
         private const bool LaunchTurnRateOverride = true;
 
-        // The mover converts the commanded turn rate into a G-load at the round's CURRENT speed and
-        // cuts the rate when it exceeds MaxTurnG (WeaponBase.setCourseTowardsPosition, ahead of the
-        // Kinematics dispatch, so both paths derate). Unmodelled, the round turns harder than the
-        // game lets it and the estimate runs early.
-        //
-        // Inert on every anti-ship missile in the game: none sets MaxTurnG, so all take the 200 g
-        // default, and the fastest of them reaches 14.2 g. It is not inert generally. 82 shipped
-        // ammunition set MaxTurnG, 25 being the most common value, and 57 missiles exceed their own
-        // limit at max speed, down to 0.26x on usn_rim-2f. Every one is a SAM or an AAM, which the
-        // coordinator will plan for: it filters to Ammunition.Type.Missile and DoesAmmoMatchTarget
-        // and no further.
+        // The mover converts the commanded turn rate into a G-load at the current speed and cuts the rate
+        // above MaxTurnG (WeaponBase.setCourseTowardsPosition, ahead of the Kinematics dispatch, so both
+        // paths derate); unmodelled, the round turns harder than the game allows and the estimate runs early.
+        // Inert on anti-ship missiles (none sets MaxTurnG, so all take the 200 g default), but 57 SAMs and
+        // AAMs exceed their own limit at max speed, and the coordinator plans for those too.
         private const bool TurnRateGDerate = true;
 
-        // Non-kinematic + SupportsBanking gets a SECOND rotation call per tick: RollTowardsLevel
-        // takes its banking branch into performToTargetRoll, a hardcoded 60 deg/s RotateTowards on
-        // top of the normal one. Cited by name rather than by line, because the decompile
-        // renumbers on every beta bump. performToTargetRoll assigns local euler to WORLD rotation,
-        // which is gimbal-degenerate near vertical, so after a VLS launch that budget lands on
-        // PITCH. The two sum.
+        // Non-kinematic + SupportsBanking gets a second rotation call per tick: RollTowardsLevel's banking
+        // branch into performToTargetRoll, a hardcoded 60 deg/s RotateTowards on top of the normal one. It
+        // assigns local euler to world rotation, gimbal-degenerate near vertical, so after a VLS launch that
+        // budget lands on pitch and the two sum.
         private const bool BankingAddsRollBudgetToPitch = true;
         private const float BankingRollRateDeg = 60f;   // WeaponBase.cs:1792, hardcoded
 
-        // Except while the ToBearing turn-rate override is in force. The override makes the rate
-        // differ from MaxTurnRate, and WeaponBase.setCourseTowardsPositionLegacy then rotates roll,
-        // yaw and pitch in three separate calls, pitch at its own rate. Measured on plan_yj-18a:
-        // 50.0 deg/s through ToBearing, its LaunchTurnRate, against the 110 the addend flew. The
-        // addend stays everywhere else: no vertical launch without an override has been measured.
-        // Settable so the lab can score the same build with it on and off.
+        // Except while the ToBearing turn-rate override is in force: the rate then differs from MaxTurnRate, and
+        // WeaponBase.setCourseTowardsPositionLegacy rotates roll, yaw and pitch in three calls, pitch at its own rate
+        // (plan_yj-18a flies 50 deg/s through ToBearing, its LaunchTurnRate). Settable so the lab can score both.
         internal static bool ToBearingOverrideOwnsPitch = true;
 
         // The 90 deg boost climb is scoped to isHighBallisticLofter, not to kinematic ammo at large:
         // AllowExceedingAngleLimits (Missile.cs:2197) permits exceeding the commanded angle but does
         // not make the command 90. A round lofting inside the atmosphere flies its own MaxLoftAngle.
 
-        // `launch-rail` reports pure LAUNCHER GEOMETRY, independent of any missile flying, so it is
-        // emitted from the planning path rather than behind emitDiag. Keyed by (unit, ammo) and
-        // re-emitted only when the rail MOVES: a trainable mount's slew is captured, a fixed rail
-        // logs once and goes quiet.
+        // `launch-rail` reports launcher geometry independent of any missile, so it is emitted from the
+        // planning path rather than behind emitDiag. Keyed by (unit, ammo) and re-emitted only when the rail moves.
         private static readonly System.Collections.Generic.Dictionary<string, float> _railLogged =
             new System.Collections.Generic.Dictionary<string, float>();
         private static readonly System.Collections.Generic.Dictionary<string, float> _railLoggedAz =
@@ -241,11 +212,10 @@ namespace AutoTOT
 
                     float railDeg = rail != null ? GameMath.ElevationDeg(rail.forward) : float.NaN;
 
-                    // A launcher that cannot move fires along the rail as built. One that can
-                    // move aims first, so its CURRENT transform is wherever it is parked and
-                    // must never be read as a launch attitude -- compute the game's own aim
-                    // instead (alignToTarget:1360-1377; RotateWeaponToAngle:1644 confirms the
-                    // angle passed there becomes the gun's local elevation).
+                    // A fixed launcher fires along the rail as built. A trainable one aims first, so its
+                    // current transform is wherever it is parked and never a launch attitude; compute the
+                    // game's own aim instead (alignToTarget:1360-1377; RotateWeaponToAngle:1644 makes that
+                    // angle the gun's local elevation).
                     fixedRail = vwp != null
                              && !vwp._isMountRotatable && !vwp._areContainersRotatable;
                     float predictedPitch = -1f;
@@ -273,10 +243,9 @@ namespace AutoTOT
                         }
                     }
 
-                    // Horizontal analogue of railDeg: rail bearing vs bearing to target. `bearingErr`
-                    // cannot see this, measuring the SHIP's heading instead. Meaningless when the
-                    // rail is near-vertical, which is every VLS shot. Trace-only, like everything
-                    // it feeds, so it is not formatted on every estimate the panel asks for.
+                    // Horizontal analogue of railDeg: rail bearing against bearing to target, which
+                    // `bearingErr` (the ship's heading) cannot see. Meaningless for a near-vertical rail.
+                    // Trace-only, so it is not formatted for every panel estimate.
                     float railAzDeg = float.NaN;
                     if (rail != null && Coordinator.TraceFlightModel)
                     {
@@ -289,8 +258,7 @@ namespace AutoTOT
                         }
                     }
 
-                    // Re-emitted whenever the rail moves, so the formula above is measured rather
-                    // than assumed.
+                    // Re-emitted whenever the rail moves, so the formula above is measured rather than assumed.
                     if (Coordinator.TraceFlightModel && vwp != null)
                     {
                         string railKey = unit.GetInstanceID() + "/" + (ap._ammunitionFileName ?? "?");
@@ -313,10 +281,9 @@ namespace AutoTOT
                                 string E(Transform tr) => tr == null ? "n/a"
                                     : GameMath.ElevationDeg(tr.forward).ToString("0.0") + "°";
                                 Bootstrap.Log.LogInfo(
-                                    // The sim stamp. This
-                                    // trace is the best available proxy for a manoeuvring aircraft's
-                                    // heading through a launch wait, and without a time it cannot be
-                                    // lined up against envelope-track or engage-state.
+                                    // The sim stamp, so this trace (the best proxy for a manoeuvring
+                                    // aircraft's heading through a launch wait) lines up against
+                                    // envelope-track and engage-state.
                                     $"[AutoTOT] launch-rail {ap._ammunitionFileName} " +
                                     $"at sim {GameClock.SimNow():0.0}: " +
                                     $"gunObj {E(railGun)}, containerBase {E(railBase)}, mount {E(railMount)}, " +
@@ -348,19 +315,11 @@ namespace AutoTOT
         {
             try
             {
-                // Which launcher the round leaves from, asked the way the GAME asks it.
-                //
-                // Fixed mounts for one ammo can point in completely different directions (two
-                // MK141s, Port and Starboard, 180 deg apart), and the round flies off the canister
-                // it was in, so reading the wrong one costs the whole turn between them: a Spruance
-                // Harpoon was modelled 180 deg out on nine rounds of ten and one of them scored
-                // +5.28 s against +0.95 for its sibling.
-                //
-                // WeaponSelector is the game's own ordering and it is by FIRING ARC, not by rail
-                // bearing: preferred arc first in declaration order, then firing arc, then nearest
-                // arc edge, then the rest. An arc routinely covers a bearing its canisters point
-                // 120 deg away from, which is exactly why comparing rail.forward to the target got
-                // it wrong. Element 0 is the launcher the engage task takes.
+                // Which launcher the round leaves from, asked the way the game asks. Fixed mounts for one
+                // ammo can point 180 deg apart (two MK141s, port and starboard), and the round flies off its
+                // own canister. WeaponSelector orders by firing arc, not rail bearing: preferred arc first in
+                // declaration order, then firing arc, then nearest arc edge, then the rest; an arc can cover
+                // a bearing its canisters point 120 deg away from. Element 0 is the launcher the engage task takes.
                 var launchers = WeaponSelector.GetWeaponSystemsForAmmunition(
                     unit, targetPos, ap._ammunitionFileName, null);
                 // Null or empty means every launcher was filtered out (all inoperable, offline, out
@@ -377,13 +336,11 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// The mean world position of every cell of <paramref name="launcher"/>. A round spawns as a
-        /// child of its container's gun object at that container's attachment offset
-        /// (decompiled-beta-new <c>WeaponContainer.createAmmunitionObjectInstance</c>), measured in game
-        /// at 0.00 m on every ship-launched round. The mean rather than the next cell: it sat within
-        /// 0.44 to 1.71 m of the spawn, a few milliseconds of flight, and needs no model of the order
-        /// the cells fire in. False when the launcher has no cells, as an aircraft hardpoint does.
-        /// Main thread only: reads transforms.
+        /// The mean world position of every cell of <paramref name="launcher"/>. A round spawns as a child of
+        /// its container's gun object at that container's attachment offset
+        /// (<c>WeaponContainer.createAmmunitionObjectInstance</c>); the mean rather than the next cell sits
+        /// within about 2 m of the spawn and needs no model of the firing order. False when the launcher has
+        /// no cells, as an aircraft hardpoint does. Main thread only.
         /// </summary>
         internal static bool LauncherCellMean(WeaponSystem launcher, out Vector3 mean, out int cells)
         {
@@ -471,19 +428,12 @@ namespace AutoTOT
                 : (ap._finalFlightPhaseAltUnity > 0f ? ap._finalFlightPhaseAltUnity
                    : (ap._seaSkimmingAltUnity > 0f ? ap._seaSkimmingAltUnity : 0f));
             float termDist = ap._terminalApproachDist;
-            // A TerminalLoft weapon has NO terminal-approach leg. `CreateWaypointConfigs` guards
-            // that waypoint with `ap._terminalApproachDist > 0f && !ap._terminalLoft`
-            // (Missile.cs:2228), and the same guard rejects the terminal dive (:2158) and every
-            // runtime terminal branch (MissileSimulator.cs:601, :745, :1231). What such a round
-            // actually flies is the LOFT leg, which for kinematic ammunition is a KappaLoft whose
-            // EndHeight is OnLineToTarget: a direct run at the target, not a climb to a ceiling.
-            //
-            // Building the leg anyway put the terminal endpoint at the round's cruise altitude,
-            // and for usn_rim-162h that is 272 u (60,000 ft) against a terminal distance of
-            // 275 u. A 5 nm shot therefore starts INSIDE the leg and is commanded to climb for
-            // its whole flight: modelled 19.9 s against a recorded 9.0 s flown flat at 30 m.
-            // Exposure scales with cruise altitude over launch range, which is why usn_rim-66b
-            // declares the same flag and is unaffected at 13.6 u.
+            // A TerminalLoft weapon has no terminal-approach leg: CreateWaypointConfigs guards that waypoint
+            // with `ap._terminalApproachDist > 0f && !ap._terminalLoft` (Missile.cs:2228), and the same guard
+            // rejects the terminal dive (:2158) and every runtime terminal branch (MissileSimulator.cs:601,
+            // :745, :1231). Such a round flies the loft leg, which for kinematic ammunition is a KappaLoft
+            // ending OnLineToTarget: a direct run at the target. Building the leg anyway would command a
+            // short shot to climb toward cruise altitude for its whole flight.
             if (isTerminalLoft) termDist = 0f;
             if (SearchTimeTerminalOnset && ap._searchForTargetsTime > 0f)
             {
@@ -491,16 +441,11 @@ namespace AutoTOT
                 termDist = Mathf.Max(
                     termDist - maxVelKn * GameUnits.KnotsToUnityPerSecond * ap._searchForTargetsTime, 0f);
             }
-            // Two altitudes, not one. The game runs MaintainSeaSkimming at SeaSkimmingAlt and
-            // MaintainFinalFlightAlt at FinalFlightPhaseAlt (Missile.cs:614-647), and switches
-            // between them at FinalFlightPhaseDistToTarget. Collapsing them is close enough on a
-            // long shot, where most of the cruise really is sea-skimming, and wrong on a shot that
-            // starts inside the final-flight distance: an ss-n-3b at 91 km flew the whole way at
-            // 1312 ft while the model held 13200 ft, worth -4.4s on a 199s flight.
-            //
-            // The game parses FinalFlightPhaseAlt with SeaSkimmingAlt as its default
-            // (AmmunitionParameters, ini key "TerminalVelocity"), so for an ammunition that does not distinguish
-            // the two these are equal and the switch below is inert. That is the common case.
+            // Two altitudes: the game runs MaintainSeaSkimming at SeaSkimmingAlt and MaintainFinalFlightAlt
+            // at FinalFlightPhaseAlt (Missile.cs:614-647), switching at FinalFlightPhaseDistToTarget.
+            // Collapsing them fails a shot that starts inside the final-flight distance. FinalFlightPhaseAlt
+            // defaults to SeaSkimmingAlt in the ini read, so for most ammunition the two are equal and the
+            // switch is inert.
             float cruiseAlt = ap._seaSkimmingAltUnity > 0f ? ap._seaSkimmingAltUnity : finalAlt;
             float finalFlightAlt = ap._finalFlightPhaseAltUnity > 0f
                                  ? ap._finalFlightPhaseAltUnity : cruiseAlt;
@@ -509,19 +454,16 @@ namespace AutoTOT
             float finalFlightDist = ap._finalFlightPhaseDistToTargetUnity;
             // The real loft-entry test. See the note on the phase selector in FlightTime.Solve.cs.
             float loftEntryDist = Mathf.Max(ap._seaSkimmingStartDistToTargetUnity, 0f);
-            // finalAlt is left exactly as it was and now feeds ONLY this fallback. Twelve shipped
-            // ammunition declare no TerminalAlt while giving different sea-skimming and
-            // final-flight altitudes, so redefining it here would silently move their terminal leg.
+            // finalAlt feeds only this fallback: twelve shipped ammunition declare no TerminalAlt with
+            // different sea-skimming and final-flight altitudes, so redefining it would move their terminal leg.
             bool terminalLinear = !nonKin && !isTerminalLoft && !isAir && termDist > 0f;
             float termAlt = terminalLinear
                 ? ResolveKinematicTerminalEndAlt(ap, targetAlt0)
                 : (ap._terminalAltUnity > 0f ? ap._terminalAltUnity : finalAlt);
-            // _finalFlightPhaseMaxAngle constrains the final-flight waypoint, and
-            // Missile.CreateWaypointConfigs builds that leg only when
-            // _finalFlightPhaseDistToTargetUnity is positive. With no such leg the descent to
-            // cruise altitude rides the sea-skimming leg instead, whose constraint is
-            // _seaSkimmingMaxDescentAngle. Preferring the final-flight angle unconditionally flew
-            // usn_agm-84d's descent at 30 degrees against a recorded, flat -45.00.
+            // _finalFlightPhaseMaxAngle constrains the final-flight waypoint, which
+            // Missile.CreateWaypointConfigs builds only when _finalFlightPhaseDistToTargetUnity is positive.
+            // Without that leg the descent to cruise altitude rides the sea-skimming leg, constrained by
+            // _seaSkimmingMaxDescentAngle.
             float seaSkimDescentDeg = ap._seaSkimmingMaxDescentAngle > SetAngleEpsilonDeg
                                     ? ap._seaSkimmingMaxDescentAngle : DefaultDescentDeg;
             float descentDeg = finalFlightDist > 0f && ap._finalFlightPhaseMaxAngle > SetAngleEpsilonDeg
@@ -535,65 +477,28 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// Distance-to-target at which a lofting missile stops flying at <c>MaxLoftVelocity</c>,
-        /// for the ammunition that does not stop at the boundary <see cref="ResolveStageProfile"/>
-        /// names. Returns 0 when the ordinary boundary applies.
+        /// The seeker range that opens and closes the drag brake, in Unity units, or 0 when no such window
+        /// can exist for this ammunition.
         ///
-        /// <para><b>Why this is not the stage-profile distance.</b> The game gives a missile
-        /// <c>_maxLoftVelocityInKnots</c> only while its flight stage is <c>MaintainLoftAlt</c>
-        /// (<c>Missile.cs:3143</c>), and BOTH distance-based exits from that stage sit behind one
-        /// local flag (<c>Missile.cs:614-647</c>):</para>
-        /// <code>
-        /// else if (flag2 &amp;&amp; magnitude &lt; _finalFlightPhaseDistToTargetUnity &amp;&amp; flag &amp;&amp; num &lt;= 3) -> MaintainFinalFlightAlt
-        /// else if (magnitude &lt; _seaSkimmingStartDistToTargetUnity &amp;&amp; flag &amp;&amp; num &lt;= 2 &amp;&amp; ...)  -> MaintainSeaSkimming
-        /// else if (num &lt;= 1)                                                            -> MaintainLoftAlt
-        /// </code>
-        /// <para><c>Missile.cs:413</c> clears that flag for the whole flight when the ammunition
-        /// declares <c>RequiresTargetToProceed</c>, and only seeker activation with a permitted
-        /// target sets it back (<c>Missile.cs:426-433</c>). So neither declared distance takes
-        /// effect until the seeker comes up, and the missile holds loft speed until then. Activation
-        /// is <c>ShouldActivateMissileSeeker</c> (<c>BearingLaunchPrediction.cs:97-108</c>): inside
-        /// the active range, or inside the passive range, or unconditionally for TV homing.</para>
+        /// <para>The live mover hands <c>CalculateDrag</c> the CurrentTarget's altitude when there is one and
+        /// the round's own altitude when there is not (<c>Missile.cs:3170-3175</c>). That altitude's air
+        /// density sits in a denominator floored at 0.001, so the choice is worth up to 800 times on the
+        /// lift-induced term. <c>CurrentTarget</c> is null in exactly one case (<c>WeaponBase.cs:362</c>):
+        /// the seeker is on, holds no echo, and the ammunition declares no <c>TargetMemory</c>.</para>
         ///
-        /// <para>The ALTITUDE schedule is unaffected and stays where <see cref="ResolveStageProfile"/>
-        /// puts it. Telemetry on both affected rounds shows the descent to sea-skimming altitude
-        /// happening at the declared distance while the speed does not change: an ss-n-3b at 316 km
-        /// came down from 104 u to 59.9 u at 130 nmi and held 1150 kn for a further 148 km.</para>
-        ///
-        /// <para>Measured against the two ammunition this reaches, the predicted boundary lands on
-        /// the observed stage change: ss-n-3b 1378 u predicted against 1381 u observed, ss-n-3
-        /// 595 u against 595 u.</para>
-        /// </summary>
-        /// <summary>
-        /// The seeker range that opens and closes the drag brake, in Unity units, or 0 when no such
-        /// window can exist for this ammunition.
-        ///
-        /// <para>The live mover hands <c>CalculateDrag</c> the CurrentTarget's altitude when there
-        /// is one and the round's OWN altitude when there is not (<c>Missile.cs:3170-3175</c>). That
-        /// altitude's air density sits in a denominator floored at 0.001, so the choice is worth up
-        /// to 800 times on the lift-induced term. <c>CurrentTarget</c> is null in exactly one case
-        /// (<c>WeaponBase.cs:362</c>): the seeker is on, it holds no echo, and the ammunition
-        /// declares no <c>TargetMemory</c>.</para>
-        ///
-        /// <para>The window exists because the two tests use different distances. Activation is
-        /// <c>ShouldActivateMissileSeeker</c>, called from <c>MaintainHeight.takeAction</c> on a
-        /// vector the state has already FLATTENED to the missile's own altitude. Detection is
-        /// <c>ActiveRadarSeeker.isInRange</c>, a plain 3-D magnitude. A round far above its target
-        /// therefore switches its seeker on long before it can see anything, and brakes in between.
-        /// A sea skimmer crosses both at once and never brakes at all.</para>
-        ///
-        /// <para>Measured on 12 <c>plan_yj-20</c> rounds over two launch ranges against a declared
-        /// 716.5 u: the window opens at flat 708.7 to 717.0 u and closes at slant 709.4 to 715.4 u.
-        /// Both edges are this one field.</para>
+        /// <para>The window exists because the two tests use different distances. Activation
+        /// (<c>ShouldActivateMissileSeeker</c>, from <c>MaintainHeight.takeAction</c>) uses a vector already
+        /// flattened to the missile's altitude; detection (<c>ActiveRadarSeeker.isInRange</c>) is a 3-D
+        /// magnitude. A round far above its target switches its seeker on long before it can see anything,
+        /// and brakes in between; a sea skimmer crosses both at once and never brakes.</para>
         /// </summary>
         private static float ResolveSeekerBrakeRange(AmmunitionParameters ap)
         {
             // WeaponBase.cs:387. Target memory falls through to the intended target, so
             // CurrentTarget is never null and the game never brakes.
             if (ap._targetMemory) return NoSeekerBrakeWindow;
-            // Missile.cs:382. Activation lives inside this branch; without it the seeker comes up
-            // somewhere else, by which time the round is close enough to see and the window is
-            // already shut. usn_agm-84d takes this exit and was measured taking it.
+            // Missile.cs:382. Activation lives inside this branch; without it the seeker comes up elsewhere,
+            // when the round is close enough to see and the window is already shut.
             if (!ap._midCourseCorrection.AllowsLauncherGuidance) return NoSeekerBrakeWindow;
             // WeaponBase.cs:374. An unguided seeker returns the intended target unconditionally.
             if (ap._guidanceType == AmmunitionParameters.GuidanceType.None) return NoSeekerBrakeWindow;
@@ -601,6 +506,26 @@ namespace AutoTOT
             return range > 0f ? range : NoSeekerBrakeWindow;
         }
 
+        /// <summary>
+        /// Distance-to-target at which a lofting missile stops flying at <c>MaxLoftVelocity</c>, for
+        /// ammunition that does not stop at the boundary <see cref="ResolveStageProfile"/> names; 0 when the
+        /// ordinary boundary applies.
+        ///
+        /// <para>The game gives a missile <c>_maxLoftVelocityInKnots</c> only in <c>MaintainLoftAlt</c>
+        /// (<c>Missile.cs:3143</c>), and both distance-based exits from that stage sit behind one local flag
+        /// (<c>Missile.cs:614-647</c>):</para>
+        /// <code>
+        /// else if (flag2 &amp;&amp; magnitude &lt; _finalFlightPhaseDistToTargetUnity &amp;&amp; flag &amp;&amp; num &lt;= 3) -> MaintainFinalFlightAlt
+        /// else if (magnitude &lt; _seaSkimmingStartDistToTargetUnity &amp;&amp; flag &amp;&amp; num &lt;= 2 &amp;&amp; ...)  -> MaintainSeaSkimming
+        /// else if (num &lt;= 1)                                                            -> MaintainLoftAlt
+        /// </code>
+        /// <para><c>Missile.cs:413</c> clears that flag for the whole flight when the ammunition declares
+        /// <c>RequiresTargetToProceed</c>, and only seeker activation with a permitted target sets it back
+        /// (<c>Missile.cs:426-433</c>), so the missile holds loft speed until the seeker comes up. Activation
+        /// is <c>ShouldActivateMissileSeeker</c> (<c>BearingLaunchPrediction.cs:97-108</c>): inside the
+        /// active or passive range, or unconditionally for TV homing. The altitude schedule is unaffected and
+        /// stays where <see cref="ResolveStageProfile"/> puts it.</para>
+        /// </summary>
         /// <returns>Flat distance to target in Unity units, or 0 when no hold applies.</returns>
         private static float ResolveLoftSpeedHoldDist(AmmunitionParameters ap)
         {
@@ -619,41 +544,33 @@ namespace AutoTOT
             return Mathf.Max(Mathf.Max(ap._seekerActiveRange, ap._seekerPassiveRange), 0f);
         }
 
-        // The mover's own factors, pinned rather than taken from GameUnits: setCourseTowardsPosition
-        // writes 0.514444f and 9.8f literally, and GameUnits.KnotsToMs carries one more digit. The
-        // difference cannot matter at this scale, but a threshold derived from the game's arithmetic
-        // should read as the game's arithmetic.
+        // The mover's own literals (setCourseTowardsPosition writes 0.514444f and 9.8f), not GameUnits, so a
+        // threshold derived from the game's arithmetic reads as the game's arithmetic.
         private const float MoverKnotsToMs = 0.514444f;
         private const float MoverGravityMs2 = 9.8f;
 
         /// <summary>
-        /// Speed, in knots, at which a turn at <paramref name="turnRateDeg"/> reaches the
-        /// ammunition's own G-limit. Above it the mover cuts the rate in proportion; below it the
-        /// rate stands. Returns 0 when no limit can apply, which turns the derate off.
+        /// Speed, in knots, at which a turn at <paramref name="turnRateDeg"/> reaches the ammunition's own
+        /// G-limit. Above it the mover cuts the rate in proportion; below it the rate stands. 0 when no limit
+        /// can apply, which turns the derate off.
         ///
-        /// <para>The mover computes, every tick, from its CURRENT speed
-        /// (<c>WeaponBase.setCourseTowardsPosition</c>, ahead of the Kinematics dispatch so both
-        /// paths derate):</para>
+        /// <para>The mover computes, every tick, from its current speed
+        /// (<c>WeaponBase.setCourseTowardsPosition</c>, ahead of the Kinematics dispatch so both paths derate):</para>
         /// <code>
         /// v      = 0.514444 * knots            // m/s
         /// radius = v * (360 / rate) / (2*PI)   // m, the circle that rate traces at v
         /// g      = v^2 / (radius * 9.8)
         /// if (g &gt; MaxTurnG) rate *= MaxTurnG / g
         /// </code>
-        /// <para>Substituting the radius collapses g to <c>v * rate * 2*PI / (360 * 9.8)</c>, which
-        /// is linear in speed. So there is one speed where g equals the limit, and above it the
-        /// surviving rate is <c>rate * threshold / knots</c>. Solving once here keeps the step loop
-        /// to a compare and, on the far side of it, one divide.</para>
-        ///
-        /// <para>Inert for every anti-ship missile: none declares <c>MaxTurnG</c>, so all take the
-        /// 200 g default, and the fastest reaches 14.2 g. It bites on SAMs and AAMs, 57 of which
-        /// exceed their declared limit at their own max speed.</para>
+        /// <para>Substituting the radius makes g <c>v * rate * 2*PI / (360 * 9.8)</c>, linear in speed, so
+        /// there is one speed where g equals the limit, and above it the surviving rate is <c>rate *
+        /// threshold / knots</c>. Solved once here, the step loop needs a compare and, past it, one divide.</para>
         /// </summary>
         private static float ResolveTurnDerateThreshold(AmmunitionParameters ap, float turnRateDeg)
         {
             float maxTurnG = ap._maxTurnG;
-            // A non-positive limit is an unset or malformed ini value, not an order to freeze the
-            // round. One shipped ammunition writes `MaxTurnG=` with no number at all.
+            // A non-positive limit is an unset or malformed ini value (one ammunition writes `MaxTurnG=` with
+            // no number), not an order to freeze the round.
             if (maxTurnG <= 0f || turnRateDeg <= VelocityEpsilonKn) return 0f;
             float thresholdMs = maxTurnG * 360f * MoverGravityMs2
                               / (2f * Mathf.PI * turnRateDeg);
@@ -661,29 +578,24 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// The turn rate the ToBearing window is floored at. The mover floors the rate at
-        /// <c>LaunchTurnRate</c> while <c>toBearingState</c> is set, and only when the ini value
-        /// exceeds the rate already in hand (<c>WeaponBase.setCourseTowardsPosition</c>).
-        /// <c>LaunchTurnRate</c> defaults to -1, so this returns 0 for all but three shipped
-        /// ammunition.
+        /// The turn rate the ToBearing window is floored at: the mover floors the rate at
+        /// <c>LaunchTurnRate</c> while <c>toBearingState</c> is set, when the ini value exceeds the rate in
+        /// hand (<c>WeaponBase.setCourseTowardsPosition</c>). <c>LaunchTurnRate</c> defaults to -1, so this
+        /// returns 0 for all but three shipped ammunition.
         ///
-        /// <para>The ini value is returned UNCLAMPED, and 0 means "no floor". The comparison
-        /// against the ordinary rate belongs in the step loop, not here, because the mover applies
-        /// the floor AFTER the G-derate has already cut the rate: an ammunition can sit below its
-        /// launch rate at speed and above it when slow. Clamping here against the un-derated
-        /// <c>MaxTurnRate</c> would both drop that case and, by returning the base rate as the
-        /// "no override" answer, re-floor a derated step back to the un-derated rate — cancelling
-        /// the G-derate through the whole ToBearing window on every round that leaves the key at
-        /// its default, which is the entire population the derate exists for.</para>
+        /// <para>Returned unclamped, 0 meaning no floor. The comparison belongs in the step loop because the
+        /// mover applies the floor after the G-derate, so an ammunition can sit below its launch rate at
+        /// speed and above it when slow. Clamping here against the un-derated <c>MaxTurnRate</c> would drop
+        /// that case and re-floor every derated ToBearing step to the un-derated rate, cancelling the derate
+        /// on exactly the rounds it exists for.</para>
         /// </summary>
         private static float ResolveToBearingTurnRate(AmmunitionParameters ap)
             => ap._toBearingTurnRateDegrees > 0f ? ap._toBearingTurnRateDegrees : 0f;
 
         /// <summary>
-        /// How far off-bearing a shot is at launch: the horizontal angle between the shooter's
-        /// heading and the bearing to the target. Diagnostic only, and a CORRELATE, not the game's
-        /// own quantity, which measures against the missile's forward vector (carrying launch pitch
-        /// too) rather than the ship's heading in the horizontal plane.
+        /// How far off-bearing a shot is at launch: the horizontal angle between the shooter's heading and
+        /// the bearing to the target. Diagnostic only, and a correlate: the game measures against the
+        /// missile's forward vector, launch pitch included.
         /// </summary>
         /// <returns>Degrees, or -1 when unavailable.</returns>
         private static float LaunchBearingErrDeg(ObjectBase unit, Vector3 launchPos, Vector3 targetPos)
@@ -781,25 +693,13 @@ namespace AutoTOT
             return phases.Valid;
         }
 
-        /// <summary>
-        /// Captures the solver input for ONE round and returns the key it was filed under, so the
-        /// flight tracker can pair that round's outcome with it. Null when the input cannot be
-        /// built or the dump fails.
-        ///
-        /// Called per round rather than per solve, deliberately. The estimator caches by shooter,
-        /// ammunition and target, so a solve does not correspond to a round; and the ammunition
-        /// name, the only thing a solve and a round share, repeats whenever the same weapon is
-        /// fired twice. Pairing on it filed a 396s flight against a 230s round's input.
-        /// </summary>
-        // Ammunition whose setup fell back from a game-supplied altitude input, warned once each.
-        // Main thread only, like the setup that fills it.
+        // Ammunition whose setup fell back from a game-supplied altitude input, warned once each. Main thread only.
         private static readonly System.Collections.Generic.HashSet<string> _setupFallbackWarned =
             new System.Collections.Generic.HashSet<string>();
 
         /// <summary>
-        /// Say, once per ammunition and cause, that setup replaced a value the game supplies with the
-        /// model's own. Either replacement changes the altitude law the round is flown on, which on a
-        /// lofting round is worth seconds, and both used to happen with no trace at all.
+        /// Say, once per ammunition and cause, that setup replaced a value the game supplies with the model's
+        /// own; either replacement changes the altitude law a round is flown on, worth seconds on a lofting round.
         /// </summary>
         private static void WarnSetupFallback(AmmunitionParameters ap, string what, Exception e)
         {
@@ -812,11 +712,12 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// Capture the solve input for a round that has just left the rail, from its recorded
-        /// <paramref name="launch"/> state, so the stored <c>LaunchHeading</c> is the rail the round
-        /// actually flew rather than the one the live pick names. The two differ when a ship has two
-        /// fixed launchers for one ammunition and the game hands a round the other one after the
-        /// solve.
+        /// Capture the solve input for one round that has just left the rail, from its recorded
+        /// <paramref name="launch"/> state, and return the key it was filed under so the tracker can pair the
+        /// round's outcome with it; null when the input cannot be built or the dump fails. Per round, not per
+        /// solve: the estimator caches by shooter, ammunition and target, so a solve is not a round. The
+        /// stored <c>LaunchHeading</c> is the rail the round flew, which differs from the live pick when a
+        /// ship with two fixed launchers for one ammunition hands the round the other one.
         /// </summary>
         internal static string DumpInputFor(ObjectBase unit, string ammoId, ObjectBase target,
                                             in LaunchState launch)
@@ -828,11 +729,10 @@ namespace AutoTOT
                 // already ran, and repeating them here would double every traced line.
                 if (!TryBuildSolveInput(unit, ap, target, out SolveInput input, out _, false, launch))
                     return null;
-                // The parity contract with tools/lab: the answer this build's step loop gives for
-                // exactly this input, at the production step. The lab replays the same input and
-                // must reproduce it. EstAtLaunch now comes from the same launch state with no cache
-                // between, so the two agree wherever the integrator ran, but EstAtLaunch falls back to
-                // the live tiers where it declines and this value does not.
+                // The parity contract with tools/lab: this build's step-loop answer for exactly this input at
+                // the production step, which the lab must reproduce. EstAtLaunch uses the same launch state,
+                // so the two agree wherever the integrator ran; EstAtLaunch falls back to the live tiers
+                // where it declines, and this value does not.
                 IntegratedPhases parityPhases = default;
                 parityPhases.DiveStartU = -1f;
                 // Solve ends in ModelStats.LoopDone, which times against this thread's loop stamp.
@@ -850,16 +750,12 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// The altitude a NON-cruise round is commanded to hold during the loft stages, at a given
-        /// distance flown. Mirrors Missile.cs:3306 onwards.
-        ///
-        /// A cruise missile (Kinematics None, which is the game's own CruiseMissile test) is simply
-        /// commanded <c>_maxLoftAltUnity</c> and is handled by the caller. Everything else gets a
-        /// profile: <c>_maxLoftAlt</c> is a CEILING it may never reach, not an altitude it flies to.
-        /// The apex is where the climb angle out of the launch point meets the descent angle into
-        /// the target, clamped by that ceiling, so a short shot peaks well below it. Modelling the
-        /// ceiling as the cruise altitude put these rounds in air far thinner than they ever reach,
-        /// which cost them drag and landed them early by 4 to 9 seconds.
+        /// The altitude a non-cruise round is commanded to hold during the loft stages at a given distance
+        /// flown (Missile.cs:3306 onwards). A cruise missile (Kinematics None, the game's CruiseMissile test)
+        /// is commanded <c>_maxLoftAltUnity</c> and handled by the caller. Everything else gets a profile:
+        /// <c>_maxLoftAlt</c> is a ceiling it may never reach. The apex is where the climb angle out of the
+        /// launch point meets the descent angle into the target, clamped by that ceiling, so a short shot
+        /// peaks well below it and flies in denser air.
         /// </summary>
         internal static float LoftProfileAltU(bool ballisticLoft, float ceilingU,
                                               float climbTan, float descentTan,
@@ -973,10 +869,9 @@ namespace AutoTOT
                 // The launcher the engage task will take, picked once for both the launch position
                 // and the launch attitude below.
                 WeaponSystem launcher = ResolveLauncher(unit, ap, targetPos);
-                // A ship's round leaves from one of its launcher's cells, not from the ship's centre:
-                // 37 to 48 m away on a vertical-launch ship, 16 m for a Harpoon canister. A round already
-                // in flight passes its own position in `launch`; a unit without cells (an aircraft
-                // hardpoint) keeps its own position.
+                // A ship's round leaves from one of its launcher's cells, not the ship's centre (tens of
+                // metres away on a VLS ship). A round in flight passes its own position in `launch`; a unit
+                // without cells (an aircraft hardpoint) keeps its own.
                 Vector3 launchPos = launch.Valid ? launch.PosU : unit.transform.position;
                 int launchCells = 0;
                 if (!launch.Valid && LauncherCellMean(launcher, out Vector3 cellMean, out launchCells))
@@ -1007,10 +902,8 @@ namespace AutoTOT
                         configuredLoftAlt = cap;
                 }
                 float loftAlt = configuredLoftAlt;
-                // The live non-cruise path does not fly the configured ceiling directly.
-                // Missile.TuneWaypoints replaces its KappaLoft waypoint's LoftHeight with this
-                // range-dependent choice before launch. Missing this step caused the shared
-                // altitude residual on optimized-loft, non-terminal-loft rounds.
+                // The live non-cruise path does not fly the configured ceiling: Missile.TuneWaypoints
+                // replaces its KappaLoft waypoint's LoftHeight with this range-dependent choice before launch.
                 if (!nonKin && configuredLoftAlt > 0f && _optimalLoftMethod != null)
                 {
                     float altMin = Mathf.Max(Mathf.Max(launchPos.y, 0f), targetAlt0);
@@ -1042,11 +935,9 @@ namespace AutoTOT
 
                 float climbDeg = ap._maxLoftAngle > AltToleranceU ? ap._maxLoftAngle : DefaultClimbDeg;
                 float boostClimbDeg = isHighBallisticLofter ? BoostClimbDeg : climbDeg;
-                // turnRateBase is MaxTurnRate alone. It is carried separately because the two
-                // corrections below apply to different parts: the G-derate cuts the base rate, and
-                // the banking roll addend is a second budget the mover spends at a hardcoded rate
-                // that no G-limit touches. Deriving the addend by subtraction in the step loop keeps
-                // one number on the wire instead of two.
+                // turnRateBase is MaxTurnRate alone, carried separately because the G-derate cuts the base
+                // rate while the banking roll addend is a second budget at a hardcoded rate no G-limit
+                // touches. The step loop derives the addend by subtraction, so one number travels instead of two.
                 float turnRateBase = ap._maxTurnRateDegrees > VelocityEpsilonKn ? ap._maxTurnRateDegrees : DefaultTurnRateDeg;
                 float turnRate = turnRateBase;
                 // See BankingAddsRollBudgetToPitch above: the roll call is a second, independent
@@ -1138,20 +1029,12 @@ namespace AutoTOT
                 Vector2[] altNodes = null;
                 float kappaEndFlat = 0f;
 
-                // The hold needs BOTH conditions, and the launch range is why it is resolved here
-                // rather than beside the stage profile.
-                //
-                // `lofting`: an ammunition whose loft ceiling is at or below the launch altitude
-                // never gets loft speed to hold.
-                //
-                // `flatDistTotal > finalDist`: the flag at Missile.cs:413 stops a round LEAVING
-                // MaintainLoftAlt. It has no say in whether the round ever ENTERS it, which is
-                // decided coming out of ToBearing and is not gated on the flag. A round launched
-                // already inside the sea-skimming boundary goes ToBearing -> MaintainSeaSkimming
-                // and flies the whole way at cruise speed. Observed on an ss-n-3b at 224 km:
-                // `ToBearing -> MaintainSeaSkimming at t+15.4s, flat 3260u`, peak speed 900 kn
-                // against a 1150 kn loft speed, and the model's own `climb 0.0s` agrees. Holding
-                // loft speed there cost +59.1s on 2026-09-08, against -0.4s before the hold existed.
+                // The hold needs both conditions, and the launch range is why it is resolved here rather than
+                // beside the stage profile. `lofting`: an ammunition whose loft ceiling is at or below the
+                // launch altitude never gets loft speed. `flatDistTotal > finalDist`: the flag at
+                // Missile.cs:413 stops a round leaving MaintainLoftAlt but not entering it, which is decided
+                // out of ToBearing without the flag; a round launched inside the sea-skimming boundary goes
+                // ToBearing -> MaintainSeaSkimming and flies the whole way at cruise speed.
                 float loftSpeedHoldDist = (lofting && flatDistTotal > finalDist)
                                         ? ResolveLoftSpeedHoldDist(ap) : 0f;
                 // Kinematic missiles are flown by Waypoint.KappaLoft whether TerminalLoft is set
@@ -1192,8 +1075,8 @@ namespace AutoTOT
                         $"loftAlt {loftAlt:0}u (configured {configuredLoftAlt:0}u)" +
                         $", descentDeg {descentDeg:0.0}°, onsetDeg {descentOnsetDeg:0.0}°" +
                         $", bearingErr {(launchBearingErrDeg >= 0f ? launchBearingErrDeg.ToString("0.0") + "°" : "n/a")}" +
-                        // Launch range, so each shot self-records its geometry. Two ranges per shot
-                        // cannot falsify a fixed-offset-plus-drift decomposition; three can.
+                        // Launch range, so each shot records its geometry: two ranges per shot cannot
+                        // separate a fixed offset from a drift, three can.
                         $", range {flatDistTotal:0}u ({flatDistTotal * GameUnits.MetersPerUnity / 1000f:0.0}km)" +
                         // Where the solve started: the launcher's cell mean, a round's own recorded
                         // position, or the unit's centre when the launcher has no cells.
@@ -1201,22 +1084,17 @@ namespace AutoTOT
                         // Both values, so the ini default and the rail's real orientation can be
                         // compared directly on one line.
                         $", iniPitch {(launchPitchIni >= 0f ? launchPitchIni.ToString("0.0") + "°" : "n/a")}" +
-                        // The loft-speed boundary, so a shot records whether the seeker-range hold
-                        // applied and where. "none" means the stage profile's own boundary is in
-                        // force, which is the case for all but two ammunition in the shipped set.
+                        // The loft-speed boundary, so a shot records whether and where the seeker-range hold
+                        // applied; "none" means the stage profile's boundary, true for all but two shipped ammunition.
                         $", loftHold {(loftSpeedHoldDist > 0f ? loftSpeedHoldDist.ToString("0") + "u" : "none")}" +
-                        // The two phase-1 altitudes and the boundary between them, plus the
-                        // loft-entry distance, so a traced shot records which legs it should have
-                        // flown without anyone having to re-read the ini.
+                        // The two phase-1 altitudes, the boundary between them and the loft-entry distance,
+                        // so a traced shot records which legs it should have flown.
                         $", loftEntry {(loftEntryDist > 0f ? loftEntryDist.ToString("0") + "u" : "none")}" +
                         $", cruiseAlt {cruiseAlt * GameUnits.MetersPerUnity / 0.3048f:0}ft" +
                         $", finalFlight {finalFlightDist:0}u @ {finalFlightAlt * GameUnits.MetersPerUnity / 0.3048f:0}ft" +
-                        // The turn budget and its two corrections. "launchTurn none" and "gLimit
-                        // none" are the answer for almost every round, which is the point: a shot
-                        // that reads "none" for both is one where neither correction can have moved
-                        // it, so a residual on that shot has some other cause. gLimit prints the
-                        // speed at which the derate STARTS, so it can be read against the sim-track
-                        // speeds on the same shot.
+                        // The turn budget and its two corrections. "none" for both, the answer for almost
+                        // every round, means neither correction can have moved the shot. gLimit prints the
+                        // speed at which the derate starts, to read against the sim-track speeds.
                         $", turn {turnRateBase:0.#}°/s" +
                         $", launchTurn {(toBearingTurnRate > 0f ? toBearingTurnRate.ToString("0.#") + "°/s" : "none")}" +
                         $", gLimit {(turnDerateThresholdKn > 0f ? turnDerateThresholdKn.ToString("0") + "kn" : "none")}" +
@@ -1345,13 +1223,12 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// The hull a round has to reach, sized by what the shooter's side knows about the target
-        /// ("Variant A build" in max-solo-error-below-1s.md). Identified (the contact has a class): the
-        /// target's own collider. Held by a sensor whose contact label shows a size class, which is every
-        /// sensor but passive sonar and ESM (Vehicle.IncomingSignalInfo): the representative hull of the
-        /// class the label shows. Otherwise, a noise contact or one no sensor holds now, the middle class.
-        /// Not a surface ship: no hull, and the 3 u stop. The hull only ends the estimate's flight; neither
-        /// its size nor its source reaches the player.
+        /// The hull a round has to reach, sized by what the shooter's side knows about the target. Identified
+        /// (the contact has a class): the target's own collider. Held by a sensor whose contact label shows a
+        /// size class (every sensor but passive sonar and ESM, Vehicle.IncomingSignalInfo): the
+        /// representative hull of that class. Otherwise (a noise contact, or none held now): the middle
+        /// class. Not a surface ship: no hull, and the 3 u stop. The hull only ends the estimate's flight;
+        /// neither its size nor its source reaches the player.
         /// </summary>
         private static HullBox TargetHull(ObjectBase unit, ObjectBase target, out string source)
         {

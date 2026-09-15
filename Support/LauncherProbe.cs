@@ -7,26 +7,18 @@ using SeaPower;
 namespace AutoTOT
 {
     /// <summary>
-    /// Per-launcher-OBJECT reads for the order-to-first-round diagnostics.
+    /// Per-launcher-object reads. Elsewhere "this ship's launchers for this ammo" is one thing
+    /// (<see cref="LauncherFactsSource"/> lets <c>launchers[0]</c> speak for the group, and
+    /// <c>SubmarineFacts.EngageStates</c> joins their distinct states), which suits cadence and reload style
+    /// but not the launch cycle, where every quantity belongs to one launcher object:
     ///
-    /// Everything else in the mod treats "this ship's launchers for this ammo" as one thing:
-    /// <see cref="LauncherFactsSource"/> lets <c>launchers[0]</c> speak for the group, and
-    /// <c>SubmarineFacts.EngageStates</c> joins every launcher's DISTINCT state into one
-    /// "+"-separated string. That is fine for cadence and reload style, which really are shared,
-    /// and useless for the launch-cycle question, where every quantity belongs to one launcher
-    /// object:
-    ///
-    ///   - one engage task at a time, <c>WeaponSystem._takenEngageTask</c> is a single field;
+    ///   - one engage task at a time: <c>WeaponSystem._takenEngageTask</c> is a single field;
     ///   - the on-rail warm-up clock, <c>WeaponSystemLauncher._onRail</c>, is per object;
-    ///   - a busy launcher is filtered OUT of the candidate list rather than queued behind
-    ///     (WeaponSelector.isWeaponSystemUsable, default ignoreExecuting = false), so the penalty
-    ///     for a second order depends on how many OTHER launchers are free.
+    ///   - a busy launcher is filtered out of the candidate list rather than queued behind
+    ///     (WeaponSelector.isWeaponSystemUsable, ignoreExecuting = false), so a second order's wait depends on how many
+    ///     other launchers are free.
     ///
-    /// Read against a merged string those are indistinguishable: a launcher holding one state for
-    /// five seconds and two launchers alternating produce the same text. This class is what makes
-    /// them separable.
-    ///
-    /// Diagnostics only. Nothing here feeds a timing decision.
+    /// Mostly diagnostics; the declared warm-up, the cold-launcher test and the shared launch clock also feed timing.
     /// </summary>
     internal static class LauncherProbe
     {
@@ -43,10 +35,8 @@ namespace AutoTOT
             public bool Usable;         // passes the game's own candidate filter for this target
         }
 
-        // Cached reflection. Both fields are private on WeaponSystemLauncher, and the method has
-        // optional parameters that a MethodInfo call has to pass explicitly. Resolved once: these
-        // sit on the per-order diagnostic path, and a per-frame GetField would be exactly the kind
-        // of cost the HUD profiling pass went looking for.
+        // Cached reflection, resolved once: both fields are private on WeaponSystemLauncher, the method's optional
+        // parameters must be passed explicitly, and this sits on the per-order diagnostic path.
         private static bool _reflectionResolved;
         private static FieldInfo _onRailField, _onRailStartField;
         private static MethodInfo _usableMethod;
@@ -62,9 +52,8 @@ namespace AutoTOT
                 _onRailField = launcher?.GetField("_onRail", Inst);
                 _onRailStartField = launcher?.GetField("_onRailWarmupStartTime", Inst);
 
-                // isWeaponSystemUsable(WeaponSystem, string, ObjectBase, bool, bool, bool). Taken by
-                // signature rather than by name alone: the class carries an Ammunition overload too,
-                // and picking the wrong one would silently report every launcher unusable.
+                // isWeaponSystemUsable(WeaponSystem, string, ObjectBase, bool, bool, bool), taken by
+                // signature: an Ammunition overload exists, and the wrong one would report every launcher unusable.
                 Type sel = typeof(ObjectBase).Assembly.GetType("SeaPower.WeaponSelector");
                 _usableMethod = sel?.GetMethod("isWeaponSystemUsable",
                     BindingFlags.Public | BindingFlags.Static, null,
@@ -85,9 +74,8 @@ namespace AutoTOT
         private static readonly object[] _usableArgs = new object[6];
 
         /// <summary>
-        /// Snapshot every launcher object serving <paramref name="ammoId"/> on this ship.
-        /// Returns the count written. The list is cleared first and reused by the caller, so this
-        /// allocates nothing on a repeat call.
+        /// Snapshot every launcher object serving <paramref name="ammoId"/> into the caller's reused list
+        /// (cleared first); returns the count.
         /// </summary>
         internal static int Collect(ObjectBase ship, string ammoId, ObjectBase target,
                                     List<LauncherView> into)
@@ -137,9 +125,8 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// The game's own candidate filter, the one that decides whether a second order can go to a
-        /// different launcher or has to wait for this one. Called with every `ignore` flag false, as
-        /// ObjectBase does when it builds the candidate list.
+        /// The game's candidate filter, deciding whether a second order can take another launcher or must
+        /// wait for this one. Called with every ignore flag false, as ObjectBase does.
         /// </summary>
         private static bool IsUsable(WeaponSystem ws, string ammoId, ObjectBase target)
         {
@@ -164,18 +151,10 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// Declared on-rail warm-up for this ship+ammo, in seconds.
-        ///
-        /// This is the term the whole investigation turned on and the one the mod never read. It is
-        /// an INI value (AmmunitionParameters, "OnRailWarmup") but it lives on the AMMO keyed by
-        /// launcher position name, not on the launcher, which is why enumerating WeaponParameters
-        /// never found it. Guarded with ContainsKey exactly as the game guards it before applying
-        /// the gate.
-        ///
-        /// Returns -1 when the ammo declares no entry for this launcher position, which is a
-        /// different statement from 0 and needs to stay distinguishable in the log: 0 means "the
-        /// weapon declares no warm-up", -1 means "this launcher position is not in the table at all,
-        /// so the game skips the gate".
+        /// Declared on-rail warm-up for this ship and ammo, in seconds: an INI value on the ammunition
+        /// (AmmunitionParameters "OnRailWarmup") keyed by launcher position name, not on the launcher,
+        /// guarded with ContainsKey as the game guards it. -1 when the ammo has no entry for this position
+        /// (the game skips the gate), distinct from 0 (no warm-up declared).
         /// </summary>
         internal static float DeclaredOnRailWarmup(ObjectBase ship, string ammoId)
         {
@@ -196,14 +175,9 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// Declared ship-level shared launch interval for this ammo's system name, or -1 when the
-        /// ship declares none.
-        ///
-        /// This is the SECOND serialisation mechanism, and it sits above the launcher: the timer and
-        /// the interval both live on ObjectBase keyed by system name, so it gates launches across
-        /// DIFFERENT launcher objects that share a name. LauncherFactsSource already reads the
-        /// interval, but only to raise the within-order cadence; it has never been read as a
-        /// cross-order term.
+        /// Declared ship-level shared launch interval for this ammo's system name, or -1 when none. The timer
+        /// and interval live on ObjectBase keyed by system name, so it serialises launches across different
+        /// launcher objects sharing a name.
         /// </summary>
         internal static float DeclaredSharedInterval(ObjectBase ship, string ammoId)
         {
@@ -231,10 +205,8 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// True when ANY launcher serving this ammo will run the game's warm-up on its next order,
-        /// which is the reload that shows up as the WarmingUp engage state.
-        ///
-        /// This is the game's own condition, not an inference. WeaponSystemLauncher.cs:471:
+        /// True when any launcher serving this ammo will run the game's warm-up (the WarmingUp engage state)
+        /// on its next order. The game's own condition, WeaponSystemLauncher.cs:471:
         ///
         /// <code>
         /// _engageState = EngageState.WarmingUp;
@@ -245,20 +217,10 @@ namespace AutoTOT
         /// }
         /// </code>
         ///
-        /// So the cost is <c>_magazineReloadTime</c>, and it is paid only by a launcher that
-        /// declares a warm-up, firing ammunition that requires one, while COLD. That is why the
-        /// Spruance Sea Sparrow's 900 s and the Type 055 HQ-10's 600 s never appear: those mounts
-        /// fail the flags, and the field there is an ordinary magazine reload. Reading
-        /// <c>_perContainerReload</c> alone, as the first build did, would have charged them both.
-        ///
-        /// <c>IsHot</c> is the game's cold flag and it is public. It is set the first time the
-        /// launcher warms and cleared again at WeaponSystem.cs:565 once the mount has been at rest
-        /// and untasked for 1800 s, so this correctly goes back to true after half an hour idle.
-        /// That matches the observed runs, where a second order 612 s later skipped the warm-up.
-        ///
-        /// Ship-level because the launcher that will take the order is not known at commit: the
-        /// game filters candidates at dispatch. "Any cold" fits every observed order, including the
-        /// one where two cold launchers took an order while a warm one sat idle.
+        /// So it costs <c>_magazineReloadTime</c>, paid only by a launcher declaring a warm-up, firing
+        /// ammunition that requires one, while cold. <c>IsHot</c> is public: set when the launcher warms,
+        /// cleared at WeaponSystem.cs:565 after 1800 s at rest and untasked. Ship-level because the launcher
+        /// that takes the order is not known at commit.
         /// </summary>
         internal static bool AnyLauncherNeedsWarmup(ObjectBase ship, string ammoId)
         {

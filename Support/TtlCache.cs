@@ -4,14 +4,10 @@ using UnityEngine;
 namespace AutoTOT
 {
     /// <summary>
-    /// Small TTL cache clocked by <see cref="Time.unscaledTime"/> (real seconds, unaffected by
-    /// game pause / time compression). Used on per-frame UI paths ; flight-time ETAs and launcher
-    /// facts ; where recomputing every frame causes visible stutter. Positions and loadouts barely
-    /// move within the TTL window, so a short cache is lossless in practice.
-    ///
-    /// Eviction: inserting a new key into a full cache drops expired entries first; if the cache
-    /// is still full of live ones, the oldest quarter goes. Allocation-free apart from the two
-    /// scratch lists.
+    /// Small TTL cache clocked by <see cref="Time.unscaledTime"/> (real seconds, unaffected by pause and time
+    /// compression), for per-frame UI paths such as flight-time ETAs and launcher facts. Inserting a new key
+    /// into a full cache drops expired entries first, then the oldest quarter if it is still full.
+    /// Allocation-free apart from two scratch lists.
     /// </summary>
     internal sealed class TtlCache<TKey, TValue>
     {
@@ -51,10 +47,8 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// Live value, plus how long ago it was stored, in the same real seconds the TTL uses. A
-        /// caller that records staleness of its own needs the age: adopting a shared cache entry
-        /// says nothing about when the value was computed, and treating it as fresh understates
-        /// the geometry's age by up to the whole TTL.
+        /// Live value plus its age in the TTL's real seconds, for a caller that records staleness itself: a
+        /// shared entry may have been computed up to a whole TTL ago.
         /// </summary>
         public bool TryGet(TKey key, out TValue value, out float ageSeconds)
         {
@@ -75,7 +69,7 @@ namespace AutoTOT
             return false;
         }
 
-        /// <summary>Insert/overwrite. Inserting a new key into a full cache evicts first.</summary>
+        /// <summary>Insert or overwrite; a new key in a full cache evicts first.</summary>
         public void Set(TKey key, TValue value)
         {
             float now = Time.unscaledTime;
@@ -84,10 +78,9 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// Make room: drop expired entries, and if the cache is still full of live ones, drop the
-        /// oldest quarter. It used to clear everything at that point, which made the next reader of
-        /// every key miss at once; a strike with more orders than the cache holds then had every
-        /// order re-solved on the main thread in a single frame.
+        /// Make room: drop expired entries, then the oldest quarter if the cache is still full of live ones.
+        /// Clearing everything would make every key miss at once and re-solve a large strike on the main
+        /// thread in one frame.
         /// </summary>
         private void Evict(float now)
         {
