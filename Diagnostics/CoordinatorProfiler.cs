@@ -182,7 +182,7 @@ namespace AutoTOT
                 $"setup {ModelStats.SetupMs:F1}ms + loop {ModelStats.LoopMs:F1}ms (WALL time summed across " +
                 $"main and worker threads, so it exceeds the frame budget it is measured beside), " +
                 $"{usPerKStep:F0}us/1k steps\n" +
-                $"       tiers: integrator {ModelStats.TierCount(ModelStats.Tier.Integrator)}, waypoint {ModelStats.TierCount(ModelStats.Tier.Waypoint)}, maxRange {ModelStats.TierCount(ModelStats.Tier.MaxRangePrecise)}, failed {ModelStats.TierCount(ModelStats.Tier.Failed)}, integrator declined {ModelStats.Stalls}\n" +
+                $"       tiers: integrator {ModelStats.TierCount(ModelStats.Tier.Integrator)}, maxRange {ModelStats.TierCount(ModelStats.Tier.MaxRangePrecise)}, failed {ModelStats.TierCount(ModelStats.Tier.Failed)}, integrator declined {ModelStats.Stalls}\n" +
                 $"    -> UI (outside tick): {Ms(Stage.UiEstimate):F1}ms over {N(Counter.UiEstimateCalls)} calls, launch envelope {Ms(Stage.UiEnvelope):F1}ms\n" +
                 $"    -> GroupDelay: {Ms(Stage.GroupDelay):F1}ms over {N(Counter.GroupDelayCalls)} calls\n" +
                 $"    -> PredictAnchorImpact: FlightEst {Ms(Stage.PredictFlight):F1}ms over {N(Counter.PredictFlightCalls)} calls | GroupDelay {Ms(Stage.PredictGroupDelay):F1}ms over {N(Counter.PredictGroupDelayCalls)} calls\n" +

@@ -10,8 +10,6 @@ namespace AutoTOT
     /// nears and the round flattens before every boundary.
     ///
     /// Pure functions of values resolved at setup, so this runs in the lab and on the estimator threads.
-    /// <c>WaypointSim</c> covers the same game code by driving the game's Waypoint objects through reflection for the
-    /// fallback tier; see its header for why the two stay separate.
     /// </summary>
     internal static partial class FlightTime
     {

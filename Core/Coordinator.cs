@@ -19,8 +19,7 @@ namespace AutoTOT
 
         /// <summary>
         /// Flight-model trace: how a flight time was computed, where <see cref="VerboseLog"/> covers what
-        /// the coordinator decided. It is most of a traced log, and it runs two extra flight sims and a
-        /// waypoint sim per round.
+        /// the coordinator decided. It is most of a traced log, and it runs two extra flight sims per round.
         /// </summary>
         internal static bool TraceFlightModel = false;
 

@@ -22,7 +22,6 @@ churn and defensive-SAM launches do not drown the log.
 | `sim-track` | the model's own state: `t` / speed / altitude / pitch / `hdgErr` / `roll` / drag / phase / flat distance / slant |
 | `stage-model` | the model's phase boundaries: `finalDist`, `termDist`, `diveStart`, `loftAlt`, `onsetDeg` |
 | `launch-rail` | every candidate launcher transform (`gunObj` / `containerBase` / `mount`), the `fixedRail` verdict, the `predicted` launch angle, `railAz`, and the rotatable / joined / elevation-arc flags. Also the resolved stage schedule (`loftHold`, `loftEntry`, `cruiseAlt`, `finalFlight`) and turn budget (`turn`, `launchTurn`, `gLimit`), so a traced shot records what the model thought it should fly without anyone re-reading the ini |
-| `wp-track` | the tier-2 waypoint sim's own state, for tier comparison |
 
 ### Reality side
 
@@ -92,7 +91,7 @@ have been wrong every time it has been checked.
        misses: 108 calls, 185.9ms total @ 1.721ms avg
        ...
        model: 132 sims, 574855 steps (4354 avg), setup 0.7ms + loop 238.7ms (WALL time summed across main and worker threads, so it exceeds the frame budget it is measured beside), 415us/1k steps
-       tiers: integrator 132, waypoint 0, maxRange 0, failed 0, integrator declined 0
+       tiers: integrator 132, maxRange 0, failed 0, integrator declined 0
     -> UI (outside tick): ...
 ```
 
@@ -128,14 +127,10 @@ once, because the only line that would have shown it sat behind `VerboseLogging`
 runs require to be off. The `estimator: integrator UNAVAILABLE` warning exists for exactly that case
 and is logged whatever the verbose setting.
 
-That warning names `MaxRangePrecise` alone. The waypoint tier cannot cover the public branch:
-`WaypointSim.EnsureLookup` runs only from the beta branch of `EnsureSimLookup`, so off beta the type
-never initialises and tier 2 is skipped.
-
 The second is the threading mode. `EstimatorThreads = 0` and asynchronous operation produce the same
 flight times, so a log with no marker cannot say which one ran.
 
-`tiers:` on the profiling line is the corroborating check: `integrator N, waypoint 0, maxRange 0` is a
+`tiers:` on the profiling line is the corroborating check: `integrator N, maxRange 0` is a
 healthy beta run. `integrator 0` with everything in `maxRange` and a matching `integrator declined`
 count means the integrator answered nothing.
 

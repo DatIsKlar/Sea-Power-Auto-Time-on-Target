@@ -80,10 +80,6 @@ namespace AutoTOT.Lab
             // A kinematic terminal leg entered at TermDist and flown on its line.
             if (System.Environment.GetEnvironmentVariable("AUTOTOT_NO_KIN_TERMINAL_LINE") == "1")
                 FlightTime.KinematicTerminalLine = false;
-            // Counterfactual: the pitch rate handed to CalculateDrag, scaled.
-            FlightTime.OfflineDragPitchRateScale = float.TryParse(
-                System.Environment.GetEnvironmentVariable("AUTOTOT_DRAG_PITCHRATE"),
-                NumberStyles.Float, Inv, out float dragRateScale) ? dragRateScale : 1f;
             // Counterfactuals Q, R and K of the production-step lateness (max-solo-error-below-1s.md, "PL2 revised").
             FlightTime.OfflineArrivalInterp = System.Environment.GetEnvironmentVariable("AUTOTOT_ARRIVAL_INTERP") == "1";
             FlightTime.OfflineGameRounding = System.Environment.GetEnvironmentVariable("AUTOTOT_GAME_ROUNDING") == "1";
@@ -96,10 +92,6 @@ namespace AutoTOT.Lab
             // The double-summed flight time, off to compare with the float32 clock.
             if (System.Environment.GetEnvironmentVariable("AUTOTOT_NO_DOUBLE_CLOCK") == "1")
                 FlightTime.DoubleClock = false;
-            // Counterfactuals M1 (ToBearing left for good) and M2 (TerminalDelay in every terminal consumer) of
-            // docs/plans/open/model-and-launcher-audit.md.
-            FlightTime.OfflineToBearingLatch = System.Environment.GetEnvironmentVariable("AUTOTOT_TOBEARING_LATCH") == "1";
-            FlightTime.OfflineTerminalDelayGate = System.Environment.GetEnvironmentVariable("AUTOTOT_TERMINAL_DELAY_GATE") == "1";
             // Counterfactual M4: substeps only on the step in which the motor burns out.
             FlightTime.OfflineBurnoutSubsteps = System.Environment.GetEnvironmentVariable("AUTOTOT_BURNOUT_SUBSTEPS") == "1";
 
@@ -116,7 +108,6 @@ namespace AutoTOT.Lab
             if (args[0] == "selftest") return SelfTest(args.Skip(1).ToArray());
             if (args[0] == "parity") return Parity(args.Skip(1).ToArray());
             if (args[0] == "schedule") return ScheduleCommand(args.Skip(1).ToArray());
-            if (args[0] == "gates") return GatesCommand(args.Skip(1).ToArray());
 
             bool score = args[0] == "score";
             if (score) args = args.Skip(1).ToArray();

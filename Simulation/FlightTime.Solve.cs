@@ -184,11 +184,6 @@ namespace AutoTOT
             return Mathf.Max(t - OfflineThrustClockLagSec, 0f);
         }
 
-        /// <summary>Offline counterfactual for tools/lab: scales the pitch rate handed to
-        /// <c>CalculateDrag</c>, whose motor-off stall term falls toward zero under a nose-down rate.
-        /// 1 is the shipped behaviour.</summary>
-        internal static float OfflineDragPitchRateScale = 1f;
-
         /// <summary>
         /// A round's recorded physics-step timeline, so a replay flies the steps the round flew instead of
         /// their average. The game adapts its step between 60 Hz and 30 Hz on frame rate; the outcome writer
@@ -228,10 +223,6 @@ namespace AutoTOT
         /// flies a constant step.</summary>
         internal static OfflineStepSchedule OfflineSteps;
 
-        /// <summary>Hull counterfactual variant B: a round still above the hull's top within 3 u keeps the
-        /// older stop, so only a round already down at hull height ends at the hull.</summary>
-        internal static bool OfflineHullOnlyWhenLow;
-
         /// <summary>Counterfactual Q: the arrival time is interpolated inside the step (the hull's slab entry
         /// fraction or the 3 u crossing) instead of taking the start of the first step inside.</summary>
         internal static bool OfflineArrivalInterp;
@@ -263,24 +254,6 @@ namespace AutoTOT
         /// older arrival test ends a flight; NaN when it never got there.</summary>
         internal static float OfflineHeightAtCloseU = float.NaN;
 
-        /// <summary>Offline counterfactual: the round leaves ToBearing for good on the first step inside the
-        /// cone or past the time cap (Missile.cs:343; only Launch and GoToSurface enter ToBearing, :188 and
-        /// :253), instead of re-entering whenever the step's own test reads true.</summary>
-        internal static bool OfflineToBearingLatch;
-
-        /// <summary>Steps of the last replay on which the step's ToBearing test read true after the round had left
-        /// ToBearing. Reset by <see cref="SolveOffline"/>.</summary>
-        internal static int OfflineToBearingReentrySteps;
-
-        /// <summary>Counterfactual M2: TerminalApproach waits for TerminalDelay (Missile.cs:485-538) in every
-        /// consumer, not only the terminal turn split: the terminal stage's speed and altitude, its latch,
-        /// and the group leader's cash-in.</summary>
-        internal static bool OfflineTerminalDelayGate;
-
-        /// <summary>Steps of the last replay flown in the terminal stage before TerminalDelay had passed. Reset by
-        /// <see cref="SolveOffline"/>.</summary>
-        internal static int OfflinePhase2BeforeDelaySteps;
-
         /// <summary>Offline diagnostic for tools/lab `pathcmp`: when set, each step of the next replay
         /// appends its time, flat distance to the target's centre, height above it, speed and pitch.</summary>
         internal static System.Collections.Generic.List<(float T, float Flat, float Height, float Kn, float Pitch)> OfflinePath;
@@ -300,8 +273,6 @@ namespace AutoTOT
             // The step loop calls the game's own thrust and drag helpers through reflection, so the
             // lookup that binds them has to have run. In game this happens during startup.
             EnsureSimLookup();
-            OfflineToBearingReentrySteps = 0;
-            OfflinePhase2BeforeDelaySteps = 0;
             phases = default;
             phases.DiveStartU = -1f;
             phases.FinalFlightStartU = -1f;
@@ -677,8 +648,6 @@ namespace AutoTOT
             double offlinePosX = pos.x, offlinePosY = pos.y, offlinePosZ = pos.z;
             OfflineStepSchedule sched = OfflineSteps;
             int schedIdx = 0;
-            // M1: set on the first step the round is out of ToBearing; the game never enters it again.
-            bool offlineToBearingLeft = false;
 #endif
 
             while (t < maxFlight)
@@ -739,8 +708,6 @@ namespace AutoTOT
                 prevRel = rel;
                 havePrevRel = true;
 #if AUTOTOT_OFFLINE
-                if (hull != null && OfflineHullOnlyWhenLow && flatDist < CloseEnoughDistU && rel.y > hull.HalfHeightU)
-                    closeEnough = true;
                 if (float.IsNaN(OfflineHeightAtCloseU) && flatDist < CloseEnoughDistU)
                     OfflineHeightAtCloseU = rel.y;
 #endif
@@ -795,26 +762,21 @@ namespace AutoTOT
                     // position back past the threshold, 2.3 u on a ship that realises less than its
                     // reported speed, and a distance test alone would read that as leaving the
                     // terminal phase and fly the gap at cruise speed.
-#if AUTOTOT_OFFLINE
-                    // Offline counterfactual: the game enters TerminalApproach only once
-                    // TerminalDelay has passed (Missile.cs:485-538).
-                    if (termDist > 0f && switchFlat <= termDist &&
-                        (!OfflineTerminalDelayGate || t >= terminalDelaySec)) terminalLatched = true;
-#else
                     if (termDist > 0f && switchFlat <= termDist) terminalLatched = true;
-#endif
                 }
 
                 Vector3 horizDir = flatDist > 1e-4f
                     ? new Vector3(dx / flatDist, 0f, dz / flatDist) : Vector3.forward;
                 Vector3 horizDirTarget = horizDir;   // where the round wants to point
-                // Not gated on `nonKin`: the Kinematics == Full path spends one budget too. A surface target
-                // with the default TerminalVerticalTurnRate takes one Vector3.RotateTowards covering yaw and
-                // pitch (WeaponBase.setCourseTowardsPosition, the else of the |terminalRate - rate| > 1
-                // split), and an air target a single 3-D cone rotation. What stays nonKin-only is
-                // BankingAddsRollBudgetToPitch: only the legacy path folds roll into the same quaternion.
-                bool coupledTurn = CoupledPitchYawRateLimit
-                                && launchHeading.sqrMagnitude > 0.5f && t >= initialPhaseDur;
+                // Pitch, yaw and roll share one rotation budget, so independent axes would spend it twice: 90 deg of
+                // pitch with 90 deg of heading error is 120 deg of quaternion travel, and an on-bearing shot reduces
+                // to MoveTowards. The attitude persists across steps, or the budget spent on roll would be refunded
+                // every step. Not gated on `nonKin`: Legacy takes one Quaternion.RotateTowards over the whole rotation
+                // (setCourseTowardsPositionLegacy); Full takes one Vector3.RotateTowards covering yaw and pitch for a
+                // surface target with the default TerminalVerticalTurnRate (the else of the |terminalRate - rate| > 1
+                // split) or one 3-D cone for an air target, levelling roll separately. Only the legacy path folds
+                // roll into the same quaternion (the banking addend in setup).
+                bool coupledTurn = launchHeading.sqrMagnitude > 0.5f && t >= initialPhaseDur;
 
                 // ToBearing, hoisted above the heading slew because the launch turn rate below has
                 // to reach the slew, the coupled turn and the pitch step alike. The mover picks the
@@ -830,19 +792,6 @@ namespace AutoTOT
                                 && t >= initialPhaseDur
                                 && t < initialPhaseDur + ToBearingMaxSeconds
                                 && Mathf.Abs(prevPitch - elevToTgtDeg) >= ToBearingConeDeg;
-#if AUTOTOT_OFFLINE
-                // Offline counterfactual: count, and optionally refuse, a return to ToBearing
-                // after the round has left it.
-                if (launchPitch >= 0f && t >= initialPhaseDur)
-                {
-                    if (offlineToBearingLeft && inToBearing)
-                    {
-                        OfflineToBearingReentrySteps++;
-                        if (OfflineToBearingLatch) inToBearing = false;
-                    }
-                    if (!inToBearing) offlineToBearingLeft = true;
-                }
-#endif
 
                 // The rate this step is budgeted at. Two corrections ride on the base rate, in the
                 // mover's own order: the G-limit derate first, then the ToBearing override, which
@@ -851,10 +800,9 @@ namespace AutoTOT
                 // is the raw ini value, 0 when unset, so the compare below is the mover's own and
                 // an unset key can never re-floor a derated step back up to MaxTurnRate.
                 float stepTurnRate = turnRateBase;
-                if (TurnRateGDerate && turnDerateThresholdKn > 0f && velKnots > turnDerateThresholdKn)
+                if (turnDerateThresholdKn > 0f && velKnots > turnDerateThresholdKn)
                     stepTurnRate *= turnDerateThresholdKn / velKnots;
-                bool toBearingOverride = LaunchTurnRateOverride && inToBearing &&
-                                         toBearingTurnRate > stepTurnRate;
+                bool toBearingOverride = inToBearing && toBearingTurnRate > stepTurnRate;
                 if (toBearingOverride)
                     stepTurnRate = toBearingTurnRate;
                 // The roll addend reaches pitch only where the mover spends one combined rotation. With the
@@ -897,16 +845,8 @@ namespace AutoTOT
                     // to the terminal distance instead of starting down at a geometric onset.
                     float diveStart = KinematicTerminalLine && terminalLinear
                         ? termDist : Mathf.Max(termDist, descentGeomDist);
-#if AUTOTOT_OFFLINE
-                    // M2: count terminal-stage steps flown before TerminalDelay, and optionally refuse them.
-                    bool offlineTerminalStage = !terminalKappaActive && diveStart > 0f &&
-                        (switchFlat <= diveStart || terminalLatched);
-                    if (offlineTerminalStage && t < terminalDelaySec) OfflinePhase2BeforeDelaySteps++;
-                    if (offlineTerminalStage && (!OfflineTerminalDelayGate || t >= terminalDelaySec))
-#else
                     if (!terminalKappaActive && diveStart > 0f &&
                         (switchFlat <= diveStart || terminalLatched))
-#endif
                     { stageTgt = termVelKn; stageAlt = termAlt; phase = 2; }
                     else if (!terminalKappaActive && finalDist > 0f && switchFlat <= finalDist)
                     {
@@ -965,22 +905,21 @@ namespace AutoTOT
                     // aim point, against a 5 deg cone with a 10.0 s cap; inToBearing is resolved at the top
                     // of the step, since its turn rate reaches the heading slew too. Launch and ToBearing
                     // both command _maxVelocityInKnots (Missile.cs:3142).
-                    if (LaunchStageSpeed && (t < initialPhaseDur || inToBearing))
+                    if (t < initialPhaseDur || inToBearing)
                         stageTgt = maxVelKn;
 
+                    // Bang-bang altitude control while transiting, proportional once holding, latched on first
+                    // arrival. The real round holds full climb and then noses over at _maxTurnRateDegrees, so the
+                    // overshoot is the turn rate, not a defect. Arrival is the altitude error changing sign: a band
+                    // test cannot work, since cruise moves 3-5.5 u per 0.1 s step against a 1 u AltToleranceU.
                     bool holdingAlt = false;
-                    if (LatchedProportionalHold)
-                    {
-                        if (phase != altLatchPhase)
-                        { altLatchPhase = phase; altLatched = false; prevAltErr = float.NaN; }
-                        // Arrival = the altitude error CHANGES SIGN. A band test cannot work:
-                        // cruise moves 3-5.5u per 0.1s step against a 1u AltToleranceU.
-                        if (!altLatched && !float.IsNaN(prevAltErr) &&
-                            ((prevAltErr > 0f) != (altErr > 0f)))
-                            altLatched = true;
-                        prevAltErr = altErr;
-                        holdingAlt = altLatched;
-                    }
+                    if (phase != altLatchPhase)
+                    { altLatchPhase = phase; altLatched = false; prevAltErr = float.NaN; }
+                    if (!altLatched && !float.IsNaN(prevAltErr) &&
+                        ((prevAltErr > 0f) != (altErr > 0f)))
+                        altLatched = true;
+                    prevAltErr = altErr;
+                    holdingAlt = altLatched;
 
                     if (holdingAlt)
                     {
@@ -1064,13 +1003,8 @@ namespace AutoTOT
                             // boundary lies inside the entry distance (no groupable ammunition declares a
                             // terminal pop-up). The entry distance is TermDist, the seeker search past the
                             // terminal boundary.
-#if AUTOTOT_OFFLINE
-                            if (i.GroupLeader && !legCashedIn && legFlat <= termDist &&
-                                legIdx < legs.Length - 1 && (!OfflineTerminalDelayGate || t >= terminalDelaySec))
-#else
                             if (i.GroupLeader && !legCashedIn && legFlat <= termDist &&
                                 legIdx < legs.Length - 1)
-#endif
                             {
                                 legCashedIn = true;
                                 legIdx = legs.Length - 1;
@@ -1481,7 +1415,6 @@ namespace AutoTOT
                         : phase == 2 && pos.y > ZeroDensityAltU && pitchDeg < VacuumDivePitchThreshold;
                     float dragTargetAlt = inVacuumDive ? pos.y : predTgt.y;
 #if AUTOTOT_OFFLINE
-                    float offlineDragRate = -pitchRate * OfflineDragPitchRateScale;
                     // M4: the step in which the motor burns out, found with the game's own thrust function,
                     // which returns exactly 0 once both burns are over (a partial-kinematics sustain phase
                     // returns a negative value).
@@ -1500,7 +1433,7 @@ namespace AutoTOT
                             float subThrust = _thrustFn(ap, isAir, OfflineThrustClock(t + k * sdt), sdt) * OfflineMotorScale;
                             velKnots += subThrust;
                             velKnots -= _dragFn(pos.y, velKnots * KU, sdt, -pitchDeg, dragFactor, subThrust > 0f,
-                                                dragTargetAlt, ap.LiftFactor, ap.MinVelocity, offlineDragRate);
+                                                dragTargetAlt, ap.LiftFactor, ap.MinVelocity, -pitchRate);
                             sumKn += velKnots;
                         }
                         offlineStepKn = sumKn / offlineSub;
@@ -1508,14 +1441,14 @@ namespace AutoTOT
                     else if (_dragFn != null)
                         dragThisStep = _dragFn(pos.y, velKnots * KU, dt, -pitchDeg, dragFactor,
                                                motorBurning, dragTargetAlt, ap.LiftFactor,
-                                               ap.MinVelocity, offlineDragRate);
+                                               ap.MinVelocity, -pitchRate);
                     else
                     {
                         if (dragArgs == null) dragArgs = new object[10];
                         dragArgs[0] = pos.y; dragArgs[1] = velKnots * KU; dragArgs[2] = dt; dragArgs[3] = -pitchDeg;
                         dragArgs[4] = dragFactor; dragArgs[5] = motorBurning;
                         dragArgs[6] = dragTargetAlt;
-                        dragArgs[7] = ap.LiftFactor; dragArgs[8] = ap.MinVelocity; dragArgs[9] = offlineDragRate;
+                        dragArgs[7] = ap.LiftFactor; dragArgs[8] = ap.MinVelocity; dragArgs[9] = -pitchRate;
                         dragThisStep = (float)_dragMethod.Invoke(null, dragArgs);
                     }
 #else

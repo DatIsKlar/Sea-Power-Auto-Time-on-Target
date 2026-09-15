@@ -286,7 +286,7 @@ namespace AutoTOT
             if (haveTarget)
             {
                 // Out-of-range rows print "(out of range)" instead of an ETA, so they are not simulated: an
-                // unreachable shot is where the integrator bails and WaypointSim runs too.
+                // unreachable shot is where the integrator bails and the fallback estimator runs too.
                 if (r.InRange)
                 {
                     CoordinatorProfiler.Begin(CoordinatorProfiler.Stage.UiEstimate);

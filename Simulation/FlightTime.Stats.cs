@@ -15,7 +15,7 @@ namespace AutoTOT
     internal static class ModelStats
     {
         /// <summary>Which tier of <c>KinematicRaw</c> produced the answer.</summary>
-        internal enum Tier { Integrator, Waypoint, MaxRangePrecise, Failed }
+        internal enum Tier { Integrator, MaxRangePrecise, Failed }
 
         internal static bool Enabled;
 
@@ -24,7 +24,7 @@ namespace AutoTOT
         internal static double SetupMs;        // per-sim work before the step loop
         internal static double LoopMs;         // the step loop itself
         internal static int Stalls;            // runs that bailed out (returned -1)
-        private static readonly int[] _tier = new int[4];
+        private static readonly int[] _tier = new int[3];
 
         // Per-thread, because the step loop can run on a worker and concurrent sims would overwrite each other's start
         // stamps. The shared accumulators below merge under a lock taken twice per sim, never per step.

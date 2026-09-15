@@ -38,8 +38,7 @@ each tier in order. The first tier returning a value above `MinValidSeconds` (0.
 Estimate
  ├─ KinematicRaw
  │   ├─ Tier 1: IntegratedEndTime        grounded step integrator     (beta only)
- │   ├─ Tier 2: WaypointSim.EndTime      ported public shot sim       (beta only)
- │   └─ Tier 3: MaxRangePreciseEndTime   the game's own estimator     (both branches)
+ │   └─ Tier 2: MaxRangePreciseEndTime   the game's own estimator     (both branches)
  └─ straight-line at max speed           last resort                  (both branches)
 ```
 
@@ -52,14 +51,13 @@ the shot down rather than corrupting it.
 The game's shot-simulation API differs between Sea Power branches. `FlightTime.EnsureSimLookup`
 detects which is loaded at startup: it looks for `Missile.SimulateShotLinear` (the public signature),
 and if that method is absent it resolves `MissileSimulator.EstimateShot`, marks the session as beta,
-and resolves the integrator's and waypoint sim's reflection surfaces.
+and resolves the integrator's reflection surfaces.
 
 | tier | public branch | beta branch |
 |---|---|---|
 | 1: grounded integrator | gated off (`_simIsBeta` false) | **primary** |
-| 2: ported waypoint sim | not wired | middle fallback |
-| 3: game estimator | **primary**: `MaxRangePrecise` drives the game's own `SimulateShotLinear` | last resort |
-| 4: straight line | last resort | last resort |
+| 2: game estimator | **primary**: `MaxRangePrecise` drives the game's own `SimulateShotLinear` | last resort |
+| 3: straight line | last resort | last resort |
 
 On the public branch the game's own simulator is accurate and the mod defers to it. On beta the
 built-in `EstimateShot` measures about 30 s off on lofting missiles, which is why the integrator
@@ -76,7 +74,7 @@ The bias comes from the flyout the fit is taken over, in rough order of suspicio
    drag uses `LiftLoadFactor^2`;
 4. smearing in the distance curve becomes time error wherever the gap's slope is shallow.
 
-Tier 4 is worth naming for what it is: the game's own on-screen TOT readout computes
+Tier 3 is worth naming for what it is: the game's own on-screen TOT readout computes
 `TargetRange / FiringWeapon.MaxVelocity` (`TimeOnTargetCalculation.cs:87`), a straight line at
 max speed. The last-resort tier is the same arithmetic the game shows the player.
 
@@ -111,5 +109,4 @@ The integrator returns −1, handing the shot to tier 2, when:
 |---|---|
 | `Simulation/FlightTime.cs` | entry point, tier chain, caching, reflection lookup |
 | `Simulation/FlightTime.Integrator.cs` | tier 1, the integrator |
-| `Simulation/WaypointSim.cs` | tier 2, the ported public shot sim |
 | `Diagnostics/LaunchDiagnostics.cs` | observation of real flights for comparison |

@@ -35,8 +35,7 @@ namespace AutoTOT
         /// field falls back to the altitude gate.
         /// </summary>
         internal const float NoSeekerBrakeWindow = -1f;
-        /// <summary>g in knots per second, for converting an ini deceleration in g into knots/s.
-        /// Shared with WaypointSim, which computes the same decel from the same two factors.</summary>
+        /// <summary>g in knots per second, for converting an ini deceleration in g into knots/s.</summary>
         internal const float GravityKnPerMs = 9.8f * 1.94384f;
         private const float StallSpeedMultiplier = 1.1f;
         private const float CloseEnoughDistU = 3f;
@@ -73,72 +72,11 @@ namespace AutoTOT
         // BuildAltitudeNodes only constructs a loft curve when its loft leg exceeds one game unit.
         private const float MinimumLoftLegDistanceU = 1f;
 
-        // Isolation gates: each mirrors one piece of the live mover's behaviour, kept separate so one rebuild
-        // can A/B them. All are validated and on; what each models is in docs/model/03-trajectory.md.
-
-        // Bang-bang altitude control while transiting, proportional once holding, latched on first arrival.
-        // The real round holds full climb and then noses over at _maxTurnRateDegrees, so the overshoot is the
-        // turn rate, not a defect.
-        private const bool LatchedProportionalHold = true;
-
-        // TerminalApproach needs the seeker to hold an echo for SearchForTargetsTime, not just the
-        // distance, and the clock resets on every tick without one (Missile.cs:584-593), so the
-        // missile closes at CRUISE speed past its nominal _terminalApproachDist.
-        private const bool SearchTimeTerminalOnset = true;
-
-        // Launch-phase fidelity: the game runs Launch -> ToBearing before any cruise or loft command, with a different
-        // commanded speed and attitude, and those first seconds carry as a fixed offset for the whole flight.
-
         // ToBearing's exit condition, which decides when the launch stage ends. It selects the commanded
         // speed below; it does not command an attitude.
         private const float ToBearingConeDeg = 5f;      // Missile.cs:343
         private const float ToBearingMaxSeconds = 10f;  // Missile.cs:343
 
-        // Launch/ToBearing command _maxVelocityInKnots; loft speed waits for MaintainLoftAlt (Missile.cs:3142-3145).
-        private const bool LaunchStageSpeed = true;
-
-        // Launch elevation from the launcher's container transform, not `_fixVerticalLaunchAngle`, which
-        // reads 35 deg for every launcher (the ini default, with its gating bool also defaulting true;
-        // ObjectBaseLoader, "FixVerticalLaunchAngle").
-        private const bool LauncherTransformLaunchAngle = true;
-
-        // A launcher that cannot train fires along its OWN bearing, so an off-bearing shot flies its
-        // initial phase the wrong way and then turns. railAz, not bearingErr, predicts that turn.
-        private const bool FixedRailLaunchHeading = true;
-
-        // A vertical rail has no bearing of its own, so the round leaves carrying the SHIP's yaw.
-        private const bool VerticalLaunchInheritsShipHeading = true;
-
-        // Pitch, yaw and roll share one rotation budget, so independent axes would spend it twice: 90 deg of
-        // pitch with 90 deg of heading error is 120 deg of quaternion travel. An on-bearing shot reduces to
-        // MoveTowards. The attitude must persist across steps, or the budget spent on roll is refunded every step.
-        //
-        // Not scoped to Kinematics == None, because both mover paths spend one budget: Legacy takes one
-        // Quaternion.RotateTowards over the whole rotation (WeaponBase.setCourseTowardsPositionLegacy), Full
-        // one Vector3.RotateTowards over the forward vector for a surface target or one Quaternion.AngleAxis
-        // cone for an air target (setCourseTowardsPosition). Full levels roll separately, which matches
-        // rotating an attitude with roll zero. Only the per-axis split differs, needing a
-        // TerminalVerticalTurnRate more than 1 deg/s from MaxTurnRate (6 of 446 ammunition).
-        private const bool CoupledPitchYawRateLimit = true;
-
-        // In ToBearing the mover floors the turn rate at LaunchTurnRate when the ini sets it above the
-        // ordinary rate (WeaponBase.setCourseTowardsPosition, the toBearingState branch). Three shipped
-        // ammunition set it (usn_rgm-84a 40 deg/s against MaxTurnRate 15, wp_sa-n-6 40 against 20, wp_sa-n-9
-        // 360 against 30); unmodelled, the round turns onto its target too slowly and the estimate runs late.
-        private const bool LaunchTurnRateOverride = true;
-
-        // The mover converts the commanded turn rate into a G-load at the current speed and cuts the rate
-        // above MaxTurnG (WeaponBase.setCourseTowardsPosition, ahead of the Kinematics dispatch, so both
-        // paths derate); unmodelled, the round turns harder than the game allows and the estimate runs early.
-        // Inert on anti-ship missiles (none sets MaxTurnG, so all take the 200 g default), but 57 SAMs and
-        // AAMs exceed their own limit at max speed, and the coordinator plans for those too.
-        private const bool TurnRateGDerate = true;
-
-        // Non-kinematic + SupportsBanking gets a second rotation call per tick: RollTowardsLevel's banking
-        // branch into performToTargetRoll, a hardcoded 60 deg/s RotateTowards on top of the normal one. It
-        // assigns local euler to world rotation, gimbal-degenerate near vertical, so after a VLS launch that
-        // budget lands on pitch and the two sum.
-        private const bool BankingAddsRollBudgetToPitch = true;
         private const float BankingRollRateDeg = 60f;   // WeaponBase.cs:1792, hardcoded
 
         // Except while the ToBearing turn-rate override is in force: the rate then differs from MaxTurnRate, and
@@ -299,7 +237,9 @@ namespace AutoTOT
                         catch { }
                     }
 
-                    if (LauncherTransformLaunchAngle && predictedPitch >= 0f)
+                    // Launch elevation from the launcher's container transform, not `_fixVerticalLaunchAngle`, which
+                    // reads 35 deg for every launcher (the ini default, with its gating bool also defaulting true).
+                    if (predictedPitch >= 0f)
                         launchPitch = predictedPitch;
                 }
             }
@@ -435,7 +375,10 @@ namespace AutoTOT
             // ending OnLineToTarget: a direct run at the target. Building the leg anyway would command a
             // short shot to climb toward cruise altitude for its whole flight.
             if (isTerminalLoft) termDist = 0f;
-            if (SearchTimeTerminalOnset && ap._searchForTargetsTime > 0f)
+            // TerminalApproach needs the seeker to hold an echo for SearchForTargetsTime, not just the distance, and
+            // the clock resets on every tick without one (Missile.cs:584-593), so the missile closes at cruise speed
+            // past its nominal _terminalApproachDist.
+            if (ap._searchForTargetsTime > 0f)
             {
                 // Distance the missile still covers at cruise while the seeker searches.
                 termDist = Mathf.Max(
@@ -940,9 +883,11 @@ namespace AutoTOT
                 // touches. The step loop derives the addend by subtraction, so one number travels instead of two.
                 float turnRateBase = ap._maxTurnRateDegrees > VelocityEpsilonKn ? ap._maxTurnRateDegrees : DefaultTurnRateDeg;
                 float turnRate = turnRateBase;
-                // See BankingAddsRollBudgetToPitch above: the roll call is a second, independent
-                // per-tick budget, so the two can sum onto pitch.
-                if (BankingAddsRollBudgetToPitch && nonKin && ap._supportsBanking)
+                // Non-kinematic + SupportsBanking gets a second rotation call per tick: RollTowardsLevel's banking
+                // branch into performToTargetRoll, a hardcoded 60 deg/s RotateTowards on top of the normal one. It
+                // assigns local euler to world rotation, gimbal-degenerate near vertical, so after a VLS launch that
+                // budget lands on pitch and the two sum.
+                if (nonKin && ap._supportsBanking)
                     turnRate += BankingRollRateDeg;
                 float toBearingTurnRate = ResolveToBearingTurnRate(ap);
                 float turnDerateThresholdKn = ResolveTurnDerateThreshold(ap, turnRateBase);
@@ -991,19 +936,18 @@ namespace AutoTOT
                 float velKnots = startVelKnots;
                 float t = 0f;
                 float prevPitch = launchPitch >= 0f ? launchPitch : 0f;
-                // Launch heading for a fixed launcher: the horizontal analogue of prevPitch. From
-                // the rail's own bearing where it has one, else the ship's yaw for a vertical
-                // cell. Zero when there is nothing to model (trainable mount, or no rail
-                // resolved), in which case horizDir keeps aiming straight at the target.
+                // Launch heading for a fixed launcher, the horizontal analogue of prevPitch: a launcher that cannot
+                // train fires along its own bearing, so an off-bearing shot flies its initial phase the wrong way and
+                // then turns. From the rail's bearing where it has one, else the ship's yaw for a vertical cell. Zero
+                // when there is nothing to model (trainable mount, or no rail resolved), so horizDir keeps aiming
+                // straight at the target.
                 Vector3 launchHeading = Vector3.zero;
-                if (FixedRailLaunchHeading && fixedRail && rail != null)
+                if (fixedRail && rail != null)
                 {
-                    if (!GameMath.TryFlatDirection(rail.forward, out launchHeading)
-                        && VerticalLaunchInheritsShipHeading)
+                    if (!GameMath.TryFlatDirection(rail.forward, out launchHeading))
                     {
-                        // Vertical rail: no bearing of its own, so inherit the ship's yaw
-                        // (see VerticalLaunchInheritsShipHeading). Same vector the bearingErr
-                        // diagnostic reads above; the per-step block below is reused unchanged.
+                        // Vertical rail: no bearing of its own, so the round leaves carrying the ship's yaw. Same
+                        // vector the bearingErr diagnostic reads above.
                         GameMath.TryFlatDirection(unit.transform.forward, out launchHeading);
                     }
                 }

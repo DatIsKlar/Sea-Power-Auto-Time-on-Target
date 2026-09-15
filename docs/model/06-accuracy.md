@@ -228,10 +228,9 @@ can be, and they are recorded so nobody spends a test run chasing them.
   matter: whether a round launched inside terminal distance turns on its terminal vertical rate
   ([§3.1](03-trajectory.md#heading)). The phase-2 speed and altitude ignore it, since the delay is
   seconds and terminal distance is tens of kilometres.
-- **Tiers 2 and 3 disagree with the mover for a moving surface launcher, and the mover is right.**
-  The ported waypoint sim seeds launch speed from the platform for every unit, matching what the live
-  mover does. The game's own `MaxRangePrecise` seeds it only for air units. This is a deliberate
-  deviation from tier 3, not an oversight, and should not be "fixed" toward it.
+- **The game's own estimator disagrees with the mover for a moving surface launcher, and the mover is right.**
+  The live mover seeds launch speed from the platform for every unit; the game's own `MaxRangePrecise` seeds
+  it only for air units. Following the mover is deliberate and should not be "fixed" toward that tier.
 - **The vacuum brake is a proxy, not a lock reading.** The model's `dragTargetAlt` override mirrors
   the mover's own `CurrentTarget ? target.y : own y` for the part of flight before the seeker is up.
   The -40 degree pitch and phase-2 gate stand in for "seeker not up yet, past apex", because seeker

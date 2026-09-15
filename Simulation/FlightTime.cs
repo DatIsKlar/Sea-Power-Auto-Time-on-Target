@@ -14,9 +14,8 @@ namespace AutoTOT
         private const float GroupFormingDistMultiplier = 2.5f;
         private const float GroupFormingDelayFraction = 0.4f;
 
-        // Shared by every flight-sim tier (integrator, waypoint port): the evasive-target speed
-        // boost, as a fraction of the target's own speed, and the sim horizon used when the ammo
-        // declares no _maxFlightTime.
+        // The evasive-target speed boost, as a fraction of the target's own speed, and the sim horizon used when the
+        // ammo declares no _maxFlightTime.
         internal const float EvasiveBoostFraction = 0.8f;
         internal const float MaxFlightTimeFallback = 600f;
         /// <summary>
@@ -504,15 +503,6 @@ namespace AutoTOT
             // The integrator declined to answer, so this call also pays for whichever tier does.
             ModelStats.Stalled();
 
-            if (WaypointSim.Ready && WaypointSim.FullReady)
-            {
-                float waypointEst = WaypointSim.EndTime(unit, ap, target);
-                if (waypointEst > MinValidSeconds)
-                {
-                    ModelStats.TierUsed(ModelStats.Tier.Waypoint);
-                    return waypointEst;
-                }
-            }
             float maxRangeEst = MaxRangePreciseEndTime(unit, ap, target);
             ModelStats.TierUsed(maxRangeEst > MinValidSeconds ? ModelStats.Tier.MaxRangePrecise
                                                               : ModelStats.Tier.Failed);

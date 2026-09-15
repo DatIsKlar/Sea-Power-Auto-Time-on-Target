@@ -30,7 +30,6 @@ namespace AutoTOT
             // Estimates at first sighting, for the gap line. -1 = unavailable.
             public float KinEstAtLaunch;   // the active estimator (the integrator on beta)
             public float LegacyEstAtLaunch; // the game's own EstimateShot intercept time
-            public float WpEstAtLaunch;    // the ported waypoint sim
             public float PeakSpeedKn;      // highest speed the live missile reached (kn)
             public float PeakAltU;         // highest altitude seen (Unity units)
             public float LastSpeedKn;      // most recent speed (kn), roughly the impact speed
@@ -290,7 +289,7 @@ namespace AutoTOT
                 try
                 {
                     float distM = GameUnits.MetersBetween(w, tgt);
-                    // The per-missile flight-model block (two extra flight sims and a waypoint sim per round,
+                    // The per-missile flight-model block (two extra flight sims per round,
                     // for the gap comparison) runs under TraceFlightModel only.
                     bool trace = Coordinator.TraceFlightModel;
                     if (_flightTracker.TryGetValue(w, out FlightSample existing))
@@ -379,11 +378,6 @@ namespace AutoTOT
                             // the gap line.
                             legacyEst = FlightTime.MaxRangePreciseEndTime(w._launchPlatform, w._ap, tgt);
                         }
-                        // The ported waypoint sim's estimate, printed beside the others on the gap line.
-                        float wpEst = -1f;
-                        if (trace && coordinated && WaypointSim.Ready && WaypointSim.FullReady &&
-                            w._launchPlatform != null && w._ap != null)
-                            wpEst = WaypointSim.EndTime(w._launchPlatform, w._ap, tgt, emitDiag: true);
                         string dumpKey = (Coordinator.TraceFlightModel && coordinated && w._ap != null &&
                                           w._launchPlatform != null)
                             ? FlightTime.DumpInputFor(w._launchPlatform, w._ap._ammunitionFileName, tgt, launchState)
@@ -402,7 +396,6 @@ namespace AutoTOT
                             LastTelemetrySim = -1f,
                             KinEstAtLaunch = est,
                             LegacyEstAtLaunch = legacyEst,
-                            WpEstAtLaunch = wpEst,
                             PeakAltU = trace && w.transform != null ? w.transform.position.y : 0f,
                             LastSpeedKn = trace ? w._velocityInKnots : 0f,
                             PeakSpeedKn = trace ? w._velocityInKnots : 0f,
@@ -515,7 +508,6 @@ namespace AutoTOT
                 LastTelemetrySim = -1f,
                 KinEstAtLaunch = -1f,
                 LegacyEstAtLaunch = -1f,
-                WpEstAtLaunch = -1f,
                 Shooter = w._launchPlatform,
                 ShooterAmmoId = ammo,
                 Coordinated = EngagementBoard.IsCoordinated(tgt),
@@ -879,7 +871,7 @@ namespace AutoTOT
                                 s.InGroup, s.GroupLeader, s.MaxGroupSize,
                                 s.PeakSpeedKn, s.PeakAltU, s.LastSpeedKn, s.Track,
                                 s.FlightTrack, s.GuardTrack, s.PitchRateTrack,
-                                s.WpEstAtLaunch, s.LegacyEstAtLaunch,
+                                s.LegacyEstAtLaunch,
                                 s.StageChanges, s.StageEvents, s.GroupChanges, s.StepChanges,
                                 s.RegisteredSim, s.StartupLead, s.EnvelopeLead, s.ReleaseLead,
                                 s.ImpactAtSim, s.WasAnchor, s.TargetLengthM, s.TargetBoundsM,
@@ -905,13 +897,10 @@ namespace AutoTOT
                             string legacy = s.LegacyEstAtLaunch > 0f
                                 ? $", legacyEst {s.LegacyEstAtLaunch:0.0}s (gap {flightMeasured - s.LegacyEstAtLaunch:+0.0;-0.0}s)"
                                 : "";
-                            string wp = s.WpEstAtLaunch > 0f
-                                ? $", wpEst {s.WpEstAtLaunch:0.0}s (gap {flightMeasured - s.WpEstAtLaunch:+0.0;-0.0}s)"
-                                : "";
                             Bootstrap.Log.LogInfo(
                                 $"[AutoTOT] gap {s.AmmoName} -> {s.TargetName}: simEst {s.KinEstAtLaunch:0.0}s, " +
                                 $"actual {flightMeasured:0.0}s{measuredTo}, gap {flightMeasured - s.KinEstAtLaunch:+0.0;-0.0}s, " +
-                                $"peakAlt {s.PeakAltU:0}u, realPeakSpd {s.PeakSpeedKn:0}kn, termSpd {s.LastSpeedKn:0}kn{wp}{legacy}");
+                                $"peakAlt {s.PeakAltU:0}u, realPeakSpd {s.PeakSpeedKn:0}kn, termSpd {s.LastSpeedKn:0}kn{legacy}");
                         }
                     }
 #if LIVETEST

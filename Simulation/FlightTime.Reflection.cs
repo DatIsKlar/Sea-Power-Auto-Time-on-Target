@@ -148,7 +148,6 @@ namespace AutoTOT
                                 "changed the method.");
 
                         LogSimInit(ms);
-                        WaypointSim.EnsureLookup(typeof(Missile).Assembly);
                     }
                 }
                 LogEstimatorBinding();
@@ -172,8 +171,6 @@ namespace AutoTOT
             }
             else
             {
-                // Names MaxRangePrecise alone: WaypointSim is initialised only from the _simIsBeta branch
-                // below, so off that branch Ready stays false and KinematicRaw skips the tier.
                 Bootstrap.Log.LogWarning(
                     $"[AutoTOT] estimator: integrator UNAVAILABLE on the {branch} branch " +
                     $"(SimulateShotLinear {(_simulateShotMethod != null && !_simIsBeta)}, " +

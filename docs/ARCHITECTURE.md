@@ -528,9 +528,8 @@ This section only summarizes what the scheduling pipeline consumes.
 | Tier | Estimator | Where it runs |
 |---|---|---|
 | 1 | Grounded step integrator (`FlightTime.IntegratedEndTime`): forward-Euler sim over the game's own thrust/drag helpers; models the trajectory shape itself | beta only, primary |
-| 2 | Ported waypoint sim (`WaypointSim.EndTime`): reflection port of the public branch's `SimulateShotLinear` | beta only, middle fallback |
-| 3 | Game estimator (`AmmunitionParameters.MaxRangePrecise`, `iterations=0`, reflection) | both branches; primary on public, last resort on beta |
-| 4 | Straight-line max speed | both branches, last-resort bound |
+| 2 | Game estimator (`AmmunitionParameters.MaxRangePrecise`, `iterations=0`, reflection) | both branches; primary on public, last resort on beta |
+| 3 | Straight-line max speed | both branches, last-resort bound |
 
 On the **beta** branch the built-in `EstimateShot` measured ~30 s off on lofting
 missiles, which is why the integrator is primary there. On the **public** branch
@@ -989,7 +988,6 @@ Sources live in five folders by concern: `Core/` (pipeline + lifecycle),
 | `Simulation/FlightTime.Async.cs` | Worker pool, result drain, and the solve self-check |
 | `Simulation/FlightTime.Reflection.cs` | Branch detection + reflection resolution, and the typed-delegate fast path for the per-step thrust/drag calls |
 | `Simulation/FlightTime.Stats.cs` | Estimator cost counters: sims, integration steps, setup vs loop time, which tier answered |
-| `Simulation/WaypointSim.cs` | Reflection port of the public `SimulateShotLinear` (tier 2, beta) |
 | `Simulation/SubmarineAscent.cs`, `Simulation/AircraftDescent.cs` | Time for a submarine to rise, or an aircraft to descend, into its launch envelope |
 | `Support/GameClock.cs` | Version-agnostic sim clock + launch-timestamp access (float/double beta drift) |
 | `Support/GameUnits.cs` | Shared unit conversions (Unity units ↔ metres/nm/knots/feet) |
@@ -1288,13 +1286,13 @@ the per-round impact residual. This is the setting to turn on for a timing or co
 and the one whose output is small enough to read.
 
 **`TraceFlightModel`** answers *how was that flight time produced*: the integrator's step trace
-(`sim-track`), the waypoint sim (`wp-track`), per-missile telemetry (`track`), launch geometry
+(`sim-track`), per-missile telemetry (`track`), launch geometry
 (`launch-rail`, `sim-launch`), stage transitions (`stage-obs`, `stage-model`, `int-phases`) and the
 estimate-versus-actual `gap`. It is the tool for a flight time that looks wrong.
 
 It is deliberately separate because it dominates everything else: in a traced session it is about 90
 percent of the log, which would bury the coordination lines the verbose setting exists to show. It
-also costs real work: the per-missile block it gates runs two extra flight sims and a waypoint sim
+also costs real work: the per-missile block it gates runs two extra flight sims
 per round, purely to print a comparison.
 
 `SHORTFALL`, the `anchored` summary and the warnings stay unconditional, because those are the lines

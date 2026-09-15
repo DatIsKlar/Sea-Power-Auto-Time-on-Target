@@ -139,10 +139,8 @@ namespace AutoTOT.Lab
             var flownGaps = new Dictionary<string, string>();
             var lastSeenFlights = new Dictionary<string, string>();
             // Each replay ends where the round enters the target's hull, as the mod's does; see ReplayHull.
-            // AUTOTOT_NO_HULL_ARRIVAL=1 ends every replay 3 u from the centre instead, and
-            // AUTOTOT_HULL_ARRIVAL=low keeps that stop for a round still above the hull's top.
+            // AUTOTOT_NO_HULL_ARRIVAL=1 ends every replay 3 u from the centre instead.
             bool useHullArrival = System.Environment.GetEnvironmentVariable("AUTOTOT_NO_HULL_ARRIVAL") != "1";
-            FlightTime.OfflineHullOnlyWhenLow = System.Environment.GetEnvironmentVariable("AUTOTOT_HULL_ARRIVAL") == "low";
             Dictionary<string, Vector3> hullByName = useHullArrival ? HullsByTargetName(files) : null;
             var hullArrivals = new Dictionary<string, string>();
             var skipped = new List<string>();

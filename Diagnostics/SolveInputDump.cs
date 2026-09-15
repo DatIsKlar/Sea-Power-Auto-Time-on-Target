@@ -235,7 +235,7 @@ namespace AutoTOT
                                          List<string> flightTrack,
                                          List<string> guardTrack,
                                          List<string> pitchRateTrack,
-                                         float wpEst, float legacyEst,
+                                         float legacyEst,
                                          List<string> stageChanges, List<string> stageEvents,
                                          List<string> groupChanges,
                                          List<string> stepChanges,
@@ -313,8 +313,7 @@ namespace AutoTOT
                 // frame; field order in LaunchDiagnostics.MaybeRecordPitchRate.
                 b.AppendLine(F("PitchRateTrack", pitchRateTrack == null || pitchRateTrack.Count == 0
                                                  ? "" : string.Join(";", pitchRateTrack)));
-                // The other estimator tiers at launch, so tiers can be compared across the corpus without re-flying.
-                b.AppendLine(F("WpEstAtLaunch", wpEst));
+                // The game's own estimator at launch, so the tiers can be compared across the corpus without re-flying.
                 b.AppendLine(F("LegacyEstAtLaunch", legacyEst));
                 // Where the game changed flight stage: the ground truth for the model's phase boundaries.
                 b.AppendLine(F("StageChanges", stageChanges == null || stageChanges.Count == 0

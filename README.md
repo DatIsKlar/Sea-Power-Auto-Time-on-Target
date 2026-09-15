@@ -24,7 +24,7 @@ appears in the in-game **Mods** menu like any other mod.
 
 | Requirement | Notes |
 |---|---|
-| Sea Power | The same DLL runs on the public branch (0.8.2, build #358) and on the `stable` beta branch (build s367). On **beta** the game's own `EstimateShot` is 3 to 69 s off on the shots measured, so AutoTOT runs its own step integrator, with a ported waypoint sim as fallback: non-kinematic missiles land with a mean error of 0.55 s over flights of 40 s to 16 minutes (see [`docs/model/`](docs/model/00-index.md)). On **public** the integrator cannot bind and the game's `SimulateShotLinear` drives timing. |
+| Sea Power | The same DLL runs on the public branch (0.8.2, build #358) and on the `stable` beta branch (build s367). On **beta** the game's own `EstimateShot` is 3 to 69 s off on the shots measured, so AutoTOT runs its own step integrator, with the game's estimator as fallback: non-kinematic missiles land with a mean error of 0.55 s over flights of 40 s to 16 minutes (see [`docs/model/`](docs/model/00-index.md)). On **public** the integrator cannot bind and the game's `SimulateShotLinear` drives timing. |
 | BepInEx 5.x | Installed in the game folder (provides logging, config, Harmony) |
 | Anchor Chain (Steam Workshop item `3380210757`) | The chainloader that loads this mod; it also installs its preloader into `BepInEx/plugins/`. Enable it in the Mods menu too |
 | Seapower Multiplayer *(optional)* | Not needed, but AutoTOT ships a shield for that mod's multiplayer world-re-init crash (see [How it works](#how-it-works)) |
@@ -239,8 +239,8 @@ Short version; pipeline detail in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 the full flight-time model in [`docs/model/`](docs/model/00-index.md).
 
 - **Flight times** come from a tiered estimator chain. On **beta** a grounded
-  step integrator built on the game's own physics helpers is primary, with a
-  ported waypoint sim and the game's built-in estimator as fallbacks. On
+  step integrator built on the game's own physics helpers is primary, with the
+  game's built-in estimator as the fallback. On
   **public** the integrator gates off and the game's own shot simulator drives
   timing. Estimates are cached 0.5 real s per shooter/ammo/target; straight-line
   max speed is the last-resort bound.
@@ -293,7 +293,6 @@ Sources live in five folders by concern: `Core/` (pipeline + lifecycle),
 | `Simulation/FlightTime.Async.cs` | Worker pool that runs the loop, plus the self-check that compares a threaded result against the main thread |
 | `Simulation/FlightTime.Reflection.cs` | Reflection resolution for the game's sim internals (beta/legacy drift) + the typed-delegate fast path for per-step thrust/drag |
 | `Simulation/FlightTime.Stats.cs` | Estimator cost counters (simulations, steps, which tier answered) behind the `Profiling` switch |
-| `Simulation/WaypointSim.cs` | Reflection port of the public `SimulateShotLinear`, the middle-tier fallback estimator |
 | `Simulation/FlightTime.Waypoints.cs` | The waypoint route a non-kinematic round flies and its look-ahead point, as pure functions |
 | `Simulation/FlightTime.Lead.cs` | The game's lead intercept point, ported so the model aims where the round aims |
 | `Simulation/SubmarineAscent.cs`, `Simulation/AircraftDescent.cs` | Time for a submarine to rise, or an aircraft to descend, into its launch envelope |
@@ -340,7 +339,7 @@ read once when the game starts and need a restart: `Enabled`, `AutoModeOnStart` 
 | Timing | `GroupWindowSeconds` | `0.75` | Quiet gap (real s) after the last order before the batch locks in. |
 | Timing | `MaxCollectSeconds` | `6.0` | Hard cap (real s) on how long one target collects orders. |
 | Debug | `VerboseLogging` | `false` | Log what the coordinator decided and why: every queued, committed and released order, the anchor trace, launch crediting and the impact residual. The flight-model internals are `TraceFlightModel`. Leave it off unless you are investigating something. |
-| Debug | `TraceFlightModel` | `false` | Log the flight-model internals behind every estimate: the integrator step trace, the waypoint sim, launch geometry, stage transitions and the estimate-versus-actual gap. Roughly ten times the volume of `VerboseLogging` and it runs extra simulations per round, so use it only when a flight time looks wrong. |
+| Debug | `TraceFlightModel` | `false` | Log the flight-model internals behind every estimate: the integrator step trace, launch geometry, stage transitions and the estimate-versus-actual gap. Roughly ten times the volume of `VerboseLogging` and it runs extra simulations per round, so use it only when a flight time looks wrong. |
 | Debug | `Profiling` | `false` | Log a timing report every 60 frames: the mod's share of the frame, worst frame, where the time went, and how many flight simulations ran. |
 | Debug | `VerifySolve` | `false` | Run every threaded flight simulation a second time on the main thread and warn if the answers differ. Doubles the simulation work, so use it to check correctness rather than to measure speed. |
 | Performance | `EstimatorThreads` | `-1` | Worker threads for flight simulation. `-1` takes a quarter of the logical cores, at least 1 and at most 4. `0` runs everything on the main thread. Raise it only if the profiling line shows the queue backing up. Read at game start. |

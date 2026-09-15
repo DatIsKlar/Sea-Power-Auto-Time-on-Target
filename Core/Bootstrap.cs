@@ -271,7 +271,7 @@ namespace AutoTOT
                 "Log every queued and released launch.");
             _cfgTraceFlightModel = _config.Bind("Debug", "TraceFlightModel", false,
                 "Research tool, off by default. Logs the flight-model internals behind every " +
-                "estimate: the integrator's step trace, the waypoint sim, per-missile telemetry, " +
+                "estimate: the integrator's step trace, per-missile telemetry, " +
                 "launch geometry and the stage transitions, plus the estimate-vs-actual gap. Use it " +
                 "when a flight time looks wrong. It is roughly ten times the volume of ordinary " +
                 "verbose logging and runs extra sims per round, so leave it off for normal play " +

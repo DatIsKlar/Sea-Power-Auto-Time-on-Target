@@ -164,8 +164,8 @@ afterwards, because the mover's roll call runs at a hardcoded rate that no G-lim
 
 ```
 rate = MaxTurnRate
-if TurnRateGDerate       && knots > gThreshold:  rate *= gThreshold / knots
-override = LaunchTurnRateOverride && inToBearing && LaunchTurnRate > rate
+if knots > gThreshold:  rate *= gThreshold / knots
+override = inToBearing && LaunchTurnRate > rate
 if override:  rate = LaunchTurnRate
 if not override:  rate += bankingRollAddend      # the three-rotation branch gives pitch its own rate
 ```

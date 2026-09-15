@@ -29,8 +29,7 @@ Estimation is tiered: each tier is tried in turn and the first that returns a us
 | tier | source | used when |
 |---|---|---|
 | 1 | **step integrator** | beta branch, thrust handle resolved. Primary for every shot. |
-| 2 | **ported waypoint sim** | integrator declines; a 1:1 port of the public branch's `SimulateShotLinear` |
-| 3 | **the game's own estimator** | `MaxRangePrecise`; on the public branch this is tier 1 |
-| 4 | **straight line at max speed** | last resort, never expected to fire |
+| 2 | **the game's own estimator** | `MaxRangePrecise`; on the public branch this is tier 1 |
+| 3 | **straight line at max speed** | last resort, never expected to fire |
 
 See also [`../ARCHITECTURE.md`](../ARCHITECTURE.md) for the mod as a whole.

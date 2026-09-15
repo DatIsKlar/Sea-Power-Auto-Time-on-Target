@@ -130,8 +130,7 @@ shooter's side knew (identified: the target's collider; a contact label showing 
 representative hull; noise or no track: the middle class). A capture from before the hull rule gets its target
 name's median hull from the corpus's world-aligned collider bounds and courses, which is what an identified target
 gets. Set `AUTOTOT_NO_HULL_ARRIVAL=1` to end every replay 3 u from the target's centre instead.
-`AUTOTOT_HULL_ARRIVAL=low` keeps that stop for a round still above the hull's top when it comes within 3 u
-(counterfactual only). The CSV carries `hullArrival` (1 when a hull was applied), `arrivalFlatM` (flat distance
+The CSV carries `hullArrival` (1 when a hull was applied), `arrivalFlatM` (flat distance
 from the target's centre at the end of the replay) and `heightAt202M` (the round's height above the target's
 centre on its first step inside 3 u).
 
@@ -183,10 +182,6 @@ arrival inside its step, from the hull's slab entry fraction or the 3 u crossing
 step by the velocity the game realises on its float32 grid at the round's physics step, accumulated in double;
 `AUTOTOT_MOTOR_SUBSTEPS=1` integrates a kinematic round's thrust and drag in physics-step substeps while its motor
 burns. `score` sets the physics step per round from the capture. Counterfactuals only.
-
-Set `AUTOTOT_DRAG_PITCHRATE=k` to scale the pitch rate the model hands `CalculateDrag`. With the motor off its stall
-term falls toward zero under a nose-down rate; 1 is the shipped behaviour and 0 gives the term no rate at all.
-Counterfactual only.
 
 Set `AUTOTOT_NO_TOBEARING_OWN_PITCH=1` to add the banking roll budget to the turn rate during a ToBearing
 turn-rate override again, as the model did before the override was found to give pitch its own rotation.
@@ -380,15 +375,8 @@ order's release, which is what moves the time on target, and measured from the u
 the cadence from the first round's lead. `AUTOTOT_SCHEDULE_CSV=<file>` writes a row per order. FireRate and salvo
 settings come from the installed game's `weapons.ini`.
 
-## Stage gates
+## Launch and burnout counterfactuals
 
-`gates` replays every capture once at the production step and counts, per family, two places where the step loop's
-stage tests can disagree with a state the game latches: steps back in ToBearing after the round has left it, and
-terminal-stage steps flown before the ammunition's TerminalDelay.
-
-    dotnet run -- gates [corpus-dir]
-
-`AUTOTOT_TOBEARING_LATCH=1` and `AUTOTOT_TERMINAL_DELAY_GATE=1` make every replay refuse each of them.
 `AUTOTOT_BURNOUT_SUBSTEPS=1` integrates only the step in which a motor burns out, in physics-tick substeps.
 `AUTOTOT_LAUNCH_PHASE_RECORDED=1` makes `score` replay each round with the recorded end of its Launch state as the
 initial phase.

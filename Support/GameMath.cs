@@ -56,10 +56,6 @@ namespace AutoTOT
             return Mathf.Sqrt(dx * dx + dz * dz);
         }
 
-        /// <summary>Slant range from a horizontal distance and an altitude difference.</summary>
-        internal static float SlantFromFlat(float flat, float altDelta)
-            => Mathf.Sqrt(flat * flat + altDelta * altDelta);
-
         /// <summary>
         /// Horizontal distance from a slant range and an altitude difference, clamped at zero because float
         /// error can push a near-overhead sample slightly negative.
