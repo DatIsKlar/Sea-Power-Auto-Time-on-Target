@@ -739,7 +739,12 @@ namespace AutoTOT
             FlightTime.DrainCompleted();
 
             CoordinatorProfiler.Begin(CoordinatorProfiler.Stage.Diag);
-            LaunchDiagnostics.Tick(simNow);
+            // Guarded on its own, because the stages below are what release a strike. A fault in
+            // launch tracking used to abort the whole tick: on stable s367 (2026-09-15) one removed
+            // game field in a diagnostic read did that on every frame a missile was airborne, and
+            // the follower of a mixed strike was held until its target sank.
+            try { LaunchDiagnostics.Tick(simNow); }
+            catch (Exception e) { LaunchDiagnostics.ReportFault("launch tracking", e); }
             CoordinatorProfiler.End(CoordinatorProfiler.Stage.Diag);
             CoordinatorProfiler.AddDiagPhases(LaunchDiagnostics.LastScanLoopMs,
                                    LaunchDiagnostics.LastEngageStateMs,

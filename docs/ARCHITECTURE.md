@@ -936,6 +936,7 @@ Persistence: `path = Path.Combine(Paths.ConfigPath, Guid + ".cfg")`, which is
 | Debug | VerboseLogging | bool | false | - | live |
 | Debug | TraceFlightModel | bool | false | - | live |
 | Debug | VerticalProfile | bool | false | - | live |
+| Debug | AlignmentTrace | bool | false | - | live |
 | Debug | Profiling | bool | false | - | live |
 | Debug | VerifySolve | bool | false | - | live |
 | Performance | EstimatorThreads | int | -1 | -1 = auto, 0 = main thread only, else clamped to the core count | game start |
@@ -1003,6 +1004,7 @@ Sources live in five folders by concern: `Core/` (pipeline + lifecycle),
 | `Diagnostics/LaunchDiagnostics.Tracing.cs` | Per-missile and per-launcher tracing behind the diagnostic switches |
 | `Diagnostics/SolveInputDump.cs` | The research corpus writer: solver input and flight result per traced round |
 | `Diagnostics/VerticalProfiler.cs` | The `VerticalProfile` research trace of depth and altitude changes |
+| `Diagnostics/AlignmentProbe.cs` | The `AlignmentTrace` research trace of ships turning to bring a launcher to bear |
 | `Diagnostics/EngagementBoard.cs` | Per-target engagement state for the HUD (consolidated: one row per target) |
 | `Diagnostics/TelemetryCadence.cs` | Sampling offsets shared by the `sim-track` and `track` traces, so the two stay comparable |
 | `Diagnostics/CoordinatorProfiler.cs` | Per-frame timing (`CoordinatorProfiler`): stage timers, counters, frame share, the 60-frame report |

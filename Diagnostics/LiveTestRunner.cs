@@ -165,10 +165,12 @@ namespace AutoTOT
                     Coordinator.VerboseLog = true;
                     Coordinator.TraceFlightModel = _plan.TraceFlightModel;
                     VerticalProfiler.Enabled = _plan.VerticalProfile;
+                    AlignmentProbe.Enabled = _plan.AlignmentTrace;
+                    AlignmentProbe.UidCollisionFix = _plan.AlignmentUidFix;
                     Coordinator.ProfilingEnabled = _plan.Profiling;
                     FlightTime.VerifySolve = _plan.VerifySolve;
                     Bootstrap.Log.LogInfo($"[AutoTOT] livetest gates: verbose on, trace {_plan.TraceFlightModel}, " +
-                                          $"vertical {_plan.VerticalProfile}, profiling {_plan.Profiling}, verifySolve {_plan.VerifySolve}");
+                                          $"vertical {_plan.VerticalProfile}, alignment {_plan.AlignmentTrace}, uidfix {_plan.AlignmentUidFix}, profiling {_plan.Profiling}, verifySolve {_plan.VerifySolve}");
                     AudioListener.volume = 0f;   // again, in case the options manager reset it on load
                     Enter(State.Arm);
                     return;

@@ -22,6 +22,7 @@ The four standing scenarios:
 | `mixed-kinematic-hypersonic.ini` | teest | two shooters, one kinematic and one hypersonic weapon |
 | `multi-domain.ini` | test aa | multi-target strike from ships and a submarine |
 | `big-strike-fps.ini` | test sandro fps | many shooters at once, performance under a large commit |
+| `mixed-strike-follower-release.ini` | test tot slava 4 merchants | a Kirov SS-N-19 anchor and a Slava SS-N-12 follower at one target through the planner panel. Fly it after every game update: on stable s367 a removed game field stopped launch crediting and the follower never released. Pass is 22 launches and no `coordinator tick error` |
 | `yj20-steady-step.ini` | autotot yj20 loft / 65nm / 200nm | one weapon at three ranges from one launcher, six rounds each. Kept after its own plan closed because it is the project's only same-geometry repeat test: a repeat run draws the same motor rolls, so two runs of a section are an exact A/B |
 
 ## Instrumentation, per section
@@ -38,6 +39,8 @@ only that gate registers. The rest are plan keys, so each scenario asks for what
 | `ManualAtInbound<N>` | none | `Shooter | ammo | salvo`. Once a missile threatens that ship (`ObjectBase.ThreateningMissile`) and is inside the SAM's range, issue the order the way the game's own attack order does: `InsertEngageTask` with `autoAttack` false and `GetEngagePriority`, without the coordinator's bypass, so the mod's Harmony prefix sees a player order. Each line fires once and is noted in the result. With `CFG_OVERRIDE="AutoModeOnStart=true"` it shows whether AUTO collects manual orders. |
 | `TraceFlightModel` | true | Flight-model internals: the gap line, per-missile track, stage transitions, launch geometry, guard frames. Roughly ten times the log volume and extra sims per round. Turn it OFF for performance runs. |
 | `VerticalProfile` | false | One-second depth and altitude traces for submarines and aircraft. |
+| `AlignmentTrace` | false | Every alignment a surface ship starts and ends, with the game method that ended it, and a one-second steering and launcher-state trace while it turns. |
+| `AlignmentUidFix` | false | Counterfactual, test plans only: when two alignments of one ship share an order's uid, `EndAlignment` removes the one that is ending instead of its replacement. Changes game behaviour; no config entry exists for it. See `docs/plans/done/2026-09-15-beam-only-launcher-alignment.md`. |
 | `Profiling` | false | Per-frame timing every 60 frames. |
 | `VerifySolve` | false | Re-runs every threaded simulation on the main thread and warns if the answers differ. Doubles simulation work. |
 

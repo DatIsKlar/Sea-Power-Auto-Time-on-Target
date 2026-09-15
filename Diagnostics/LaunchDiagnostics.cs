@@ -294,6 +294,7 @@ namespace AutoTOT
             _shipLastLaunchSim.Clear();
             _retiredExpectations.Clear();
             _noArrivalWarned.Clear();
+            _faultsReported.Clear();
             UncreditedLaunches = 0;
             TargetMotionProbe.Reset();
         }
@@ -357,211 +358,294 @@ namespace AutoTOT
                 ObjectBase tgt = w.CurrentIntendedTargetObject;
                 if (tgt == null || tgt.IsDestroyed) continue;
 
-                float distM = GameUnits.MetersBetween(w, tgt);
-                // Trajectory characterization (peak alt / terminal speed) only feeds the verbose
-                // `gap`/`sim-traj` lines ; skip the work entirely in normal play.
-                // The per-missile flight-model block runs off this, including the two extra flight
-                // sims and the waypoint sim it needs purely to print a comparison. On the flight-model
-                // gate now, not VerboseLog: it is estimator internals, and it was 85 percent of a
-                // verbose log's volume. See Coordinator.TraceFlightModel.
-                bool verbose = Coordinator.TraceFlightModel;
-                if (_flightTracker.TryGetValue(w, out FlightSample existing))
+                // Each round on its own guard. Most of this pass is diagnostics, and the launch credit
+                // sits after the first-sighting capture, so one failed read used to skip the credit and
+                // stop the loop for every round after it. See RecoverFromScanFault.
+                bool creditAttempted = false;
+                try
                 {
-                    existing.LastDistM = distM;
-                    existing.LastSeenTime = simNow;
-                    // Fields only the corpus writer reads (SolveInputDump.WriteResult), which runs
-                    // only for a round dumped at first sighting. They used to be updated for every
-                    // friendly round on every tick, a game heading read included, with both
-                    // diagnostic gates off.
-                    if (existing.DumpKey != null) UpdateCorpusTail(w, tgt, existing, simNow);
-                    // Every 5s of flight, capped: enough to see the shape of a climb without
-                    // turning a 700s flight into a wall of text.
-                    if (verbose && simNow >= existing.NextTrackSample && existing.Track.Count < 150)
+                    float distM = GameUnits.MetersBetween(w, tgt);
+                    // Trajectory characterization (peak alt / terminal speed) only feeds the verbose
+                    // `gap`/`sim-traj` lines ; skip the work entirely in normal play.
+                    // The per-missile flight-model block runs off this, including the two extra flight
+                    // sims and the waypoint sim it needs purely to print a comparison. On the flight-model
+                    // gate now, not VerboseLog: it is estimator internals, and it was 85 percent of a
+                    // verbose log's volume. See Coordinator.TraceFlightModel.
+                    bool verbose = Coordinator.TraceFlightModel;
+                    if (_flightTracker.TryGetValue(w, out FlightSample existing))
                     {
-                        existing.NextTrackSample = simNow + TrackSampleIntervalSim;
-                        float tAlt = w.transform != null ? w.transform.position.y : 0f;
-                        existing.Track.Add(
-                            $"{simNow - existing.LaunchTime:0.#}:{tAlt:0.#}:{w._velocityInKnots:0}");
+                        existing.LastDistM = distM;
+                        existing.LastSeenTime = simNow;
+                        // Fields only the corpus writer reads (SolveInputDump.WriteResult), which runs
+                        // only for a round dumped at first sighting. They used to be updated for every
+                        // friendly round on every tick, a game heading read included, with both
+                        // diagnostic gates off.
+                        if (existing.DumpKey != null) UpdateCorpusTail(w, tgt, existing, simNow);
+                        // Every 5s of flight, capped: enough to see the shape of a climb without
+                        // turning a 700s flight into a wall of text.
+                        if (verbose && simNow >= existing.NextTrackSample && existing.Track.Count < 150)
+                        {
+                            existing.NextTrackSample = simNow + TrackSampleIntervalSim;
+                            float tAlt = w.transform != null ? w.transform.position.y : 0f;
+                            existing.Track.Add(
+                                $"{simNow - existing.LaunchTime:0.#}:{tAlt:0.#}:{w._velocityInKnots:0}");
+                        }
+                        if (verbose && existing.Coordinated)
+                        {
+                            TargetMotionProbe.Watch(tgt, simNow);
+                            MaybeRecordFlightTrack(w, tgt, existing, simNow);
+                            MaybeRecordSeekerEvent(w, tgt, existing, simNow);
+                            MaybeRecordGroupChange(w, existing, simNow);
+                            RecordGuardTrack(w, existing, simNow);
+                            MaybeRecordPitchRate(w, existing, simNow);
+                        }
+                        if (!ReferenceEquals(existing.CurrentTarget, tgt))
+                        {
+                            existing.CurrentTarget = tgt;
+                            existing.CurrentTargetName = UnitNaming.SafeName(tgt);
+                        }
+                        if (verbose)
+                        {
+                            float altU = w.transform != null ? w.transform.position.y : 0f;
+                            if (altU > existing.PeakAltU) existing.PeakAltU = altU;
+                            existing.LastSpeedKn = w._velocityInKnots;
+                            if (w._velocityInKnots > existing.PeakSpeedKn) existing.PeakSpeedKn = w._velocityInKnots;
+                        }
+                        // Refresh the stamped prediction while the board row still lives, so it picks up
+                        // the anchor-finalized impact; keep the last non-negative value once it's gone.
+                        if (EngagementBoard.TryGetPredictedImpact(tgt, out float livePred))
+                            existing.PredictedImpact = livePred;
+                        if (existing.Coordinated)
+                        {
+                            // Unthrottled: a stage change is an event, not a sample.
+                            MaybeLogStageChange(w, tgt, existing, simNow);
+                            MaybeLogTelemetry(w, tgt, existing, distM, simNow);
+                        }
                     }
-                    if (verbose && existing.Coordinated)
+                    else
                     {
-                        TargetMotionProbe.Watch(tgt, simNow);
-                        MaybeRecordFlightTrack(w, tgt, existing, simNow);
-                        MaybeRecordSeekerEvent(w, tgt, existing, simNow);
-                        MaybeRecordGroupChange(w, existing, simNow);
-                        RecordGuardTrack(w, existing, simNow);
-                        MaybeRecordPitchRate(w, existing, simNow);
-                    }
-                    if (!ReferenceEquals(existing.CurrentTarget, tgt))
-                    {
-                        existing.CurrentTarget = tgt;
-                        existing.CurrentTargetName = UnitNaming.SafeName(tgt);
-                    }
-                    if (verbose)
-                    {
-                        float altU = w.transform != null ? w.transform.position.y : 0f;
-                        if (altU > existing.PeakAltU) existing.PeakAltU = altU;
-                        existing.LastSpeedKn = w._velocityInKnots;
-                        if (w._velocityInKnots > existing.PeakSpeedKn) existing.PeakSpeedKn = w._velocityInKnots;
-                    }
-                    // Refresh the stamped prediction while the board row still lives, so it picks up
-                    // the anchor-finalized impact; keep the last non-negative value once it's gone.
-                    if (EngagementBoard.TryGetPredictedImpact(tgt, out float livePred))
-                        existing.PredictedImpact = livePred;
-                    if (existing.Coordinated)
-                    {
-                        // Unthrottled: a stage change is an event, not a sample.
-                        MaybeLogStageChange(w, tgt, existing, simNow);
-                        MaybeLogTelemetry(w, tgt, existing, distM, simNow);
+                        EngagementBoard.TryGetPredictedImpact(tgt, out float pred0);
+                        // Only missiles AutoTOT fired (target has a coordination row) get verbose
+                        // per-missile diagnostics ; defensive SAMs the escorts auto-fire target incoming
+                        // threats, which never get a row, so we skip their sim work and logging entirely.
+                        bool coordinated = EngagementBoard.IsCoordinated(tgt);
+                        // The state this round left the rail in: the ROUND'S own position, which is the
+                        // launcher cell it spawned in (not the ship's centre, 37 to 48 m away on a VLS ship),
+                        // and its own heading, which is the rail it actually used. A ship with two fixed
+                        // launchers for one ammunition can hand a round the other canister after the
+                        // solve, and the live pick then names a rail the round never flew: 180 deg out on
+                        // a Spruance Harpoon, worth +5.3 s of false gap. This differs from the live
+                        // solve's input in that heading alone, and only for a fixed rail
+                        // (TryBuildSolveInput). See docs/plans/done/2026-09-13-launcher-pick-by-arc.md.
+                        Vector3 roundHeading;
+                        if (w.transform == null || !GameMath.TryFlatDirection(w.transform.forward, out roundHeading))
+                            roundHeading = Vector3.zero;
+                        FlightTime.LaunchState launchState = w._launchPlatform != null
+                            ? new FlightTime.LaunchState(w.transform != null ? w.transform.position
+                                                                             : w._launchPlatform.transform.position,
+                                                         w._launchPlatform._velocityInKnots, roundHeading)
+                            : default;
+                        // The model's flight time for this shot as it left, stamped so the impact line can
+                        // print the sim-vs-actual gap. Uncached: it is a constant of this launch, and the
+                        // TTL cache is keyed on the live shooter. Falls back to the live estimate where
+                        // the integrator declines, which is always the case on the public branch.
+                        // Verbose-only: it feeds the verbose `gap` line, and a kinematic sim per new missile
+                        // would be wasted work (and a spike under big salvos) in normal play.
+                        float est = -1f;
+                        float legacyEst = -1f;
+                        if (verbose && coordinated && w._launchPlatform != null && w._ap != null)
+                        {
+                            CoordinatorProfiler.Begin(CoordinatorProfiler.Stage.FlightEstimate);
+                            est = FlightTime.EstimateFromLaunch(w._launchPlatform, w._ap._ammunitionFileName, tgt,
+                                                                launchState);
+                            bool cacheHit = false;
+                            if (est <= FlightTime.MinValidSeconds)
+                            {
+                                est = FlightTime.Estimate(w._launchPlatform, w._ap._ammunitionFileName, tgt);
+                                cacheHit = FlightTime.WasLastCallCacheHit;
+                            }
+                            CoordinatorProfiler.End(CoordinatorProfiler.Stage.FlightEstimate);
+                            CoordinatorProfiler.CountEstimate(cacheHit);
+                            // The game's own EstimateShot InterceptTime, for side-by-side accuracy
+                            // comparison against the (now primary) grounded integrator. See gap line.
+                            legacyEst = FlightTime.MaxRangePreciseEndTime(w._launchPlatform, w._ap, tgt);
+                        }
+                        // Ported waypoint-sim estimate (Phase 2 A/B) ; computed even when UseWaypointSim
+                        // is off, so one fire compares wpEst vs simEst vs actual before it drives timing.
+                        float wpEst = -1f;
+                        if (verbose && coordinated && WaypointSim.Ready && WaypointSim.FullReady &&
+                            w._launchPlatform != null && w._ap != null)
+                            wpEst = WaypointSim.EndTime(w._launchPlatform, w._ap, tgt, emitDiag: true);
+                        string dumpKey = (Coordinator.TraceFlightModel && coordinated && w._ap != null &&
+                                          w._launchPlatform != null)
+                            ? FlightTime.DumpInputFor(w._launchPlatform, w._ap._ammunitionFileName, tgt, launchState)
+                            : null;
+                        var fresh = new FlightSample
+                        {
+                            LaunchTime = GameClock.LaunchStampOr(w, simNow),
+                            AmmoName = (w._ap != null ? w._ap._ammunitionFileName : "?"),
+                            TargetName = UnitNaming.SafeName(tgt),
+                            LastDistM = distM,
+                            LastSeenTime = simNow,
+                            Target = tgt,
+                            CurrentTarget = tgt,
+                            CurrentTargetName = UnitNaming.SafeName(tgt),
+                            PredictedImpact = pred0,   // -1 if this target isn't (yet) coordinated
+                            LastTelemetrySim = -1f,
+                            KinEstAtLaunch = est,
+                            LegacyEstAtLaunch = legacyEst,
+                            WpEstAtLaunch = wpEst,
+                            PeakAltU = verbose && w.transform != null ? w.transform.position.y : 0f,
+                            LastSpeedKn = verbose ? w._velocityInKnots : 0f,
+                            PeakSpeedKn = verbose ? w._velocityInKnots : 0f,
+                            LaunchPosU = w.transform != null ? w.transform.position
+                                       : w._launchPlatform != null ? w._launchPlatform.transform.position
+                                       : Vector3.zero,
+                            LaunchVelKn = w._launchPlatform != null ? w._launchPlatform._velocityInKnots : 0f,
+                            LaunchHeadingU = roundHeading,
+                            Shooter = w._launchPlatform,
+                            ShooterAmmoId = (w._ap != null ? w._ap._ammunitionFileName : null),
+                            Coordinated = coordinated,
+                            LastStage = w._flightStage,
+                            DumpKey = dumpKey,
+                            // 48 formatted fields and a hash, read only by the corpus writer.
+                            AmmoFingerprint = dumpKey != null && w._ap != null
+                                ? SolveInputDump.AmmunitionFingerprint(w._ap) : string.Empty,
+                            MotorPerformance = MotorPerformanceOf(w),
+                            TargetLengthM = TargetLengthOf(tgt),
+                            TargetBoundsM = TargetBoundsOf(tgt),
+                            TargetPosAtLaunch = tgt.transform != null ? tgt.transform.position : Vector3.zero,
+                            TargetCourseAtLaunch = tgt.getHeading(),
+                            TargetSpeedAtLaunch = tgt._velocityInKnots,
+                            TargetPosAtEnd = tgt.transform != null ? tgt.transform.position : Vector3.zero,
+                            TargetCourseAtEnd = tgt.getHeading(),
+                            TargetSpeedAtEnd = tgt._velocityInKnots,
+                            InGroup = InGroupNow(w),
+                            GroupLeader = IsGroupLeader(w),
+                            MaxGroupSize = w._ap != null ? w._ap._maxGroupSize : 0,
+                        };
+                        Missile freshMissile = w as Missile;
+                        fresh.LastGroupActive = freshMissile != null && freshMissile._inMissileGroup;
+                        fresh.LastGroupLeader = freshMissile != null && freshMissile.GroupLeader;
+                        // The group is normally created after this first tracker pass; subsequent
+                        // passes update these sticky flags through CaptureGroupMembership above.
+                        CaptureGroupMembership(w, fresh);
+                        if (dumpKey != null)
+                            fresh.GroupChanges.Add(
+                                $"{simNow - fresh.LaunchTime:0.000}:{(fresh.LastGroupActive ? 1 : 0)}:" +
+                                $"{(fresh.LastGroupLeader ? 1 : 0)}:" +
+                                $"{(freshMissile != null ? freshMissile._inGroupVelocityInKnots : -1f):0.000}");
+                        if (verbose && coordinated)
+                            MaybeRecordFlightTrack(w, tgt, fresh, simNow);
+                        fresh.MinCompression = GameTime.TimeCompression;
+                        fresh.MaxCompression = GameTime.TimeCompression;
+                        // First sighting of this missile => it just left the rail. Credit it to the
+                        // matching pending order (this branch fires exactly once per WeaponBase, so no
+                        // double count). Credited regardless of coordination (a no-op if nothing matches).
+                        // Marked before the call, so a credit that throws part way is never tried twice.
+                        creditAttempted = true;
+                        CreditLaunch(w, tgt);
+                        if (coordinated)
+                        {
+                            LogTrackInit(w, est, launchState);
+                            MaybeLogTelemetry(w, tgt, fresh, distM, simNow);
+                        }
+                        // Chain audit B1. Read here rather than in the initializer because the
+                        // expectation lookup is a scan and this is the one place per round it runs.
+                        if (dumpKey != null && w._ap != null &&
+                            TryGetDelayTerms(w._launchPlatform, w._ap._ammunitionFileName, tgt,
+                                             out float regSim, out float startLead, out float envLead,
+                                             out float relLead, out float impactAt, out bool wasAnchor))
+                        {
+                            fresh.RegisteredSim = regSim;
+                            fresh.StartupLead = startLead;
+                            fresh.EnvelopeLead = envLead;
+                            fresh.ReleaseLead = relLead;
+                            fresh.ImpactAtSim = impactAt;
+                            fresh.WasAnchor = wasAnchor;
+                        }
+                        // D3: read at the instant DumpInputFor solved the capture above.
+                        if (dumpKey != null) NoteSpeedCommand(tgt, fresh, simNow);
+                        if (dumpKey != null) fresh.LaunchCellBlock = GuidanceStateProbe.DescribeLaunchCell(w, tgt);
+                        _flightTracker[w] = fresh;
                     }
                 }
-                else
+                catch (System.Exception e)
                 {
-                    EngagementBoard.TryGetPredictedImpact(tgt, out float pred0);
-                    // Only missiles AutoTOT fired (target has a coordination row) get verbose
-                    // per-missile diagnostics ; defensive SAMs the escorts auto-fire target incoming
-                    // threats, which never get a row, so we skip their sim work and logging entirely.
-                    bool coordinated = EngagementBoard.IsCoordinated(tgt);
-                    // The state this round left the rail in: the ROUND'S own position, which is the
-                    // launcher cell it spawned in (not the ship's centre, 37 to 48 m away on a VLS ship),
-                    // and its own heading, which is the rail it actually used. A ship with two fixed
-                    // launchers for one ammunition can hand a round the other canister after the
-                    // solve, and the live pick then names a rail the round never flew: 180 deg out on
-                    // a Spruance Harpoon, worth +5.3 s of false gap. This differs from the live
-                    // solve's input in that heading alone, and only for a fixed rail
-                    // (TryBuildSolveInput). See docs/plans/done/2026-09-13-launcher-pick-by-arc.md.
-                    Vector3 roundHeading;
-                    if (w.transform == null || !GameMath.TryFlatDirection(w.transform.forward, out roundHeading))
-                        roundHeading = Vector3.zero;
-                    FlightTime.LaunchState launchState = w._launchPlatform != null
-                        ? new FlightTime.LaunchState(w.transform != null ? w.transform.position
-                                                                         : w._launchPlatform.transform.position,
-                                                     w._launchPlatform._velocityInKnots, roundHeading)
-                        : default;
-                    // The model's flight time for this shot as it left, stamped so the impact line can
-                    // print the sim-vs-actual gap. Uncached: it is a constant of this launch, and the
-                    // TTL cache is keyed on the live shooter. Falls back to the live estimate where
-                    // the integrator declines, which is always the case on the public branch.
-                    // Verbose-only: it feeds the verbose `gap` line, and a kinematic sim per new missile
-                    // would be wasted work (and a spike under big salvos) in normal play.
-                    float est = -1f;
-                    float legacyEst = -1f;
-                    if (verbose && coordinated && w._launchPlatform != null && w._ap != null)
-                    {
-                        CoordinatorProfiler.Begin(CoordinatorProfiler.Stage.FlightEstimate);
-                        est = FlightTime.EstimateFromLaunch(w._launchPlatform, w._ap._ammunitionFileName, tgt,
-                                                            launchState);
-                        bool cacheHit = false;
-                        if (est <= FlightTime.MinValidSeconds)
-                        {
-                            est = FlightTime.Estimate(w._launchPlatform, w._ap._ammunitionFileName, tgt);
-                            cacheHit = FlightTime.WasLastCallCacheHit;
-                        }
-                        CoordinatorProfiler.End(CoordinatorProfiler.Stage.FlightEstimate);
-                        CoordinatorProfiler.CountEstimate(cacheHit);
-                        // The game's own EstimateShot InterceptTime, for side-by-side accuracy
-                        // comparison against the (now primary) grounded integrator. See gap line.
-                        legacyEst = FlightTime.MaxRangePreciseEndTime(w._launchPlatform, w._ap, tgt);
-                    }
-                    // Ported waypoint-sim estimate (Phase 2 A/B) ; computed even when UseWaypointSim
-                    // is off, so one fire compares wpEst vs simEst vs actual before it drives timing.
-                    float wpEst = -1f;
-                    if (verbose && coordinated && WaypointSim.Ready && WaypointSim.FullReady &&
-                        w._launchPlatform != null && w._ap != null)
-                        wpEst = WaypointSim.EndTime(w._launchPlatform, w._ap, tgt, emitDiag: true);
-                    string dumpKey = (Coordinator.TraceFlightModel && coordinated && w._ap != null &&
-                                      w._launchPlatform != null)
-                        ? FlightTime.DumpInputFor(w._launchPlatform, w._ap._ammunitionFileName, tgt, launchState)
-                        : null;
-                    var fresh = new FlightSample
-                    {
-                        LaunchTime = GameClock.LaunchStampOr(w, simNow),
-                        AmmoName = (w._ap != null ? w._ap._ammunitionFileName : "?"),
-                        TargetName = UnitNaming.SafeName(tgt),
-                        LastDistM = distM,
-                        LastSeenTime = simNow,
-                        Target = tgt,
-                        CurrentTarget = tgt,
-                        CurrentTargetName = UnitNaming.SafeName(tgt),
-                        PredictedImpact = pred0,   // -1 if this target isn't (yet) coordinated
-                        LastTelemetrySim = -1f,
-                        KinEstAtLaunch = est,
-                        LegacyEstAtLaunch = legacyEst,
-                        WpEstAtLaunch = wpEst,
-                        PeakAltU = verbose && w.transform != null ? w.transform.position.y : 0f,
-                        LastSpeedKn = verbose ? w._velocityInKnots : 0f,
-                        PeakSpeedKn = verbose ? w._velocityInKnots : 0f,
-                        LaunchPosU = w.transform != null ? w.transform.position
-                                   : w._launchPlatform != null ? w._launchPlatform.transform.position
-                                   : Vector3.zero,
-                        LaunchVelKn = w._launchPlatform != null ? w._launchPlatform._velocityInKnots : 0f,
-                        LaunchHeadingU = roundHeading,
-                        Shooter = w._launchPlatform,
-                        ShooterAmmoId = (w._ap != null ? w._ap._ammunitionFileName : null),
-                        Coordinated = coordinated,
-                        LastStage = w._flightStage,
-                        DumpKey = dumpKey,
-                        // 48 formatted fields and a hash, read only by the corpus writer.
-                        AmmoFingerprint = dumpKey != null && w._ap != null
-                            ? SolveInputDump.AmmunitionFingerprint(w._ap) : string.Empty,
-                        MotorPerformance = MotorPerformanceOf(w),
-                        TargetLengthM = TargetLengthOf(tgt),
-                        TargetBoundsM = TargetBoundsOf(tgt),
-                        TargetPosAtLaunch = tgt.transform != null ? tgt.transform.position : Vector3.zero,
-                        TargetCourseAtLaunch = tgt.getHeading(),
-                        TargetSpeedAtLaunch = tgt._velocityInKnots,
-                        TargetPosAtEnd = tgt.transform != null ? tgt.transform.position : Vector3.zero,
-                        TargetCourseAtEnd = tgt.getHeading(),
-                        TargetSpeedAtEnd = tgt._velocityInKnots,
-                        InGroup = InGroupNow(w),
-                        GroupLeader = IsGroupLeader(w),
-                        MaxGroupSize = w._ap != null ? w._ap._maxGroupSize : 0,
-                    };
-                    Missile freshMissile = w as Missile;
-                    fresh.LastGroupActive = freshMissile != null && freshMissile._inMissileGroup;
-                    fresh.LastGroupLeader = freshMissile != null && freshMissile.GroupLeader;
-                    // The group is normally created after this first tracker pass; subsequent
-                    // passes update these sticky flags through CaptureGroupMembership above.
-                    CaptureGroupMembership(w, fresh);
-                    if (dumpKey != null)
-                        fresh.GroupChanges.Add(
-                            $"{simNow - fresh.LaunchTime:0.000}:{(fresh.LastGroupActive ? 1 : 0)}:" +
-                            $"{(fresh.LastGroupLeader ? 1 : 0)}:" +
-                            $"{(freshMissile != null ? freshMissile._inGroupVelocityInKnots : -1f):0.000}");
-                    if (verbose && coordinated)
-                        MaybeRecordFlightTrack(w, tgt, fresh, simNow);
-                    fresh.MinCompression = GameTime.TimeCompression;
-                    fresh.MaxCompression = GameTime.TimeCompression;
-                    // First sighting of this missile => it just left the rail. Credit it to the
-                    // matching pending order (this branch fires exactly once per WeaponBase, so no
-                    // double count). Credited regardless of coordination (a no-op if nothing matches).
-                    CreditLaunch(w, tgt);
-                    if (coordinated)
-                    {
-                        LogTrackInit(w, est, launchState);
-                        MaybeLogTelemetry(w, tgt, fresh, distM, simNow);
-                    }
-                    // Chain audit B1. Read here rather than in the initializer because the
-                    // expectation lookup is a scan and this is the one place per round it runs.
-                    if (dumpKey != null && w._ap != null &&
-                        TryGetDelayTerms(w._launchPlatform, w._ap._ammunitionFileName, tgt,
-                                         out float regSim, out float startLead, out float envLead,
-                                         out float relLead, out float impactAt, out bool wasAnchor))
-                    {
-                        fresh.RegisteredSim = regSim;
-                        fresh.StartupLead = startLead;
-                        fresh.EnvelopeLead = envLead;
-                        fresh.ReleaseLead = relLead;
-                        fresh.ImpactAtSim = impactAt;
-                        fresh.WasAnchor = wasAnchor;
-                    }
-                    // D3: read at the instant DumpInputFor solved the capture above.
-                    if (dumpKey != null) NoteSpeedCommand(tgt, fresh, simNow);
-                    if (dumpKey != null) fresh.LaunchCellBlock = GuidanceStateProbe.DescribeLaunchCell(w, tgt);
-                    _flightTracker[w] = fresh;
+                    RecoverFromScanFault(w, tgt, simNow, creditAttempted, e);
                 }
             }
         }
+
+        /// <summary>
+        /// A round's scan threw part way. Most of that pass is diagnostics, and a game update that
+        /// removes a field one of them reads used to take the launch count down with it: on stable
+        /// s367 (2026-09-15) <see cref="TargetLengthOf"/> faulted before <see cref="CreditLaunch"/>
+        /// was reached, so an anchor read "launched 0/11" while all eleven flew, and its follower was
+        /// held until the target sank. So the fault is reported once, and a round seen for the first
+        /// time is still tracked and credited exactly once. Its record carries only what the outcome
+        /// line and the in-flight checks read, and no corpus key, so nothing half-built is written.
+        /// </summary>
+        private static void RecoverFromScanFault(WeaponBase w, ObjectBase tgt, float simNow,
+                                                 bool creditAttempted, System.Exception e)
+        {
+            ReportFault("missile scan", e);
+            // Already tracked: a later refresh failed, and the launch was credited when first seen.
+            if (_flightTracker.ContainsKey(w)) return;
+            EngagementBoard.TryGetPredictedImpact(tgt, out float pred);
+            string ammo = w._ap != null ? w._ap._ammunitionFileName : null;
+            // Stored before the credit, so a credit that throws cannot bring the round back as a
+            // first sighting on the next tick.
+            _flightTracker[w] = new FlightSample
+            {
+                LaunchTime = GameClock.LaunchStampOr(w, simNow),
+                AmmoName = ammo ?? "?",
+                TargetName = UnitNaming.SafeName(tgt),
+                LastDistM = GameUnits.MetersBetween(w, tgt),
+                LastSeenTime = simNow,
+                Target = tgt,
+                CurrentTarget = tgt,
+                CurrentTargetName = UnitNaming.SafeName(tgt),
+                PredictedImpact = pred,
+                LastTelemetrySim = -1f,
+                KinEstAtLaunch = -1f,
+                LegacyEstAtLaunch = -1f,
+                WpEstAtLaunch = -1f,
+                Shooter = w._launchPlatform,
+                ShooterAmmoId = ammo,
+                Coordinated = EngagementBoard.IsCoordinated(tgt),
+                LastStage = w._flightStage,
+            };
+            if (!creditAttempted) CreditLaunch(w, tgt);
+        }
+
+        // Faults already reported this mission, keyed on stage and message.
+        private static readonly HashSet<string> _faultsReported = new HashSet<string>();
+
+        /// <summary>
+        /// Logs a launch-tracking fault once per stage and message per mission, stack included.
+        /// Unconditional, like SHORTFALL: it is the line a user sends in when a game update has
+        /// broken a read, and the strike itself carries on without the diagnostics that failed.
+        /// </summary>
+        internal static void ReportFault(string stage, System.Exception e)
+        {
+            if (e == null || !_faultsReported.Add(stage + "|" + e.GetType().Name + "|" + e.Message)) return;
+            Bootstrap.Log.LogError(
+                $"[AutoTOT] launch tracking fault in {stage}, reported once per mission. Launches are " +
+                $"still counted and strikes still release; some diagnostics for this round are missing. " +
+                $"A game update has probably changed a field the mod reads, please send this log.\n{e}");
+        }
+
+        // ObjectBaseParameters._length is a public field on public s358 and on stable up to s366, and
+        // a property from stable s367 (2026-09-15), where it forwards to the simple parameters object.
+        // A direct read compiles to a field reference, and Mono faults the calling method on a build
+        // without the field before any try inside it can run. So both forms are resolved once here.
+        private static readonly System.Reflection.FieldInfo TargetLengthField =
+            typeof(ObjectBaseParameters).GetField("_length",
+                System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+        private static readonly System.Reflection.PropertyInfo TargetLengthProperty =
+            typeof(ObjectBaseParameters).GetProperty("_length",
+                System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
 
         /// <summary>
         /// The target's declared hull length in metres, or -1 when the game does not give one. Read
@@ -569,7 +653,15 @@ namespace AutoTOT
         /// </summary>
         private static float TargetLengthOf(ObjectBase tgt)
         {
-            try { return tgt != null && tgt._obp != null ? tgt._obp._length : -1f; }
+            try
+            {
+                ObjectBaseParameters obp = tgt != null ? tgt._obp : null;
+                if (obp == null) return -1f;
+                object v = TargetLengthField != null ? TargetLengthField.GetValue(obp)
+                         : TargetLengthProperty != null ? TargetLengthProperty.GetValue(obp, null)
+                         : null;
+                return v is float f ? f : -1f;
+            }
             catch { return -1f; }
         }
 

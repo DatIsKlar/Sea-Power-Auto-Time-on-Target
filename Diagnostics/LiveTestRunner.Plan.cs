@@ -37,6 +37,10 @@ namespace AutoTOT
             // the runner's own done-detection reads, so it is forced on and not a plan key.
             public bool TraceFlightModel = true;
             public bool VerticalProfile;
+            public bool AlignmentTrace;
+            // Counterfactual for beam-only-launcher-alignment.md A7: EndAlignment removes the ending
+            // alignment of a shared uid instead of its replacement. Runner plans only.
+            public bool AlignmentUidFix;
             public bool Profiling;
             public bool VerifySolve;
             // Stage the panel on the first shot and hold it on screen for this long instead of
@@ -148,6 +152,8 @@ namespace AutoTOT
                 else if (key.Equals("TimeoutSec", StringComparison.OrdinalIgnoreCase)) cur.TimeoutSec = ParseF(val, 1500f);
                 else if (key.Equals("TraceFlightModel", StringComparison.OrdinalIgnoreCase)) cur.TraceFlightModel = ParseB(val, true);
                 else if (key.Equals("VerticalProfile", StringComparison.OrdinalIgnoreCase)) cur.VerticalProfile = ParseB(val, false);
+                else if (key.Equals("AlignmentTrace", StringComparison.OrdinalIgnoreCase)) cur.AlignmentTrace = ParseB(val, false);
+                else if (key.Equals("AlignmentUidFix", StringComparison.OrdinalIgnoreCase)) cur.AlignmentUidFix = ParseB(val, false);
                 else if (key.Equals("Profiling", StringComparison.OrdinalIgnoreCase)) cur.Profiling = ParseB(val, false);
                 else if (key.Equals("VerifySolve", StringComparison.OrdinalIgnoreCase)) cur.VerifySolve = ParseB(val, false);
                 else if (key.Equals("PanelHoldSec", StringComparison.OrdinalIgnoreCase)) cur.PanelHoldSec = ParseF(val, 0f);
@@ -271,6 +277,8 @@ namespace AutoTOT
                 sb.Append("gates=verbose,")
                   .Append(_plan != null && _plan.TraceFlightModel ? "trace," : "")
                   .Append(_plan != null && _plan.VerticalProfile ? "vertical," : "")
+                  .Append(_plan != null && _plan.AlignmentTrace ? "alignment," : "")
+                  .Append(_plan != null && _plan.AlignmentUidFix ? "uidfix," : "")
                   .Append(_plan != null && _plan.Profiling ? "profiling," : "")
                   .Append(_plan != null && _plan.VerifySolve ? "verifysolve," : "")
                   .Append('\n');

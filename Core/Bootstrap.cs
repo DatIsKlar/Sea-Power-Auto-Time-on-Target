@@ -55,6 +55,7 @@ namespace AutoTOT
         private static ConfigEntry<bool> _cfgVerbose;
         private static ConfigEntry<bool> _cfgTraceFlightModel;
         private static ConfigEntry<bool> _cfgVerticalProfile;
+        private static ConfigEntry<bool> _cfgAlignmentTrace;
         private static ConfigEntry<bool> _cfgProfiling;
         private static ConfigEntry<bool> _cfgVerifySolve;
 
@@ -301,6 +302,12 @@ namespace AutoTOT
                 "expressed in, so climb and dive behaviour can be characterised. Order a depth or " +
                 "altitude change with no engagement and one manoeuvre becomes one labelled block " +
                 "in the log. Verbose by design; leave it off for normal play.");
+            _cfgAlignmentTrace = _config.Bind("Debug", "AlignmentTrace", false,
+                "Research tool, off by default. Logs each time a surface ship starts or stops turning " +
+                "to bring a launcher to bear on an order, what ended the turn, and once a second the " +
+                "ship's heading, rudder, firing arcs and launcher states while it turns. Use it when a " +
+                "ship turns to fire and some of its rounds never leave. Verbose; leave it off for " +
+                "normal play.");
             _cfgProfiling = _config.Bind("Debug", "Profiling", false,
                 "Log per-frame timing every 60 frames to diagnose performance issues.");
             ConfigEntry<int> cfgEstimatorThreads = _config.Bind("Performance", "EstimatorThreads", -1,
@@ -365,6 +372,7 @@ namespace AutoTOT
             Coordinator.VerboseLog = _cfgVerbose.Value;
             Coordinator.TraceFlightModel = _cfgTraceFlightModel.Value;
             VerticalProfiler.Enabled = _cfgVerticalProfile.Value;
+            AlignmentProbe.Enabled = _cfgAlignmentTrace.Value;
             Coordinator.ProfilingEnabled = _cfgProfiling.Value;
             FlightTime.VerifySolve = _cfgVerifySolve.Value;
             ShowIndicator = _cfgShowIndicator.Value;
@@ -454,6 +462,7 @@ namespace AutoTOT
                     {
                         Coordinator.Reset();
                         VerticalProfiler.Reset();   // run numbering restarts with the mission
+                        AlignmentProbe.Reset();
                         _resetPending = false;
                         _lastErrorMsg = null;
                         _errorRepeats = 0;
@@ -476,6 +485,7 @@ namespace AutoTOT
                 {
                     Coordinator.Tick();
                     VerticalProfiler.Tick(simNow);
+                    AlignmentProbe.Tick(simNow);
                 }
                 catch (Exception e)
                 {
