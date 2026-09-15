@@ -47,14 +47,20 @@ IMPORT="${IMPORT:-1}"
 # and the Effects SpawnPool is registered twice, both as modal dialogs the player must dismiss.
 # 75 of those exceptions in the reuse session against zero in every other session that day. The
 # 38 to 39 s a launch costs is not worth corrupting the scene to save.
-LAB="$ROOT/tools/lab"
-# Every round a real run flies is evidence for the offline model, so each run's captures are
-# imported into the checked-in corpus and the index rebuilt. Import is keyed on the round id and
-# skips duplicates, so re-running is safe. IMPORT=0 turns it off.
-IMPORT="${IMPORT:-1}"
 mkdir -p "$LT" "$RUNS"
 
 [ $# -ge 1 ] || { echo "usage: $0 plan.ini [plan.ini...]" >&2; exit 2; }
+
+# The runner is compiled only into the live test build. With a Workshop build installed the game
+# would load, find nothing reading the plan, and sit in the menu until the timeout.
+MODDLL="$GAME_DIR/Sea Power_Data/StreamingAssets/AutoTOT/AutoTOT.dll"
+# grep -c, not grep -q: -q exits on the first match, strings then dies of SIGPIPE, and pipefail reads
+# that as "not found".
+if [ "$(strings -el "$MODDLL" 2>/dev/null | grep -c 'AutoTOT-livetest')" -eq 0 ]; then
+    echo "the installed AutoTOT.dll has no live test runner (a Workshop build?)." >&2
+    echo "install the test build first: LIVETEST=1 ./install.sh" >&2
+    exit 2
+fi
 
 # dotnet is not always on PATH; install.sh uses the same private-SDK fallback. The lab's apphost
 # also needs DOTNET_ROOT, so it is invoked through the SDK rather than run directly.

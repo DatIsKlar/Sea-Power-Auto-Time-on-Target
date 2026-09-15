@@ -25,7 +25,7 @@ namespace AutoTOT
             internal string AmmoId;
             internal ObjectBase Target;
             internal float Result;
-            // D5 and D6 of docs/plans/open/BETA-RELEASE-AUDIT-PLAN.md. CapturedSim is the sim time
+            // CapturedSim is the sim time
             // the input snapshot was built on the main thread; a result's freshness currently starts
             // when it is PUBLISHED, which is a later and more flattering moment. Diagnostic only:
             // nothing gates on either field yet.
@@ -221,8 +221,7 @@ namespace AutoTOT
         ///
         /// The way in is a worker exception thrown mid-dequeue: the catch in
         /// <see cref="WorkerLoop"/> is per batch, so requests already taken off the queue are never
-        /// enqueued to `_done` and their keys are never removed. Chain audit A2, 2026-09-10.
-        /// Latent so far: 26 unattended runs on 2026-09-12 reported `workerFaults 0` in every one.
+        /// enqueued to `_done` and their keys are never removed.
         ///
         /// Evicting the key is enough on its own. The stranded request is not cancelled, and if its
         /// worker does eventually finish, <see cref="DrainCompleted"/> discards the result because
@@ -242,7 +241,7 @@ namespace AutoTOT
             AsyncStranded++;
             Bootstrap.Log.LogWarning(
                 $"[AutoTOT] estimator: a solve key had been in flight {age:0.0}s with no result, " +
-                $"so it was evicted and will be re-queued. Chain audit A2. " +
+                $"so it was evicted and will be re-queued. " +
                 $"workerFaults {WorkerFaults}, aborts {WorkerAborts}, stranded so far {AsyncStranded}.");
             return true;
         }
@@ -348,7 +347,7 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// D5 and D6 of the beta-release audit, as one line on a sim-time cadence.
+        /// Worker pool health and result freshness, as one line on a sim-time cadence.
         ///
         /// The two questions it answers. Can a key be stranded in flight, which would leave every
         /// later caller on a stale value forever? `oldestInFlight` is the answer: it should stay
@@ -380,7 +379,7 @@ namespace AutoTOT
                 $"stranded {AsyncStranded}, " +
                 $"oldestInFlight {oldest:0.00}s, " +
                 $"publishAge last {LastPublishAgeReal:0.00}s max {MaxPublishAgeReal:0.00}s, " +
-                $"aborts {WorkerAborts}{faults}. D5 and D6 of the beta-release audit.");
+                $"aborts {WorkerAborts}{faults}.");
         }
 
         /// <summary>
@@ -422,7 +421,7 @@ namespace AutoTOT
             => TryCached(unit, ammoId, target, out value, out _);
 
         /// <summary>
-        /// As above, and also how old the value is in REAL seconds. Chain audit A3: the cache is
+        /// As above, and also how old the value is in REAL seconds. The cache is
         /// shared, so a hit can be an entry another caller stored up to the whole 0.5 s TTL ago,
         /// and a caller that stamps its own staleness bookkeeping from the hit records geometry of
         /// arbitrary age as computed this instant. At the game's 20x compression clamp that is up

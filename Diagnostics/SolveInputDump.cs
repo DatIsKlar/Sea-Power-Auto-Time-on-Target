@@ -368,7 +368,7 @@ namespace AutoTOT
                 // after a mission load from real load at apex.
                 b.AppendLine(F("StepChanges", stepChanges == null || stepChanges.Count == 0
                                               ? "" : string.Join(";", stepChanges)));
-                // Chain audit B1: what the coordinator predicted this round's order would cost
+                // What the coordinator predicted this round's order would cost
                 // before its first round left, and the impact it was released against. The delay
                 // residual is LaunchTime minus RegisteredSim, against StartupLead. Until now those
                 // lived only in a log overwritten every launch, so no delay residual survived a

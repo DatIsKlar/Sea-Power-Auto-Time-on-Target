@@ -16,7 +16,7 @@ namespace AutoTOT
     /// file the component does nothing at all.
     ///
     /// The driver is <c>tools/livetest/run.sh</c>, which writes the plan, launches Steam, waits for
-    /// <c>results/DONE</c> and collects the log. See docs/plans/open/live-test-runner.md.
+    /// <c>results/DONE</c> and collects the log. Plan keys are listed in tools/livetest/plans/README.md.
     ///
     /// Every state has a wall-clock timeout so a stuck run still produces a result and exits.
     /// </summary>

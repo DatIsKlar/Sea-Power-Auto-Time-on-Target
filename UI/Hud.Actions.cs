@@ -26,8 +26,10 @@ namespace AutoTOT
                 return;
             }
             Bootstrap.Log.LogInfo($"[AutoTOT] firing strike from hotkey: {held} order(s).");
-            Coordinator.FireStrike(_strike);
-            _strike.Clear();
+            // Cleared even if the fire throws: a pick left staged would be fired again by the next
+            // press, and a duplicate launch cannot be taken back where a lost pick can be re-staged.
+            try { Coordinator.FireStrike(_strike); }
+            finally { _strike.Clear(); }
         }
 
         private void ToggleStrikeArmed()

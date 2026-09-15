@@ -321,8 +321,7 @@ namespace AutoTOT
                 // in this panel, held by the coordinator, or dispatched and not yet away. The
                 // channel cap below subtracts its own kind of commitment, but ordinary ammunition
                 // has no channel cap at all, so before this a ship could be staged past its
-                // magazine simply by visiting two targets. Finding 11 of
-                // docs/plans/open/BETA-RELEASE-AUDIT-PLAN.md.
+                // magazine by visiting two targets.
                 stock = Mathf.Max(0, stock - AmmoCommittedElsewhere(ship, kv.Key));
                 if (stock <= 0) continue;   // nothing physically firable: the row has no purpose
                 // Second cap: a radio-command weapon that cannot group holds one fire-control

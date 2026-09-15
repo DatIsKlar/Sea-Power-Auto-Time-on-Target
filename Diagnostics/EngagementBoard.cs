@@ -197,8 +197,7 @@ namespace AutoTOT
         /// <see cref="CollectSalvos"/>, which the HUD calls while painting, so hiding the panel or
         /// turning the indicator off stopped the cleanup entirely: measured on 2026-09-09, a fired
         /// row survived 188 s with nothing in flight and nothing scheduled, against an 8 s grace,
-        /// and only the mission reset cleared it. Finding 12 of
-        /// docs/plans/open/BETA-RELEASE-AUDIT-PLAN.md.
+        /// and only the mission reset cleared it.
         ///
         /// Activity is recomputed here rather than read from the display scratch, for the same
         /// reason: the scratch is only filled when something draws.

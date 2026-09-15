@@ -234,8 +234,7 @@ the per-round thrust roll. That only holds while the model's response to thrust 
 `d(estimate)/d(motor)` in seconds per unit and as a multiple of the round's flight time, which is
 the form the live measurement comes in. The game's figure sits near 1.15 times the flight on every
 family measured so far; a model figure far from that for the same weapon is a defect in that
-weapon's thrust or drag handling, not in the motor term. See
-`docs/plans/open/yj-20-motor-sensitivity.md`.
+weapon's thrust or drag handling, not in the motor term.
 
 ### launch rail
 

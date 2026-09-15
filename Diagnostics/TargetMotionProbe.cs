@@ -9,7 +9,7 @@ using UnityEngine;
 namespace AutoTOT
 {
     /// <summary>
-    /// D1 and D2 of docs/plans/open/max-solo-error-below-1s.md, section "2026-09-13 night": what moves
+    /// What moves
     /// a target ship across the map at 0.87 to 1.05 times the speed it reports.
     ///
     /// Read in decompiled-beta-new, the only horizontal mover of a surface ship is
@@ -35,7 +35,8 @@ namespace AutoTOT
     /// printed as rest: UpdateWantedVelocityInKnots, the tilt forces and the two threat checks.
     ///
     /// Installed on the first watched target, and targets are watched only under TraceFlightModel,
-    /// so normal play never carries the patch. Remove it with the plan that owns it.
+    /// so a session that never turns that on never carries the patch. Once installed it stays until
+    /// the game restarts.
     /// </summary>
     internal static class TargetMotionProbe
     {

@@ -8,7 +8,7 @@ using UnityEngine;
 namespace AutoTOT
 {
     /// <summary>
-    /// D-L of docs/plans/open/max-solo-error-below-1s.md: the inputs the game builds a missile's
+    /// The inputs the game builds a missile's
     /// intercept point from, and the launcher cell a round spawns in.
     ///
     /// The YJ-18A's stage switches are timed against <c>_targetInterceptPosition</c>, a lead along the

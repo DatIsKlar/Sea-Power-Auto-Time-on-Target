@@ -21,7 +21,7 @@ namespace AutoTOT
 
         // Mod version. Keep in sync with AutoTOT.csproj <Version> and the [ACPlugin]
         // attribute in AnchorChainEntry.cs (which references this constant).
-        internal const string Version = "0.2.0";
+        internal const string Version = "0.2.1";
 
         internal static ManualLogSource Log = BepInEx.Logging.Logger.CreateLogSource("AutoTOT");
         public static Harmony Harmony { get; private set; }
@@ -204,7 +204,9 @@ namespace AutoTOT
             UnityEngine.Object.DontDestroyOnLoad(pump);
             pump.AddComponent<Pump>();
             pump.AddComponent<Hud>();
+#if LIVETEST
             pump.AddComponent<LiveTestRunner>();   // inert unless BepInEx/AutoTOT-livetest/plan.ini exists
+#endif
 
             Log.LogInfo($"Auto Time-on-Target v{Version} loaded (Enabled={Coordinator.Enabled}, Armed={Coordinator.Active}, Unity={Application.unityVersion}).");
         }
@@ -255,7 +257,7 @@ namespace AutoTOT
                 "is hidden. Read once at startup: changing it mid-session takes effect on the next " +
                 "game start.");
             ConfigEntry<bool> cfgDefaultOn = _config.Bind("General", "AutoModeOnStart", false,
-                "Whether the automatic 'coordinate normal group orders' mode is on at mission start. The planner panel works regardless of this.");
+                "Whether the automatic 'coordinate normal group orders' mode is on when the game starts. Read once at startup; the hotkey toggle then carries across missions. The planner panel works regardless of this.");
             _cfgShowIndicator = _config.Bind("Interface", "ShowIndicator", true,
                 "Show the on-screen ARMED/off indicator (also click it to toggle).");
             _cfgToggleModifier = _config.Bind("Interface", "ToggleModifier", KeyCode.LeftAlt,
@@ -365,8 +367,7 @@ namespace AutoTOT
             // live meant the coordinator could be switched off while orders were already scheduled:
             // the tick kept running, and work committed before the switch could still reach a
             // launcher afterwards. A master switch that only takes effect on the next start has no
-            // such window, and matches how the Mods menu already gates the mod. Finding 2 of
-            // docs/plans/open/BETA-RELEASE-AUDIT-PLAN.md.
+            // such window, and matches how the Mods menu already gates the mod.
             Coordinator.DebounceSeconds = _cfgDebounce.Value;
             Coordinator.MaxWindowSeconds = _cfgMaxWindow.Value;
             Coordinator.VerboseLog = _cfgVerbose.Value;
@@ -442,6 +443,16 @@ namespace AutoTOT
             private const float ClockBackwardsToleranceSeconds = 1f;
             private float _lastSimNow = -1f;
 
+            private static void ResetSafely(string what, Action reset)
+            {
+                try { reset(); }
+                catch (Exception e)
+                {
+                    Log.LogError($"[AutoTOT] mission reset of the {what} failed, so some of its state " +
+                                 $"from the last mission may remain:\n{e}");
+                }
+            }
+
             private void Update()
             {
                 bool inMission = Globals._mainGameViewModel != null;
@@ -460,9 +471,11 @@ namespace AutoTOT
                     }
                     if (_resetPending && (Time.unscaledTime - _absentSince) >= ExitDebounceSeconds)
                     {
-                        Coordinator.Reset();
-                        VerticalProfiler.Reset();   // run numbering restarts with the mission
-                        AlignmentProbe.Reset();
+                        // Each part guarded on its own, and the pending flag cleared regardless: a
+                        // reset that threw used to be retried on every frame in the menu.
+                        ResetSafely("coordinator", Coordinator.Reset);
+                        ResetSafely("vertical profiler", VerticalProfiler.Reset);   // run numbering restarts with the mission
+                        ResetSafely("alignment probe", AlignmentProbe.Reset);
                         _resetPending = false;
                         _lastErrorMsg = null;
                         _errorRepeats = 0;

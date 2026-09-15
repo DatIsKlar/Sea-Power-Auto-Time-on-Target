@@ -93,7 +93,7 @@ namespace AutoTOT
             // could otherwise write a line per sample.
             public readonly List<string> StepChanges = new List<string>();
             public float LastStepSeen;
-            // Chain audit B1: the delay terms the order was released on. Every one of them lived
+            // The delay terms the order was released on. Every one of them lived
             // only in LaunchExpectation and in log text that BepInEx overwrites per launch, so no
             // delay residual survived a session and none could be scored across the corpus the way
             // a flight time can. -1 means the round matched no expectation, which is normal for an
@@ -313,7 +313,10 @@ namespace AutoTOT
         {
             if (!Singleton<ObjectsManager>.InstanceExists()) return;
 
-            TargetMotionProbe.Tick(simNow);
+            // Guarded on its own: it runs before the scan that credits launches, so a throw here
+            // would otherwise skip crediting for the frame.
+            try { TargetMotionProbe.Tick(simNow); }
+            catch (System.Exception e) { ReportFault("target motion probe", e); }
 
             if (Coordinator.ProfilingEnabled) _subSw.Restart();
             ScanTrackedMissiles(simNow);
@@ -371,7 +374,7 @@ namespace AutoTOT
                     // sims and the waypoint sim it needs purely to print a comparison. On the flight-model
                     // gate now, not VerboseLog: it is estimator internals, and it was 85 percent of a
                     // verbose log's volume. See Coordinator.TraceFlightModel.
-                    bool verbose = Coordinator.TraceFlightModel;
+                    bool trace = Coordinator.TraceFlightModel;
                     if (_flightTracker.TryGetValue(w, out FlightSample existing))
                     {
                         existing.LastDistM = distM;
@@ -383,14 +386,14 @@ namespace AutoTOT
                         if (existing.DumpKey != null) UpdateCorpusTail(w, tgt, existing, simNow);
                         // Every 5s of flight, capped: enough to see the shape of a climb without
                         // turning a 700s flight into a wall of text.
-                        if (verbose && simNow >= existing.NextTrackSample && existing.Track.Count < 150)
+                        if (trace && simNow >= existing.NextTrackSample && existing.Track.Count < 150)
                         {
                             existing.NextTrackSample = simNow + TrackSampleIntervalSim;
                             float tAlt = w.transform != null ? w.transform.position.y : 0f;
                             existing.Track.Add(
                                 $"{simNow - existing.LaunchTime:0.#}:{tAlt:0.#}:{w._velocityInKnots:0}");
                         }
-                        if (verbose && existing.Coordinated)
+                        if (trace && existing.Coordinated)
                         {
                             TargetMotionProbe.Watch(tgt, simNow);
                             MaybeRecordFlightTrack(w, tgt, existing, simNow);
@@ -404,7 +407,7 @@ namespace AutoTOT
                             existing.CurrentTarget = tgt;
                             existing.CurrentTargetName = UnitNaming.SafeName(tgt);
                         }
-                        if (verbose)
+                        if (trace)
                         {
                             float altU = w.transform != null ? w.transform.position.y : 0f;
                             if (altU > existing.PeakAltU) existing.PeakAltU = altU;
@@ -436,7 +439,7 @@ namespace AutoTOT
                         // solve, and the live pick then names a rail the round never flew: 180 deg out on
                         // a Spruance Harpoon, worth +5.3 s of false gap. This differs from the live
                         // solve's input in that heading alone, and only for a fixed rail
-                        // (TryBuildSolveInput). See docs/plans/done/2026-09-13-launcher-pick-by-arc.md.
+                        // (TryBuildSolveInput).
                         Vector3 roundHeading;
                         if (w.transform == null || !GameMath.TryFlatDirection(w.transform.forward, out roundHeading))
                             roundHeading = Vector3.zero;
@@ -449,11 +452,11 @@ namespace AutoTOT
                         // print the sim-vs-actual gap. Uncached: it is a constant of this launch, and the
                         // TTL cache is keyed on the live shooter. Falls back to the live estimate where
                         // the integrator declines, which is always the case on the public branch.
-                        // Verbose-only: it feeds the verbose `gap` line, and a kinematic sim per new missile
+                        // Trace-only: it feeds the `gap` line, and a kinematic sim per new missile
                         // would be wasted work (and a spike under big salvos) in normal play.
                         float est = -1f;
                         float legacyEst = -1f;
-                        if (verbose && coordinated && w._launchPlatform != null && w._ap != null)
+                        if (trace && coordinated && w._launchPlatform != null && w._ap != null)
                         {
                             CoordinatorProfiler.Begin(CoordinatorProfiler.Stage.FlightEstimate);
                             est = FlightTime.EstimateFromLaunch(w._launchPlatform, w._ap._ammunitionFileName, tgt,
@@ -473,7 +476,7 @@ namespace AutoTOT
                         // Ported waypoint-sim estimate (Phase 2 A/B) ; computed even when UseWaypointSim
                         // is off, so one fire compares wpEst vs simEst vs actual before it drives timing.
                         float wpEst = -1f;
-                        if (verbose && coordinated && WaypointSim.Ready && WaypointSim.FullReady &&
+                        if (trace && coordinated && WaypointSim.Ready && WaypointSim.FullReady &&
                             w._launchPlatform != null && w._ap != null)
                             wpEst = WaypointSim.EndTime(w._launchPlatform, w._ap, tgt, emitDiag: true);
                         string dumpKey = (Coordinator.TraceFlightModel && coordinated && w._ap != null &&
@@ -495,9 +498,9 @@ namespace AutoTOT
                             KinEstAtLaunch = est,
                             LegacyEstAtLaunch = legacyEst,
                             WpEstAtLaunch = wpEst,
-                            PeakAltU = verbose && w.transform != null ? w.transform.position.y : 0f,
-                            LastSpeedKn = verbose ? w._velocityInKnots : 0f,
-                            PeakSpeedKn = verbose ? w._velocityInKnots : 0f,
+                            PeakAltU = trace && w.transform != null ? w.transform.position.y : 0f,
+                            LastSpeedKn = trace ? w._velocityInKnots : 0f,
+                            PeakSpeedKn = trace ? w._velocityInKnots : 0f,
                             LaunchPosU = w.transform != null ? w.transform.position
                                        : w._launchPlatform != null ? w._launchPlatform.transform.position
                                        : Vector3.zero,
@@ -511,9 +514,12 @@ namespace AutoTOT
                             // 48 formatted fields and a hash, read only by the corpus writer.
                             AmmoFingerprint = dumpKey != null && w._ap != null
                                 ? SolveInputDump.AmmunitionFingerprint(w._ap) : string.Empty,
-                            MotorPerformance = MotorPerformanceOf(w),
-                            TargetLengthM = TargetLengthOf(tgt),
-                            TargetBoundsM = TargetBoundsOf(tgt),
+                            // Read only by the corpus writer, which needs a dump key. Skipped
+                            // otherwise: a reflection read and a collider search per missile for
+                            // nothing, and a renamed game field here must not reach normal play.
+                            MotorPerformance = dumpKey != null ? MotorPerformanceOf(w) : 1f,
+                            TargetLengthM = dumpKey != null ? TargetLengthOf(tgt) : -1f,
+                            TargetBoundsM = dumpKey != null ? TargetBoundsOf(tgt) : Vector3.zero,
                             TargetPosAtLaunch = tgt.transform != null ? tgt.transform.position : Vector3.zero,
                             TargetCourseAtLaunch = tgt.getHeading(),
                             TargetSpeedAtLaunch = tgt._velocityInKnots,
@@ -535,7 +541,7 @@ namespace AutoTOT
                                 $"{simNow - fresh.LaunchTime:0.000}:{(fresh.LastGroupActive ? 1 : 0)}:" +
                                 $"{(fresh.LastGroupLeader ? 1 : 0)}:" +
                                 $"{(freshMissile != null ? freshMissile._inGroupVelocityInKnots : -1f):0.000}");
-                        if (verbose && coordinated)
+                        if (trace && coordinated)
                             MaybeRecordFlightTrack(w, tgt, fresh, simNow);
                         fresh.MinCompression = GameTime.TimeCompression;
                         fresh.MaxCompression = GameTime.TimeCompression;
@@ -550,7 +556,7 @@ namespace AutoTOT
                             LogTrackInit(w, est, launchState);
                             MaybeLogTelemetry(w, tgt, fresh, distM, simNow);
                         }
-                        // Chain audit B1. Read here rather than in the initializer because the
+                        // Read here rather than in the initializer because the
                         // expectation lookup is a scan and this is the one place per round it runs.
                         if (dumpKey != null && w._ap != null &&
                             TryGetDelayTerms(w._launchPlatform, w._ap._ammunitionFileName, tgt,
@@ -703,7 +709,7 @@ namespace AutoTOT
         private const int SpeedCommandChangeCap = 16;
 
         /// <summary>
-        /// D3 of docs/plans/open/max-solo-error-below-1s.md: record a Vessel target's speed command
+        /// Record a Vessel target's speed command
         /// the first time it is read, which is the instant <see cref="FlightTime.DumpInputFor"/>
         /// solved the capture, then each change of more than <see cref="SpeedCommandChangeKn"/>.
         /// Each entry is "t:wanted:converge:speed", t from launch.
@@ -1093,8 +1099,10 @@ namespace AutoTOT
                                 $"peakAlt {s.PeakAltU:0}u, realPeakSpd {s.PeakSpeedKn:0}kn, termSpd {s.LastSpeedKn:0}kn{wp}{legacy}");
                         }
                     }
+#if LIVETEST
                     // The unattended test runner records every retired round, outcome or not.
                     LiveTestRunner.OnRoundRetired(s, flightMeasured);
+#endif
                 }
                 _flightTracker.Remove(w);
             }

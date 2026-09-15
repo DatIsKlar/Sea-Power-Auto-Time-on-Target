@@ -268,7 +268,7 @@ namespace AutoTOT
         /// <see cref="OfflineGameStep"/> substeps inside each step, and the step moves at their mean speed.</summary>
         internal static bool OfflineMotorSubsteps;
 
-        /// <summary>Counterfactual M4 of docs/plans/open/model-and-launcher-audit.md: substep only the step in which the motor
+        /// <summary>Offline counterfactual: substep only the step in which the motor
         /// burns out. On that step MissileSimulator.CalculateThrustOverTime returns remainingTime * timeWindow instead of
         /// remainingTime times the sustainer acceleration, so a 0.1 s window loses up to six times what the game's 1/60 s tick
         /// loses.</summary>
@@ -286,7 +286,7 @@ namespace AutoTOT
         /// older arrival test ends a flight; NaN when it never got there.</summary>
         internal static float OfflineHeightAtCloseU = float.NaN;
 
-        /// <summary>Counterfactual M1 of docs/plans/open/model-and-launcher-audit.md: the round leaves ToBearing for good on
+        /// <summary>Offline counterfactual: the round leaves ToBearing for good on
         /// the first step it is inside the cone or past the time cap (Missile.cs:343; only the Launch and GoToSurface states
         /// enter ToBearing, :188 and :253), instead of re-entering whenever the step's own test reads true again.</summary>
         internal static bool OfflineToBearingLatch;
@@ -691,8 +691,7 @@ namespace AutoTOT
             // from the first step, the guard fired at t = 2*dt, and the estimate came back as
             // exactly 0.2s for a real 700s shot. Ships never produced it because a trainable
             // launcher is already pointed at the target; an aircraft's hardpoint points wherever
-            // the nose does, so any turn hit it. See
-            // docs/plans/done/2026-09-07-offboresight-estimate-collapse.md.
+            // the nose does, so any turn hit it.
             //
             // 2026-09-07: the latch as first written armed on the SEED step. `prevFlat` starts
             // at float.MaxValue, so the very first `flatDist < prevFlat` is true no matter which
@@ -714,7 +713,6 @@ namespace AutoTOT
             // for, clears the margin by kilometres long before the round arrives. A round that can
             // never catch its target now runs to maxFlight and is answered by another tier, which is
             // the honest outcome; before, it returned a fabricated 2 seconds.
-            // See finding 14 of docs/plans/open/BETA-RELEASE-AUDIT-PLAN.md.
             bool hasClosed = false;
             float prevSlant = float.MaxValue;
             bool havePrev = false;
@@ -865,7 +863,7 @@ namespace AutoTOT
                     // reported speed, and a distance test alone would read that as leaving the
                     // terminal phase and fly the gap at cruise speed.
 #if AUTOTOT_OFFLINE
-                    // M2 of docs/plans/open/model-and-launcher-audit.md: the game enters TerminalApproach only once
+                    // Offline counterfactual: the game enters TerminalApproach only once
                     // TerminalDelay has passed (Missile.cs:485-538).
                     if (termDist > 0f && switchFlat <= termDist &&
                         (!OfflineTerminalDelayGate || t >= terminalDelaySec)) terminalLatched = true;
@@ -905,7 +903,7 @@ namespace AutoTOT
                                 && t < initialPhaseDur + ToBearingMaxSeconds
                                 && Mathf.Abs(prevPitch - elevToTgtDeg) >= ToBearingConeDeg;
 #if AUTOTOT_OFFLINE
-                // M1 of docs/plans/open/model-and-launcher-audit.md: count, and optionally refuse, a return to ToBearing
+                // Offline counterfactual: count, and optionally refuse, a return to ToBearing
                 // after the round has left it.
                 if (launchPitch >= 0f && t >= initialPhaseDur)
                 {

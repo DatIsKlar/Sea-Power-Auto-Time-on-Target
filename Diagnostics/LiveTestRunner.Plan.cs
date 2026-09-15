@@ -248,7 +248,9 @@ namespace AutoTOT
             };
             if (hit && s.PredictedImpact >= 0f)
             {
-                r.HasResidual = true; r.Predicted = s.PredictedImpact; r.Residual = s.LastSeenTime - s.PredictedImpact;
+                // Same definition as the impact log line: launch plus the flight measured to the hit,
+                // not the last frame the round was seen, which at 10x can be 0.2 to 0.3 s earlier.
+                r.HasResidual = true; r.Predicted = s.PredictedImpact; r.Residual = s.LaunchTime + flightTime - s.PredictedImpact;
             }
             if (hit && !retargeted && s.KinEstAtLaunch > 0f)
             {

@@ -218,13 +218,25 @@ namespace AutoTOT
         /// other half was carefully protecting.</para>
         /// </summary>
         internal static System.Func<ObjectBase, string, int> StagedRoundsProvider;
+        private static bool _stagedRoundsFaultLogged;
 
         private static int StagedRounds(ObjectBase unit, string ammoId)
         {
             System.Func<ObjectBase, string, int> f = StagedRoundsProvider;
             if (f == null) return 0;
             try { return f(unit, ammoId); }
-            catch { return 0; }   // a UI fault must never block firing
+            catch (System.Exception e)
+            {
+                // A UI fault must never block firing, so the count falls back to 0. Said once,
+                // because a 0 here lets the budget ignore every staged pick.
+                if (!_stagedRoundsFaultLogged)
+                {
+                    _stagedRoundsFaultLogged = true;
+                    ModLog.Warn("planner staged-round count failed, so guidance-channel budgets ignore " +
+                                "staged picks for the rest of the session", e);
+                }
+                return 0;
+            }
         }
 
         /// <summary>
@@ -252,9 +264,18 @@ namespace AutoTOT
         internal static void MarkChannelPressure(List<Intent> items)
         {
             _channelCappedShooters.Clear();
-            if (items == null || items.Count == 0) return;
             _clampSeen.Clear();
+            // Every armed batch, not only the one that just took an order. Clearing every mark and
+            // re-marking one batch let an order at one target put out the light for another.
+            MarkPressureFrom(_strikeBatch?.Items);
+            foreach (KeyValuePair<ObjectBase, Batch> kv in _openBatches)
+                MarkPressureFrom(kv.Value.Items);
+            MarkPressureFrom(items);
+        }
 
+        private static void MarkPressureFrom(List<Intent> items)
+        {
+            if (items == null) return;
             for (int i = 0; i < items.Count; i++)
             {
                 Intent lead = items[i];
@@ -306,7 +327,7 @@ namespace AutoTOT
         /// launcher can be destroyed, and rounds can be spent by an earlier order or by the ship's
         /// own automatic fire. Commit used to check none of it: it trimmed guidance channels and
         /// scheduled whatever was left, so an order could be timed, held, and released against a
-        /// magazine that had emptied. Finding 11 of docs/plans/open/BETA-RELEASE-AUDIT-PLAN.md.
+        /// magazine that had emptied.
         ///
         /// Runs BEFORE <see cref="ClampToGuidanceChannels"/> and before PrepareIntent, because both
         /// derive from the shot counts and from which orders survive. Every reduction is stated: a

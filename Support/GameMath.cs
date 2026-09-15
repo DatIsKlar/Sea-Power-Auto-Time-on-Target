@@ -12,8 +12,9 @@ namespace AutoTOT
     /// which reads <c>Time.unscaledTime</c> and is main-thread only. See docs/ARCHITECTURE.md,
     /// "Threading contract".)
     ///
-    /// Not called from the integrator's step loop, deliberately. See the note on that loop in
-    /// docs/plans/done/2026-09-04-dead-code-and-readability.md.
+    /// Not called from the integrator's step loop, deliberately: that loop's generated code is kept
+    /// unchanged across clean-ups, because its per-step cost is tracked from build to build and a
+    /// float expression moved into a helper can change an estimate.
     /// </summary>
     internal static class GameMath
     {

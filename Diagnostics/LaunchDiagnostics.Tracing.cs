@@ -168,6 +168,7 @@ namespace AutoTOT
             return false;
         }
 
+#if LIVETEST
         /// <summary>
         /// True while any tracked round WE fired is still flying, whatever it is currently aimed
         /// at. Deliberately not keyed on a target: a seeker that switches to a sibling in the
@@ -186,6 +187,7 @@ namespace AutoTOT
             }
             return false;
         }
+#endif
 
         // One-time per-missile line at first sighting: nominal speeds + our kinematic estimate, so a
         // late group can be read against what the game's own solo sim predicted. Flight-model trace.
@@ -231,8 +233,7 @@ namespace AutoTOT
                 // line reports so the two can be diffed directly. finalDist should line up with the
                 // real MaintainLoftAlt -> Maintain{SeaSkimming,FinalFlightAlt} transition, and
                 // diveStart with the real -> TerminalApproach transition. These boundaries are
-                // hand-derived from ini fields and are the most fragile part of the model (see
-                // docs/plans/done/2026-09-02-waypoint-sim-port.md, the rejected Part L), so this is the evidence
+                // hand-derived from ini fields and are the most fragile part of the model, so this is the evidence
                 // that says whether they are right rather than merely tuned.
                 Bootstrap.Log.LogInfo(
                     $"[AutoTOT] stage-model {ap._ammunitionFileName}#{w.GetInstanceID()}: " +

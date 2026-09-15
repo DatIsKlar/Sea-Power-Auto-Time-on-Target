@@ -7,8 +7,8 @@ namespace AutoTOT
     internal static partial class FlightTime
     {
 
-        // The production step. A 60 Hz step was tried offline and did not help; see
-        // docs/plans/done/2026-09-11-timestep-ab-comparison.md.
+        // The production step. A 60 Hz step was compared offline over the recorded flights and did
+        // not improve the estimates.
         private const float IntegrationStepSim = 0.1f;
         // Altitude at which the game's air-density curve (1 - 0.00163*h)^4.256 reaches zero. Used by
         // the setup half to classify a high ballistic lofter and by the step loop to arm the vacuum
@@ -80,9 +80,7 @@ namespace AutoTOT
 
         // Isolation gates. Each mirrors one piece of the live mover's behaviour, kept separate
         // so a single rebuild can A/B them independently. Every one below is validated and on.
-        // What each models: docs/model/03-trajectory.md. The evidence that established it, the
-        // alternatives that were falsified and the measurements behind them:
-        // docs/plans/reference/integrator-rnd.md.
+        // What each models: docs/model/03-trajectory.md.
 
         // Bang-bang altitude control while TRANSITING, proportional once HOLDING, latched on first
         // arrival. The real round holds full climb and only then noses over at _maxTurnRateDegrees,
@@ -315,7 +313,7 @@ namespace AutoTOT
                                 string E(Transform tr) => tr == null ? "n/a"
                                     : GameMath.ElevationDeg(tr.forward).ToString("0.0") + "°";
                                 Bootstrap.Log.LogInfo(
-                                    // D8 of docs/plans/open/anchor-liveness.md: the sim stamp. This
+                                    // The sim stamp. This
                                     // trace is the best available proxy for a manoeuvring aircraft's
                                     // heading through a launch wait, and without a time it cannot be
                                     // lined up against envelope-track or engage-state.
@@ -586,7 +584,7 @@ namespace AutoTOT
         ///
         /// <para>Measured on 12 <c>plan_yj-20</c> rounds over two launch ranges against a declared
         /// 716.5 u: the window opens at flat 708.7 to 717.0 u and closes at slant 709.4 to 715.4 u.
-        /// Both edges are this one field. See <c>docs/plans/open/yj-20-motor-sensitivity.md</c>.</para>
+        /// Both edges are this one field.</para>
         /// </summary>
         private static float ResolveSeekerBrakeRange(AmmunitionParameters ap)
         {
@@ -818,7 +816,7 @@ namespace AutoTOT
         /// <paramref name="launch"/> state, so the stored <c>LaunchHeading</c> is the rail the round
         /// actually flew rather than the one the live pick names. The two differ when a ship has two
         /// fixed launchers for one ammunition and the game hands a round the other one after the
-        /// solve; see docs/plans/done/2026-09-13-launcher-pick-by-arc.md.
+        /// solve.
         /// </summary>
         internal static string DumpInputFor(ObjectBase unit, string ammoId, ObjectBase target,
                                             in LaunchState launch)
@@ -862,8 +860,6 @@ namespace AutoTOT
         /// the target, clamped by that ceiling, so a short shot peaks well below it. Modelling the
         /// ceiling as the cruise altitude put these rounds in air far thinner than they ever reach,
         /// which cost them drag and landed them early by 4 to 9 seconds.
-        ///
-        /// See docs/plans/done/2026-09-11-non-cruise-loft-profile.md.
         /// </summary>
         internal static float LoftProfileAltU(bool ballisticLoft, float ceilingU,
                                               float climbTan, float descentTan,

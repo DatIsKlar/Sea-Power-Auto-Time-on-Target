@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using HarmonyLib;
 using SeaPower;
 using UnityEngine;
@@ -15,6 +16,11 @@ namespace AutoTOT
         // Set while the coordinator issues the real, deferred launch, so we don't
         // intercept our own call recursively.
         [System.ThreadStatic] internal static bool Bypass;
+
+        // Fault messages already logged, so a fault that repeats on every order is reported once.
+        // Capped: the set only has to stop a flood, not remember a whole session.
+        private const int MaxFaultMessages = 32;
+        private static readonly HashSet<string> _faultsLogged = new HashSet<string>();
 
         // Prefix: return false to skip the immediate launch and defer it instead.
         private static bool Prefix(
@@ -48,15 +54,46 @@ namespace AutoTOT
             }
             catch (Exception e)
             {
-                // Log with the order context that pinpoints which launch broke, then
-                // re-throw so behaviour is unchanged (the game sees the same exception
-                // it would have seen without this mod's logging).
+                // Never re-throw. InsertEngageTask is also reached from inside the game's per-object
+                // update, and GameMain.Update walks its objects with no try/catch, so an exception
+                // escaping here would stop every object after this one from updating for as long as
+                // the fault repeats: radars, AI and engage handling included. What happens to the
+                // order depends on how far TryIntercept got before it threw.
+                bool held = Coordinator.InterceptQueued;
+                LogFault(e, __instance, targetObject, ammoId, shotsToFire, isFormationAttack, autoAttack, held);
+                if (!held)
+                {
+                    // Nothing was held, so the game fires the order itself, as it would without the
+                    // mod. A batch this call opened for the target is still empty and is dropped.
+                    Coordinator.DiscardEmptyBatch(targetObject);
+                    return true;
+                }
+
+                // The order is already held and the coordinator will release it. Letting the game
+                // run it as well would fire it twice.
+                try { __result = new EngageTask(ammoId, targetObject, __instance, shotsToFire, priority, autoAttack, isFormationAttack); }
+                catch { }
+                return false;
+            }
+        }
+
+        private static void LogFault(Exception e, ObjectBase unit, ObjectBase target, string ammoId,
+                                     int shots, bool formation, bool auto, bool held)
+        {
+            try
+            {
+                string key = e.GetType().Name + ": " + e.Message;
+                if (_faultsLogged.Count >= MaxFaultMessages || !_faultsLogged.Add(key)) return;
                 Bootstrap.Log.LogError(
                     $"[AutoTOT] InsertEngageTask prefix threw for " +
-                    $"{Safe(() => __instance?.getUIDAndName())} -> {Safe(() => targetObject?.getUIDAndName())} " +
-                    $"(ammo={ammoId}, shots={shotsToFire}, formation={isFormationAttack}, auto={autoAttack}):\n{e}");
-                throw;
+                    $"{Safe(() => unit?.getUIDAndName())} -> {Safe(() => target?.getUIDAndName())} " +
+                    $"(ammo={ammoId}, shots={shots}, formation={formation}, auto={auto}). " +
+                    (held
+                        ? "The order was already held, so AutoTOT still releases it. "
+                        : "The order was handed back to the game uncoordinated. ") +
+                    $"Reported once per message:\n{e}");
             }
+            catch { }
         }
 
         private static string Safe(Func<string> f)

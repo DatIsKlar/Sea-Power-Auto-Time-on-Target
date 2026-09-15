@@ -16,11 +16,15 @@ namespace AutoTOT
     /// When a launcher accepts an order the game gives the ship one <c>AlignUnitToTarget</c>, keyed
     /// by the order's uid (<c>ObjectBase.HandleEngageTasks</c>), and removes it through
     /// <c>ObjectBase.DelayedEndAlignment</c> or <c>EndAlignment</c>, both of which receive the name of
-    /// the method that asked. A launched round carries the same uid, so a round freeing its guidance
-    /// channel (<c>SensorSystem.FreeChannels</c>) ends the alignment of the order it came from. This
-    /// logs every creation and every end with that caller, the round and call path when a freed
-    /// channel is the cause, and once a sim second the ship's heading, rudder, allowed and selected
-    /// arcs and the state of each launcher that took one of its orders.
+    /// the method that asked. A launcher that fires only part of a multi-round order ends its
+    /// alignment from <c>WeaponSystem.EndEngageTask</c> after the crew delay, while the ship has
+    /// already accepted the rest of the order under the same uid with a second alignment.
+    /// <c>EndAlignment</c> removes the LAST alignment with a matching uid, which is the replacement, so
+    /// the order goes on executing with no alignment and its remaining rounds wait for a firing arc
+    /// the ship is no longer turning to. This logs every creation and every end with its caller (and
+    /// the round and call path when a freed guidance channel is the caller), and once a sim second
+    /// the ship's heading, rudder, allowed and selected arcs and the state of each launcher that took
+    /// one of its orders.
     ///
     /// Surface ships only. Every patched method has the same signature on the public branch and on
     /// stable s366 and s367. The arc selection fields exist only from s367 and are read by reflection.
@@ -29,9 +33,14 @@ namespace AutoTOT
     {
         internal static bool Enabled;
 
-        // A7 counterfactual of docs/plans/open/beam-only-launcher-alignment.md. Runner plans only
-        // (plan key AlignmentUidFix), never a config entry. See TryRemoveEndingFirst.
+#if LIVETEST
+        // Counterfactual for the same-uid collision above: plan key AlignmentUidFix in the live test
+        // build, never a config entry. See TryRemoveEndingFirst.
         internal static bool UidCollisionFix;
+#else
+        // The Workshop build never changes an alignment; it can only trace them.
+        private const bool UidCollisionFix = false;
+#endif
 
         private const float SteerIntervalSim = 1f;
         private static readonly CultureInfo Inv = CultureInfo.InvariantCulture;
@@ -243,15 +252,18 @@ namespace AutoTOT
             try
             {
                 if (!(__instance is Vessel v) || uid < 0 || Find(v, uid) == null) return;
+#if LIVETEST
                 if (UidCollisionFix && callerName == "CheckInterruptors") TryRemoveEndingFirst(v, uid);
+#endif
                 if (!Enabled) return;
                 Log(FormattableString.Invariant($"align-end {UnitNaming.SafeName(v)} uid {uid} caller {callerName} heading {Heading(v):0.0} tasks left {v._alignmentTasks.Count - 1} t {GameClock.SimNow():0.00}"));
             }
             catch (Exception e) { Fault("end", e); }
         }
 
+#if LIVETEST
         /// <summary>
-        /// A7 counterfactual. When a launcher has fired the part of an order it took,
+        /// Counterfactual, live test build only. When a launcher has fired the part of an order it took,
         /// <c>WeaponSystem.EndEngageTask</c> starts the end delay of the order's alignment, and the ship
         /// re-accepts the rest of the order under the same uid with a second alignment.
         /// <c>ObjectBase.EndAlignment</c> removes the last alignment with a matching uid, which is that
@@ -276,6 +288,7 @@ namespace AutoTOT
             tasks[ending] = moved;
             Log(FormattableString.Invariant($"align-uidfix {UnitNaming.SafeName(v)} uid {uid}: {matches} alignments share the uid, the ending one moved from slot {ending} to {last} so it is the one removed t {GameClock.SimNow():0.00}"));
         }
+#endif
 
         private static void FreePrefix(WeaponBase weapon)
         {

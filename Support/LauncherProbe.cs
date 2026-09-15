@@ -122,9 +122,10 @@ namespace AutoTOT
                     try
                     {
                         v.OnRail = _onRailField.GetValue(ws) is bool b && b;
-                        if (v.OnRail && _onRailStartField != null &&
-                            _onRailStartField.GetValue(ws) is double started)
-                            v.WarmupElapsed = (float)(now - started);
+                        // The warm-up clock is a double on beta and a float on public; read either.
+                        object started = v.OnRail && _onRailStartField != null ? _onRailStartField.GetValue(ws) : null;
+                        if (started is double || started is float)
+                            v.WarmupElapsed = (float)(now - System.Convert.ToDouble(started));
                     }
                     catch { }
                 }

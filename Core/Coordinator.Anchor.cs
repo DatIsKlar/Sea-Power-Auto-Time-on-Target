@@ -21,8 +21,8 @@ namespace AutoTOT
         /// salvos. Returns the entry's current impact time until at least one launch has been
         /// observed and a valid estimate exists.
         ///
-        /// One rule, from docs/plans/done/2026-09-07-aircraft-anchor-impact-slide.md: <b>pair a launch time with
-        /// a flight estimate valid AT that launch time.</b> Every symptom that plan chased is a
+        /// One rule: <b>pair a launch time with
+        /// a flight estimate valid AT that launch time.</b> Every symptom of a sliding impact is a
         /// violation of it, because <c>lastRoundLaunch</c> is an absolute timestamp while
         /// <c>FlightTime.Estimate</c> answers for a shot leaving from wherever the shooter is NOW.
         /// For a ship the two describe the same place. For an aircraft closing at 540kn the shared
@@ -150,7 +150,7 @@ namespace AutoTOT
             // anywhere in that gap would reject a correct answer as readily as a wrong one. The
             // ratio is large in both cases for the same legitimate reason: the live estimate is
             // taken from where the shooter has since got to, which is the very error the snapshot
-            // exists to remove. See docs/plans/open/anchor-liveness.md.
+            // exists to remove.
             LogLaunchSnapshot(o, it, est, liveEst);
 
             o.Est = est > FlightTime.MinValidSeconds ? est : -1f;
@@ -390,7 +390,7 @@ namespace AutoTOT
 
                 // Ascent sampling runs from the moment the anchor fires, not from the stall check,
                 // so envelope-track covers the whole climb and lines up with envelope-sim.
-                // D4 of docs/plans/open/anchor-liveness.md: both traces used to stop the moment the
+                // Both traces used to stop the moment the
                 // first round left (`k == 0`), so the gap between rounds was a total blind spot. The
                 // 2026-09-07c straight-line run put 49.5s and a full climb-and-descent in that gap
                 // and produced zero lines describing it. They now run until the ripple is done.
@@ -520,7 +520,7 @@ namespace AutoTOT
             // over the rounds that never left, so an order that fired 1 of 2 had its impact
             // set from a modelled second launch that never happened. Re-predicting with
             // n = k also lets the live-round path answer, since every round is now away by
-            // definition. See docs/plans/done/2026-09-07-aircraft-anchor-impact-slide.md.
+            // definition.
             if (stalled && !complete && k > 0)
             {
                 // Centering from what flew, not from what was ordered. k == 1 spans nothing,
@@ -530,7 +530,7 @@ namespace AutoTOT
                 float observedCentering = it.Pooled
                     ? Mathf.Max(0f, it.ReleaseLead - (n - k) * 0.5f * a.IniInterval)
                     : (k > 1) ? span * 0.5f : 0f;
-                // D6 of the beta-release audit, before the re-prediction so the terms
+                // Logged before the re-prediction so the terms
                 // reported are the ones it is about to use.
                 LogStallCentering(a, it, n, k, span, interval, observedCentering);
                 float onObserved = PredictAnchorImpact(a, it, k, k, interval, simNow,
@@ -544,8 +544,7 @@ namespace AutoTOT
             // Nothing launched: there is no shot to anchor on, so the prediction written to the
             // board every tick above is for an impact that will never happen. Freeing the
             // followers onto it was the 65 s to 92 s past-due dump in three 2026-09-07 logs;
-            // AbandonAnchor re-anchors them on the longest-enroute survivor instead. See
-            // docs/plans/open/anchor-liveness.md.
+            // AbandonAnchor re-anchors them on the longest-enroute survivor instead.
             if (k == 0) AbandonAnchor(a, simNow, "nothing launched within the stall window");
             Bootstrap.Log.LogInfo(
                 $"[AutoTOT] anchored {UnitNaming.SafeName(it.Target)}: {k}/{n} launched over {span:0.0}s " +
@@ -580,8 +579,7 @@ namespace AutoTOT
         /// One exit for an anchor that will never finish its ripple, whatever removed it: a
         /// destroyed shooter, a destroyed target, a dispatch the game refused, or a no-launch stall.
         ///
-        /// Three cases, and the middle one is finding 1 of
-        /// docs/plans/open/BETA-RELEASE-AUDIT-PLAN.md.
+        /// Three cases.
         ///
         /// <list type="bullet">
         /// <item>Not yet released. Nothing has changed for the survivors, so the impact stands and

@@ -37,6 +37,8 @@ namespace AutoTOT
         // frame from a hint line.
         private bool _showHelp;
 
+#if LIVETEST
+        // The live test build's hooks into the panel. The Workshop build has no runner to call them.
         /// <summary>The live panel, so an automated run can stage it. Set in OnEnable.</summary>
         private static Hud _instance;
 
@@ -51,8 +53,8 @@ namespace AutoTOT
         /// row and sets its salvo. False if the panel is not up.
         ///
         /// <para>This exists because the live test runner drives the game through method calls and
-        /// never touches the screen, so every warning the panel draws had to be verified by a person
-        /// (docs/plans/open/submarine-and-aircraft-launch-envelope.md). Synthetic clicks into the
+        /// never touches the screen, so every warning the panel draws had to be verified by a person.
+        /// Synthetic clicks into the
         /// Wine window were rejected for the reason the runner avoids them everywhere else: they
         /// depend on window focus, cursor position and compositor timing, none of which an
         /// unattended batch can rely on. The panel's state is code in this assembly, so setting it
@@ -154,6 +156,7 @@ namespace AutoTOT
                 return "it threw: " + e.Message;
             }
         }
+#endif
 
         private readonly Dictionary<string, bool> _checked = new Dictionary<string, bool>();
         private readonly Dictionary<string, int> _salvo = new Dictionary<string, int>();
@@ -268,7 +271,7 @@ namespace AutoTOT
             // With the master switch off the mod does nothing at all, and that has to include this
             // component: OnGUI already refuses to paint, but Update went on running the hotkeys and
             // the mouse capture, so an invisible panel could still arm a strike and swallow a click
-            // meant for the map. Finding 2 of docs/plans/open/BETA-RELEASE-AUDIT-PLAN.md. The switch
+            // meant for the map. The switch
             // is startup-only now, so this costs one bool per frame and never flickers.
             if (!Coordinator.Enabled)
             {
@@ -297,6 +300,15 @@ namespace AutoTOT
                 _strikeGeneration = Coordinator.ResetGeneration;
                 _strike.Clear();
                 _group.Clear();
+                // The selection and the per-row picks describe the last mission's units as well.
+                // Ticks and salvo counts persist across TARGETS on purpose; across a mission they
+                // would attach to ships that no longer exist.
+                _anchor = null;
+                _target = null;
+                _targetVehicle = null;
+                _checked.Clear();
+                _salvo.Clear();
+                _rowFacts.Clear();
                 // Unity reuses instance IDs after destruction, so a ship that threw while building
                 // its rows in one mission could inherit the ID of a healthy ship in the next and be
                 // silently dropped from the panel. The set exists only to stop one log line per
@@ -325,8 +337,7 @@ namespace AutoTOT
 
             // Nothing is painted while the indicator is off, so nothing may capture the mouse over
             // where the panel would have been. The hotkeys stay live: arming a strike still works
-            // through the game's own order interface with the panel hidden. Second half of
-            // finding 2.
+            // through the game's own order interface with the panel hidden.
             if (!Bootstrap.ShowIndicator)
             {
                 _resizing = false;
@@ -342,7 +353,9 @@ namespace AutoTOT
 
         private void OnEnable()
         {
+#if LIVETEST
             _instance = this;
+#endif
             // The coordinator needs the panel's staged picks to police its own intake, and only the
             // panel knows them. Cleared in OnDisable so a torn-down HUD cannot be called into.
             Coordinator.StagedRoundsProvider = StagedRoundsFor;
@@ -350,7 +363,9 @@ namespace AutoTOT
 
         private void OnDisable()
         {
+#if LIVETEST
             if (ReferenceEquals(_instance, this)) _instance = null;
+#endif
             Coordinator.StagedRoundsProvider = null;
             // On mission end Unity disables us while the game HUD is already tearing down, so the
             // over-UI release can hit half-null game state. Reset our own flag unconditionally and
@@ -373,9 +388,11 @@ namespace AutoTOT
 
         private void TrackSelection()
         {
+#if LIVETEST
             // An automated run has staged the panel deliberately; the game's own selection would
             // overwrite it on the very next frame and photograph the wrong ship.
             if (_stagedLock) return;
+#endif
 
             // MainGameViewModel.SelectedObject is an ISelectableObject that is either an
             // ObjectBase (your ships) or a Vehicle contact (enemy) whose .Object is the ObjectBase.
@@ -451,22 +468,28 @@ namespace AutoTOT
 
         private void DrawWindow(int id)
         {
-            // Log-only guard: capture which panel draw threw (with a full stack), then
-            // re-throw so IMGUI behaviour is identical to before. Deduped by message so
-            // a per-frame throw doesn't flood the log.
+            // Log-only guard. Both filter calls return false, so the exception is never caught here
+            // and IMGUI sees it exactly as it would without the guard. Running them in the filter,
+            // before the stack unwinds, restores the shared skin and logs which draw threw (full
+            // stack, deduped by message so a per-frame throw does not flood the log).
             try
             {
                 DrawWindowInner(id);
             }
-            catch (System.Exception e) when (RestoreSharedSkin())
+            catch (System.Exception e) when (RestoreSharedSkin() || LogDrawError(e))
             {
-                if (e.Message != _lastDrawError)
-                {
-                    _lastDrawError = e.Message;
-                    Bootstrap.Log.LogError($"[AutoTOT] HUD DrawWindow threw:\n{e}");
-                }
                 throw;
             }
+        }
+
+        private bool LogDrawError(System.Exception e)
+        {
+            if (e.Message != _lastDrawError)
+            {
+                _lastDrawError = e.Message;
+                Bootstrap.Log.LogError($"[AutoTOT] HUD DrawWindow threw:\n{e}");
+            }
+            return false;
         }
 
         private void DrawWindowInner(int id)

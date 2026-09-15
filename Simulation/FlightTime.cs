@@ -239,8 +239,7 @@ namespace AutoTOT
         /// The state of a shooter at the instant a round left its rail: everything
         /// <see cref="TryBuildSolveInput"/> would otherwise read live from the platform.
         ///
-        /// One rule produces every timing correction in
-        /// docs/plans/done/2026-09-07-aircraft-anchor-impact-slide.md: <b>pair a launch time with a flight
+        /// One rule produces every timing correction for a moving shooter: <b>pair a launch time with a flight
         /// estimate valid AT that launch time</b>. <see cref="Estimate"/> cannot express it, because
         /// it takes the shooter as an <see cref="ObjectBase"/> and reads <c>transform.position</c>,
         /// so it can only ever answer "from where the shooter is now". For a ship the two readings
@@ -248,7 +247,7 @@ namespace AutoTOT
         /// distance flown, and the shared impact of a strike walks with it.
         ///
         /// The rail heading is carried because the launch bearing is the actual geometry the round
-        /// flew (see docs/plans/done/2026-09-07-offboresight-estimate-collapse.md), and by the time the
+        /// flew, and by the time the
         /// prediction re-runs the aircraft has turned. Pitch is still read from the live rail: it is
         /// an elevation in the platform's own frame and does not drift as the platform manoeuvres.
         /// </summary>
@@ -513,8 +512,7 @@ namespace AutoTOT
         /// <see cref="MinValidSeconds"/> is 0.01s and exists to mean "the model declined", not "the
         /// model answered absurdly". A 0.2s answer for a 195 km shot passed it, was cached, and
         /// reached the coordinator as a real flight time, where it either stole the anchor role or
-        /// set the shared impact in the past. See
-        /// docs/plans/done/2026-09-07-offboresight-estimate-collapse.md.
+        /// set the shared impact in the past.
         /// </summary>
         internal static bool IsImplausible(float seconds, ObjectBase unit, AmmunitionParameters ap,
                                            ObjectBase target)

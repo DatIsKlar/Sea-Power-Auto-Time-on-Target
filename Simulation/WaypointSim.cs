@@ -9,7 +9,7 @@ namespace AutoTOT
 {
     /// <summary>
     /// Ported waypoint-sim fallback (middle tier). Reconstructs the game's waypoint flight-plan
-    /// via reflection and flies it with PN guidance + drag. See docs/plans/done/2026-09-02-waypoint-sim-port.md.
+    /// via reflection and flies it with PN guidance + drag.
     ///
     /// Not the only port of that code. The integrator's own route (<c>FlightTime.Waypoints.cs</c>)
     /// re-implements the same waypoint laws as pure functions, so it can run on the estimator
@@ -389,7 +389,11 @@ namespace AutoTOT
                 float flatDist = GameMath.FlatDistance(launchPosition, targetPosition);
                 if (flatDist < MinFlatDist) return 0f;
                 float dragFactor = ap.GetDragFactor(isAirUnit);
-                float maxFlightTime = ap._maxFlightTime > 0f ? ap._maxFlightTime : FlightTime.MaxFlightTimeFallback;
+                // Capped at the integrator's own ceiling. An ammunition that leaves MaxFlightTime unset
+                // loads it as float.MaxValue, and adding a 0.5 s step stops changing a float at 2^24 s,
+                // so without the cap only the close, stall and range exits could end the loop below.
+                float maxFlightTime = Mathf.Min(ap._maxFlightTime > 0f ? ap._maxFlightTime : FlightTime.MaxFlightTimeFallback,
+                                                FlightTime.SolveLoopCeilingSim);
 
                 var accelTimes = (ValueTuple<float, float>)_mAccelTimes.Invoke(null, new object[] { ap, isAirUnit });
                 float boostEnd = accelTimes.Item1 + Mathf.Max(0f, accelTimes.Item2);

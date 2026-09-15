@@ -10,7 +10,7 @@ namespace AutoTOT
     /// facts are settled on the frame the player fires, but its flight estimates are not: each
     /// order needs its own solve, and a strike of several hundred orders needs several hundred of
     /// them at roughly 2.5 ms each on a fast CPU. Running those on the frame that asks for them
-    /// froze a 522-order strike for 2.6 s (docs/plans/open/large-strike-commit-freeze.md).
+    /// froze a 522-order strike for 2.6 s.
     ///
     /// So the commit is split in two. The frame the player fires does the main-thread work only:
     /// revalidation, the guidance clamp, PrepareIntent, and one queue request per order. The orders

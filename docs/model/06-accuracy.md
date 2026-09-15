@@ -60,9 +60,8 @@ stages, and all three invisible until an ammunition or a launch range exercised 
 | the loft was entered on an ammunition property rather than on launch range | +11.6 s, `ss-n-12` at 167 km | +1.0 s |
 
 The `ss-n-3b` rows above still carry 1.0 to 2.7 s at long range, the largest residual in the table.
-Roughly 1.7 s of the original 2.7 s was the second defect. What remains is the same order as the
-`rgm-109b` orientation residual, and `ss-n-3b` is the only entry fired 77° off the bow while also
-lofting, so it is parked with that one rather than treated separately.
+Roughly 1.7 s of the original 2.7 s was the second defect. What remains is about the size of the off-bearing
+error described below, and `ss-n-3b` is the only entry fired 77° off the bow while also lofting.
 
 Where several figures are given, the shot was fired in more than one launch geometry, or at more
 than one range. Launch geometry is listed because it is not incidental: a launcher that cannot train
@@ -80,10 +79,11 @@ An off-bearing launch is under-charged: every round measured in both geometries 
 positive when fired off the bearing, by 1.2 s on `ss-n-19` at 76°, 2.1 s on `ss-n-12` at 103° and
 2.0 s on `rgm-109b` abeam. The effect scales with how long the round spends turning, so it nearly
 vanishes on `yj-18a`, which turns through a similar angle at about five times the rate and shifts
-0.2 s. This is the largest systematic error left in the model. It is tracked, with the evidence and
-the two candidate causes, in
-[docs/plans/open/rgm-109b-orientation-residual.md](../plans/open/rgm-109b-orientation-residual.md),
-and is deliberately parked: 2 s on a 400 to 570 s flight is 0.3 %.
+0.2 s. The coupled pitch-and-heading turn and the waypoint route ([§3](03-trajectory.md)) removed
+most of it: a re-measured `rgm-109b` pair, fired 1.7° and 88.9° off the bearing, read +0.54 and
++0.09 s on average, a difference smaller than the first pair's own 0.68 s spread. Two rounds per
+geometry cannot bound a smaller effect, and the `ss-n-19` and `ss-n-12` figures above were measured
+before those changes.
 
 Kinematic figures carry a wider run-to-run spread than most of the effects being measured, for the
 reason in the next section, and are not comparable between ranges. The 2026-09-08 pairs show it
@@ -169,10 +169,9 @@ kinematic measurement should be read against that band, not treated as a point v
   reported speed, which over a 500 s flight is more than 200 m of aim point. Not predicted: a ship
   whose position crosses a power of two during the flight, and a physics-step change or recentre
   after launch.
-- **An off-bearing launch is under-charged by 1 to 2 s.** Measured on four ammunition, scaling
-  with how long the round spends turning ([§6.1](#61-accuracy)). The largest systematic error
-  left; tracked and parked in
-  [docs/plans/open/rgm-109b-orientation-residual.md](../plans/open/rgm-109b-orientation-residual.md).
+- **An off-bearing launch may be under-charged.** Measured at 1 to 2 s on four ammunition before
+  the coupled turn and the waypoint route; a re-measured `rgm-109b` pair no longer shows it within
+  its own scatter ([§6.1](#61-accuracy)).
 - **Three phases, not the game's full stage list.** The model collapses the guidance machine to
   loft / final / terminal with instant speed transitions. The boundary values it uses are tuned to
   that collapsed form; feeding it the game's own multi-stage waypoint boundaries makes it *worse*,

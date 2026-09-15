@@ -192,7 +192,7 @@ namespace AutoTOT
             public float PitchDeg;     // positive = climb, matching GetDesiredPitch
             public bool AboveGate;     // still held out of its launch band
 
-            // D4 of docs/plans/open/anchor-liveness.md. The launcher sat in WaitingForRoll for the
+            // The launcher sat in WaitingForRoll for the
             // whole of a 296s wait and roll was the one quantity nothing recorded, so a state named
             // after the aircraft's attitude could not be checked against that attitude.
             public float RollDeg;      // bank, positive = right wing down
@@ -201,7 +201,7 @@ namespace AutoTOT
             public float OffBoreDeg;   // target relative to the nose, signed, -180..180
             public float RangeKm;      // slant range to target
 
-            // D10 of docs/plans/open/anchor-liveness.md. The game's OWN pitch terms, read from
+            // The game's OWN pitch terms, read from
             // MotionController rather than derived from the transform, because these are the exact
             // values EngageSurfaceContact tests to decide whether the aircraft may fire. Logging
             // them beside our own PitchDeg is also what pins down the sign convention between the
@@ -212,7 +212,7 @@ namespace AutoTOT
             public float McPitchError;   // MotionController.PitchError
             public bool  McDirectPoint;  // MotionController._directPoint
 
-            // D12 of docs/plans/open/anchor-liveness.md. The 2026-09-07f trace shows the aircraft
+            // A recorded trace shows the aircraft
             // level at its commanded mach and then pitching up 38 degrees IMMEDIATELY AFTER its first
             // round, which is a manoeuvre the engagement triggers rather than a climb toward a cruise
             // altitude. The user reports that at 20,000ft it does none of this and fires both rounds

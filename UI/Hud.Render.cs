@@ -316,8 +316,7 @@ namespace AutoTOT
             string key = Key(ship, r.AmmoId);
             // Rows start unticked. They used to start ticked, so + FORMATION followed by FIRE THIS
             // TARGET fired every in-range weapon on every ship in the formation, not only the rows
-            // the player picked; the slowest of those became the anchor and held the rest
-            // (docs/plans/open/public-formation-freeze.md, H1).
+            // the player picked; the slowest of those became the anchor and held the rest.
             if (!_checked.ContainsKey(key)) _checked[key] = false;
             if (!_salvo.ContainsKey(key)) _salvo[key] = 1;
 
@@ -761,11 +760,6 @@ namespace AutoTOT
                 return;
             }
 
-            // Targets picked out of one formation. These missiles carry their own active seeker and
-            // do not divide a formation up the way a grouped salvo divides a single ship's salvo, so
-            // a round sent at a ship deep in a formation locks onto whatever it detects first. The
-            // player then sees rounds land on ships they did not pick and reads it as a mod fault.
-            // Nothing the coordinator schedules changes it, so the panel says so before the commit.
             // Height the list would like: one row per target, plus its orders when expanded. Capped
             // at a share of the window, so beyond that the list scrolls instead of growing.
             float listH = StrikeSectionHeight() - RowHeight;
@@ -842,8 +836,9 @@ namespace AutoTOT
                         $"{_strike.Count + Coordinator.StrikeCount} order(s){held}",
                         _fire, GUILayout.Height(FireButtonHeight)))
                 {
-                    Coordinator.FireStrike(_strike);
-                    _strike.Clear();
+                    // Cleared even if the fire throws, for the reason given in FireStrikeNow.
+                    try { Coordinator.FireStrike(_strike); }
+                    finally { _strike.Clear(); }
                 }
             }
             else

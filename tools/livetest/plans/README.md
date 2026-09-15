@@ -3,6 +3,10 @@
 One `[section]` per game launch. The driver splits a multi-section file itself and runs the
 sections back to back, one process each.
 
+The runner exists only in the live test build. Install it with `LIVETEST=1 ./install.sh` before
+running the driver, which refuses to start on a Workshop build, and put the Workshop build back
+with `./install.sh` afterwards.
+
 Keys: `Mission`, `Compression`, `WaitForContactSec`, `TimeoutSec`, and `ShotN` lines shaped
 `Shooter > Target | ammo | salvo`. Both names are mission-ini section keys such as
 `Taskforce1Vessel2`. Ammo `*` picks the first missile aboard that matches the target and is
@@ -40,7 +44,7 @@ only that gate registers. The rest are plan keys, so each scenario asks for what
 | `TraceFlightModel` | true | Flight-model internals: the gap line, per-missile track, stage transitions, launch geometry, guard frames. Roughly ten times the log volume and extra sims per round. Turn it OFF for performance runs. |
 | `VerticalProfile` | false | One-second depth and altitude traces for submarines and aircraft. |
 | `AlignmentTrace` | false | Every alignment a surface ship starts and ends, with the game method that ended it, and a one-second steering and launcher-state trace while it turns. |
-| `AlignmentUidFix` | false | Counterfactual, test plans only: when two alignments of one ship share an order's uid, `EndAlignment` removes the one that is ending instead of its replacement. Changes game behaviour; no config entry exists for it. See `docs/plans/done/2026-09-15-beam-only-launcher-alignment.md`. |
+| `AlignmentUidFix` | false | Counterfactual, test plans only: when two alignments of one ship share an order's uid, `EndAlignment` removes the one that is ending instead of its replacement. Changes game behaviour, so it exists only in the live test build and has no config entry. |
 | `Profiling` | false | Per-frame timing every 60 frames. |
 | `VerifySolve` | false | Re-runs every threaded simulation on the main thread and warns if the answers differ. Doubles simulation work. |
 
@@ -127,7 +131,7 @@ Formation1..N by index and stops at the first gap.
 
 **A weapon can be hidden behind a loadout.** A Sovremenny declares `AvailableLoadouts=Default,Late`
 and mounts `wp_ss-n-22` on one, `wp_ss-n-22b` on the other. Without `LoadoutVariant` the hull
-answered ss-n-22b at every mission date tried, so the ammunition simply is not aboard and the run is
+answered ss-n-22b at every mission date tried, so the ammunition is not aboard and the run is
 REJECTED. Use `loadout <Section> <Name>`; `date <year>` alone did not decide it.
 
 **Radars default OFF for a taskforce unit,** so a shooter steers its rounds off a poor track until

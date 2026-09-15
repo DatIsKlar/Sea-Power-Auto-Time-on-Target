@@ -2,8 +2,9 @@
 
 [← Accuracy](06-accuracy.md) · [index](00-index.md)
 
-Every line below is gated behind the mod's **`VerboseLog`** config option and is silent in normal
-play; the per-frame telemetry is heavy enough to cause disk-I/O stutter. Output goes to the BepInEx
+The lines below are research traces behind the mod's **`TraceFlightModel`** config option unless a
+row says otherwise, and are silent in normal play; the per-frame telemetry is heavy enough to cause
+disk-I/O stutter. Output goes to the BepInEx
 log, prefixed `[AutoTOT]`.
 
 Telemetry is scoped to missiles AutoTOT fired (`EngagementBoard.IsCoordinated`), so planning
@@ -15,7 +16,7 @@ churn and defensive-SAM launches do not drown the log.
 
 | line | content |
 |---|---|
-| `estimator` | two lines at startup, never gated by `VerboseLogging`: which tier is bound (`integrator ACTIVE` or `UNAVAILABLE` with the reason), and whether the loop runs on worker threads or the main thread |
+| `estimator` | two lines, never gated by `VerboseLogging`: whether the loop runs on worker threads or the main thread (at game start), and which tier is bound, `integrator ACTIVE` or `UNAVAILABLE` with the reason (the first time a flight time is needed, normally as the first mission loads) |
 | `sim-init` | which reflection handles resolved |
 | `sim-launch` | one line per shot: `launchPitch`, `initPhase`, `turnRate`, `loftAlt`, `descentDeg`, `onsetDeg`, `bearingErr`, `range`, `iniPitch` (the `.ini` value, for comparison), `railAz` |
 | `sim-track` | the model's own state: `t` / speed / altitude / pitch / `hdgErr` / `roll` / drag / phase / flat distance / slant |
@@ -29,11 +30,9 @@ churn and defensive-SAM launches do not drown the log.
 |---|---|
 | `track` | the **live** missile's speed / altitude / stage / distance |
 | `stage-obs` | the live missile's own flight-stage transitions, one line per change: `prev -> next`, sim time, flat and slant distance, altitude, speed |
-| `drag-break` | live `CalculateDrag` component split (aero / induced / gravity), the seeker's **lock HELD/DROPPED** state, and the `targetAlt` fed |
 | `gap` | the outcome: `simEst` vs `actual`, plus `peakAlt`, `realPeakSpd`, `termSpd`, and `legacyEst`. Replaced by `SKIPPED, seeker switched` when the round struck a ship other than the one it was ordered against, since that difference measures formation geometry rather than the estimator |
 | `gap-sub` | the same measurement for a round whose seeker switched, taken against the ship it actually hit. Deliberately a separate name: it is **approximate** and must never be recorded in the accuracy table. The substitute's position at launch is not recorded, so it is back-projected from the impact position, and the line prints how far it rewound and the tolerance that implies. Good to a few seconds, which is enough to catch the class of defect worth reporting |
-| `impact` | flight time, final range, and `[RETARGETED -> <ship>]` when the seeker switched ships mid-flight. On a traced round the flight runs to the hit when the collision cast found it, marked `to the hit`; otherwise to the last frame the round was seen alive ([GAME-BEHAVIOUR.md §9](../GAME-BEHAVIOUR.md#9-a-missiles-recorded-flight-ends-a-frame-before-it-hits)) |
-| `stage-src` | the game's own `CreateWaypointConfigs` plan, dumped per config |
+| `impact` | printed for coordinated rounds with `VerboseLogging` or `TraceFlightModel`: flight time, final range, and `[RETARGETED -> <ship>]` when the seeker switched ships mid-flight. On a traced round the flight runs to the hit when the collision cast found it, marked `to the hit`; otherwise to the last frame the round was seen alive ([GAME-BEHAVIOUR.md §9](../GAME-BEHAVIOUR.md#9-a-missiles-recorded-flight-ends-a-frame-before-it-hits)) |
 
 ## 7.2 Sampling cadence
 
@@ -76,10 +75,6 @@ and the real `→ TerminalApproach` distance is what `diveStart` should be.
 > missile 80 km up these differ enormously, and comparing one column against the other is the single
 > most repeated mistake in this project's history.
 
-**`drag-break`** calls the 13-argument `CalculateDrag` overload with the live missile's exact state
-and the mover's own `targetAltitude` rule, so its `induced` column is the real vacuum-brake magnitude
-sample by sample.
-
 ## 7.4 Cost, and the `Profiling` switch
 
 `Profiling` (a separate config key from `VerboseLogging`) emits one report every 60 frames. It exists
@@ -89,11 +84,14 @@ have been wrong every time it has been checked.
 ```
 [AutoTOT Profiling] 60 frames: tick 243.7ms total, 4.062ms avg, WORST 26.99ms (release 4.33ms)
   frame 31.66ms avg (32 fps), worst 150.14ms => AutoTOT 8.50ms/frame = 26.8% (tick + UI)
-  release staleness: 46 released, estimate age 7.57s avg, 17.68s worst (sim seconds)
-  Diag ... | Commit ... | Anchor ... | Release ...
-    -> FlightTime.Estimate: 185.9ms over 519 calls
-       hits: 411 calls @ 0.000ms | misses: 108 calls @ 1.721ms avg
-       model: 132 sims, 574855 steps (4354 avg), setup 0.7ms + loop 238.7ms, 415us/1k steps
+  release staleness: 46 orders released, age of the flight estimate each one released against 7.57s avg, 17.68s worst (sim seconds)
+  Diag ...: scan ... | engage-state ... | finalize ... | cleanup ... | retire ...
+  Pending ... | Commit ... | Anchor ... (PredictAnchorImpact ...) | Release ...
+    -> FlightTime.Estimate: 185.9ms over 519 calls (8.65/frame)
+       hits: 411 calls, 0.0ms total @ 0.000ms avg
+       misses: 108 calls, 185.9ms total @ 1.721ms avg
+       ...
+       model: 132 sims, 574855 steps (4354 avg), setup 0.7ms + loop 238.7ms (WALL time summed across main and worker threads, so it exceeds the frame budget it is measured beside), 415us/1k steps
        tiers: integrator 132, waypoint 0, maxRange 0, failed 0, integrator declined 0
     -> UI (outside tick): ...
 ```
@@ -110,9 +108,9 @@ Reading notes:
   change inside the integration loop.
 - **`release staleness`** is how old the flight estimate was when an order actually fired. The
   per-frame sim cap trades freshness for frame time, and this is the cost side of that trade.
-- **`VerboseLogging` distorts everything here.** It runs an extra full integrator sim per missile for
-  the `int-phases` line, worth about 12.5 ms per frame in a large salvo against 0.03 ms with it off.
-  Measure performance with verbose **off**.
+- **`TraceFlightModel` distorts everything here.** It runs extra full integrator sims per missile for
+  its comparison lines, worth about 12.5 ms per frame in a large salvo against 0.03 ms with it off.
+  Measure performance with it **off**.
 - **`async`** reports the worker pool: how many simulations were queued and completed, how many the
   integrator declined, and the queue depth. A depth that stays near zero means the pool is keeping
   up. A depth that climbs during a salvo is the signal to raise `EstimatorThreads`.
@@ -212,9 +210,9 @@ diverge, and nothing here notices.
 `VerticalProfiler.cs` captures how a platform changes depth or altitude, off by default. This is
 a research tool, not a runtime diagnostic.
 
-### Why separate from the asc-* lines
+### Why separate from the envelope-* lines
 
-The `asc-*` lines only fire while an AutoTOT order is pending, which is useless for modelling: to
+The `envelope-*` lines only fire while an AutoTOT order is pending, which is useless for modelling: to
 characterise a hull you want to order a depth or altitude change with no engagement at all and
 watch the response. The profiler samples every submarine and aircraft whenever its commanded
 altitude differs from where it is, and stops when it settles, so one dive or climb produces one

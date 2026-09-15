@@ -36,7 +36,7 @@ namespace AutoTOT
                                               // envelope (submarine ascent, aircraft descent); 0 = none
             public float StartupLead;         // full predicted order-to-first-round offset, launcher
                                               // startup plus EnvelopeLead
-            // Chain audit B1, and why these are copied rather than read through Linked: Linked is
+            // Why these are copied rather than read through Linked: Linked is
             // held only for an ANCHOR, and the release lead is most worth recording for a FOLLOWER,
             // whose arrival is predicted rather than measured. Copying the two scalars at
             // registration gets them for every order without holding a reference to a scheduled
@@ -340,7 +340,7 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// D3 of docs/plans/open/BETA-RELEASE-AUDIT-PLAN.md: the guiding sensor's live occupancy as
+        /// The guiding sensor's live occupancy as
         /// each round of a channel-limited order leaves the rail, beside how many of that order's
         /// rounds are still to come.
         ///
@@ -357,12 +357,11 @@ namespace AutoTOT
             if (string.IsNullOrEmpty(occ)) return;
             Bootstrap.Log.LogInfo(
                 $"[AutoTOT] channels-launch {ammoFile} from {UnitNaming.SafeName(platform)} at sim " +
-                $"{launchStamp:0.0}: round {e.Launched} of {e.Requested} away, {occ}. " +
-                $"D3 of the beta-release audit.");
+                $"{launchStamp:0.0}: round {e.Launched} of {e.Requested} away, {occ}.");
         }
 
         /// <summary>
-        /// D5 of docs/plans/open/anchor-liveness.md. A round that belongs to a coordinated target and
+        /// A round that belongs to a coordinated target and
         /// matches NOTHING used to be dropped in silence, and that silence is the whole defect: the
         /// F/A-18's expectation timed out at about t+45s, its rounds left at t+55 to t+60, and with
         /// no record to credit them to, the anchor reported "NOTHING launched" for the rest of the
@@ -393,7 +392,7 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// Fix E of docs/plans/open/anchor-liveness.md: credit a round that left AFTER its order's
+        /// Credit a round that left AFTER its order's
         /// window closed.
         ///
         /// An order's deadline is <c>max(4 x cadence, 30s)</c>, which for a 1.0s modelled cadence is
@@ -455,7 +454,7 @@ namespace AutoTOT
         }
 
         /// <summary>An order that closed, kept only so <c>launch-uncredited</c> can say how narrowly
-        /// a late round missed its window. D5 of docs/plans/open/anchor-liveness.md.</summary>
+        /// a late round missed its window.</summary>
         private struct RetiredExpectation
         {
             public float Sim;
@@ -474,24 +473,13 @@ namespace AutoTOT
         private const int RetiredExpectationCap = 64;
 
         /// <summary>
-        /// Order-to-first-round residual for a FOLLOWER: what the launcher actually took against
-        /// what was predicted at commit. Two flavours, one per model: <c>envelope-residual</c> when
-        /// the platform had to climb or dive into its launch envelope, <c>startup-residual</c> for
-        /// an ordinary mount, whose whole prediction is <see cref="Facts.StartupDelay"/>. Positive means the platform took longer than
-        /// predicted. Anchors are scored in the anchor-tracking loop instead, which also has the
-        /// per-step envelope-track trace; a follower is out of that loop the moment it releases, so
-        /// this is the only place its model can be read against reality. It is also the case that
-        /// matters most: an anchor's real launch rewrites the shared impact, a follower's does not,
-        /// so a follower's envelope error lands directly on the arrival time.
-        /// </summary>
-        /// <summary>
-        /// The delay terms an order was released on, for the corpus writer. Chain audit B1: every
+        /// The delay terms an order was released on, for the corpus writer. Every
         /// one of these lives only in <see cref="LaunchExpectation"/>, which is in memory, and the
         /// residuals computed from them go to a log BepInEx overwrites on every launch. Once they
         /// are in the `.result` the delay model can be scored offline across sessions, the way the
         /// flight model already is.
         ///
-        /// Matched the same way <see cref="NoteLaunch"/> matches, on unit, target and ammunition
+        /// Matched the same way <see cref="CreditLaunch"/> matches, on unit, target and ammunition
         /// file, and taking the first open order. A ship holding two orders for one ammunition at
         /// one target cannot tell its rounds apart here either, and the launch counter has the same
         /// limit. Returns false when nothing matches, which is the normal case for an uncoordinated
@@ -523,6 +511,17 @@ namespace AutoTOT
             return false;
         }
 
+        /// <summary>
+        /// Order-to-first-round residual for a FOLLOWER: what the launcher actually took against
+        /// what was predicted at commit. Two flavours, one per model: <c>envelope-residual</c> when
+        /// the platform had to climb or dive into its launch envelope, <c>startup-residual</c> for
+        /// an ordinary mount, whose whole prediction is <see cref="Facts.StartupDelay"/>. Positive means the platform took longer than
+        /// predicted. Anchors are scored in the anchor-tracking loop instead, which also has the
+        /// per-step envelope-track trace; a follower is out of that loop the moment it releases, so
+        /// this is the only place its model can be read against reality. It is also the case that
+        /// matters most: an anchor's real launch rewrites the shared impact, a follower's does not,
+        /// so a follower's envelope error lands directly on the arrival time.
+        /// </summary>
         private static void ScoreEnvelopeLead(LaunchExpectation e, float launchStamp)
         {
             if (!Coordinator.VerboseLog) return;
@@ -616,7 +615,7 @@ namespace AutoTOT
                 bool done = e.Launched >= e.Requested;
                 if (!done && simNow < e.DeadlineSim) continue;
 
-                // D5 of docs/plans/open/anchor-liveness.md: remember that this order existed, so a
+                // Remember that this order existed, so a
                 // round arriving after its window closed can be reported against it rather than
                 // vanishing. Keyed by ship and ammo, which is all a late round can be matched on.
                 _retiredExpectations[new ShipAmmoKey(e.Unit, e.AmmoFile)] =

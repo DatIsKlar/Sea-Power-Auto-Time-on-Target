@@ -646,21 +646,22 @@ expectation: linear scan for the first expectation with `Launched < Requested`, 
 `Unit`, `Target`, and `AmmoFile` (the resolved `_ammunitionFileName`). On match:
 `Launched++`, `LastLaunchSim = w._launchTime`. If the expectation is linked to an anchor
 (`Linked != null && Linked.IsAnchor && !Linked.RippleDone`), append `w._launchTime` to
-`Linked.LaunchTimes` (LaunchDiagnostics.Expectations.cs). This is the only writer of the
-anchor's `LaunchTimes` list.
+`Linked.LaunchTimes` (LaunchDiagnostics.Expectations.cs). The only other writer of the anchor's
+`LaunchTimes` list is `TryCreditLate`, which credits a round that left after its order's window closed.
 
 ### Impact reporting
 
 Detection is disappearance-based: after the scan, the tracker is walked; any key where
 `w == null || w.IsDestroyed || w._type != Missile` is collected (LaunchDiagnostics.cs).
-For each vanished missile: `flightTime = LastSeenTime - LaunchTime`; outcome is `"ARRIVED"` if
+For each vanished missile: `flightTime = LastSeenTime - LaunchTime`. On a round whose solver input
+was captured (`TraceFlightModel`), the flight is measured to the hit instead when a collision cast
+from the last sighting finds it (`flightEndImpact`). Outcome is `"ARRIVED"` if
 `LastDistM <= HitRangeM` (500 m), else `"ended"` (LaunchDiagnostics.cs). Arrival is not a
 confirmed hit: the round left the tracker while it was close, and it may have been shot down on
-final approach. Residual is
-printed only if `PredictedImpact >= 0f`: `residual = LastSeenTime - PredictedImpact`
-(observed impact − anchor-finalized predicted impact). The predicted impact is stamped
-from `EngagementBoard.TryGetPredictedImpact` at sample creation and survives target death
-because the board row is pruned on death.
+final approach. On an arrival with `PredictedImpact >= 0f` the line prints
+`residual = LaunchTime + measured flight - PredictedImpact`. The predicted impact is stamped from
+`EngagementBoard.TryGetPredictedImpact` at sample creation, refreshed while the round flies, and
+survives target death because the board row is pruned on death.
 
 ### Expectation registration
 
@@ -703,7 +704,8 @@ Close-out (LaunchDiagnostics.Expectations.cs): `done = Launched >= Requested`. I
 complete" (VerboseLog only). Else compute `targetGone` / `shooterGone`. If the shooter is
 alive, gather `ready`/`reserve`/`inventory`. Severity split: if `targetGone || shooterGone`,
 log "order ended early" (VerboseLog only). Else unconditional `LogWarning` "SHORTFALL".
-SHORTFALL is the only unconditional (non-VerboseLog) log in LaunchDiagnostics. The detail line
+SHORTFALL, `no arrival` and `launch tracking fault` are the unconditional (non-VerboseLog) lines in
+LaunchDiagnostics; `launch-uncredited` is VerboseLog only. The SHORTFALL detail line
 also reports how long ago the ship last fired that ammunition, which distinguishes a launcher
 that has stalled from one that is still working through a queue.
 
@@ -877,7 +879,7 @@ wrapped in try/catch; any exception is logged.
 `InitIfEnabled` (Bootstrap.cs) calls `ModMenuEnabled()` (Bootstrap.cs).
 Three outcomes:
 
-- `false`: logs "AutoTOT is present but not enabled in the Mods menu — standing down."
+- `false`: logs "AutoTOT is present but not enabled in the Mods menu, so it is standing down."
   and returns.
 - `true`: calls `Init()`.
 - `null` (state not readable yet): creates `GameObject("AutoTOTModGate")`,
@@ -904,14 +906,15 @@ run from BepInEx/plugins), returns `true`: it cannot tell where it lives, so it 
    (Bootstrap.cs).
 3. `Harmony = new Harmony(Guid)` (Bootstrap.cs).
 4. Patch-target probe: `AccessTools.Method(typeof(ObjectBase), nameof(ObjectBase.InsertEngageTask))`
-   (Bootstrap.cs). Null → error log "patch target ... NOT found — the game version may be incompatible".
+   (Bootstrap.cs). Null → error log "patch target ObjectBase.InsertEngageTask NOT found. The game version may be incompatible, and patching will likely fail."
 5. `Harmony.PatchAll(typeof(Bootstrap).Assembly)` in try/catch (Bootstrap.cs).
 6. `DotsScanHardening.Install(Harmony)` after PatchAll (Bootstrap.cs). Explicit install
    instead of PatchAll because the exact target differs between Entities versions and
    `Unity.Entities.dll` may not be loaded yet.
 7. `LogAssembliesThatFailGetName()` diagnostic sweep (Bootstrap.cs).
 8. Pump GameObject: `new GameObject("AutoTOTPump")`, `DontDestroyOnLoad`,
-   `AddComponent<Pump>()`, `AddComponent<Hud>()` (Bootstrap.cs).
+   `AddComponent<Pump>()`, `AddComponent<Hud>()`, and in the live test build only
+   `AddComponent<LiveTestRunner>()` (Bootstrap.cs).
 9. Final log: `"Auto Time-on-Target v{Version} loaded (Enabled={Coordinator.Enabled}, Armed={Coordinator.Active}, Unity={Application.unityVersion})."`
 
 ### Config
@@ -955,11 +958,12 @@ frame. `Update`:
 - `inMission = Globals._mainGameViewModel != null`.
 - Mission-exit detection with a 0.5 s debounce (`ExitDebounceSeconds`): a menu or pause
   briefly nulls the view model while the same mission keeps running, and resetting on that
-  transient would discard rounds still in flight. `Coordinator.Reset()` and
-  `VerticalProfiler.Reset()` run only once the mission has been absent for the debounce.
+  transient would discard rounds still in flight. `Coordinator.Reset()`, `VerticalProfiler.Reset()`
+  and `AlignmentProbe.Reset()` run only once the mission has been absent for the debounce, each
+  under its own try/catch, so a reset that throws is logged and not retried every frame.
 - In mission, a mission clock that runs backwards by more than 1 s with no reset in between
   logs a warning: it would mean a new mission started without the exit being seen.
-- `Coordinator.Tick()` and `VerticalProfiler.Tick()` in try/catch. A new exception message
+- `Coordinator.Tick()`, `VerticalProfiler.Tick()` and `AlignmentProbe.Tick()` in try/catch. A new exception message
   is logged in full; a repeat of the same one is restated every 30 s real with a count.
 
 ## File map
@@ -983,6 +987,7 @@ Sources live in five folders by concern: `Core/` (pipeline + lifecycle),
 | `Simulation/FlightTime.Integrator.cs` | Grounded step integrator (tier 1, beta): the setup half, which reads game state, plus phase diagnostics |
 | `Simulation/FlightTime.Solve.cs` | The integration loop, written as a pure function of a snapshot |
 | `Simulation/FlightTime.Waypoints.cs` | The waypoint route a non-kinematic round flies, and its look-ahead point, as pure functions |
+| `Simulation/FlightTime.Lead.cs` | The game's lead intercept point, ported so the model aims where the round aims |
 | `Simulation/FlightTime.Async.cs` | Worker pool, result drain, and the solve self-check |
 | `Simulation/FlightTime.Reflection.cs` | Branch detection + reflection resolution, and the typed-delegate fast path for the per-step thrust/drag calls |
 | `Simulation/FlightTime.Stats.cs` | Estimator cost counters: sims, integration steps, setup vs loop time, which tier answered |
@@ -1003,12 +1008,13 @@ Sources live in five folders by concern: `Core/` (pipeline + lifecycle),
 | `Diagnostics/LaunchDiagnostics.Expectations.cs` | Launch expectations: crediting, late crediting, shortfall detection; feeds anchor launch times |
 | `Diagnostics/LaunchDiagnostics.Tracing.cs` | Per-missile and per-launcher tracing behind the diagnostic switches |
 | `Diagnostics/SolveInputDump.cs` | The research corpus writer: solver input and flight result per traced round |
+| `Diagnostics/TargetMotionProbe.cs`, `Diagnostics/GuidanceStateProbe.cs` | Research traces behind `TraceFlightModel`: how a target ship moves across the map, and the inputs a missile's intercept point is built from |
 | `Diagnostics/VerticalProfiler.cs` | The `VerticalProfile` research trace of depth and altitude changes |
 | `Diagnostics/AlignmentProbe.cs` | The `AlignmentTrace` research trace of ships turning to bring a launcher to bear |
 | `Diagnostics/EngagementBoard.cs` | Per-target engagement state for the HUD (consolidated: one row per target) |
 | `Diagnostics/TelemetryCadence.cs` | Sampling offsets shared by the `sim-track` and `track` traces, so the two stay comparable |
 | `Diagnostics/CoordinatorProfiler.cs` | Per-frame timing (`CoordinatorProfiler`): stage timers, counters, frame share, the 60-frame report |
-| `Diagnostics/LiveTestRunner.cs`, `Diagnostics/LiveTestRunner.Plan.cs` | Unattended in-game test driver. Inert unless `BepInEx/AutoTOT-livetest/plan.ini` exists, which it consumes on startup; then it walks the game from the main menu into a mission, fires the listed shots through the coordinator, waits for every round to retire, writes a result and quits. Nothing is clicked: every step calls the method the game's own button calls. Driver and plan format are under `tools/livetest/` |
+| `Diagnostics/LiveTestRunner.cs`, `Diagnostics/LiveTestRunner.Plan.cs` | Unattended in-game test driver. Inert unless `BepInEx/AutoTOT-livetest/plan.ini` exists, which it consumes on startup; then it walks the game from the main menu into a mission, fires the listed shots through the coordinator, waits for every round to retire, writes a result and quits. Nothing is clicked: every step calls the method the game's own button calls. Driver and plan format are under `tools/livetest/`. Compiled only into the live test build (`-p:LiveTest=true`, which defines `LIVETEST`); the Workshop build leaves it out, together with the panel hooks it calls (`Hud.StagePanelFor`, `StagePanelForShots`, `PressFireThisTarget`), `LaunchDiagnostics.AnyCoordinatedInFlight` and the `AlignmentUidFix` counterfactual |
 | `UI/Hud.cs` (+ `.Rows` `.Render` `.Actions` `.Labels` `.Mouse` `.Styles` partials) | IMGUI planner panel: lifecycle and layout, row data, drawing, strike actions, labels, pointer capture, styling |
 
 ## Multiplayer crash shield: `DotsScanHardening`
@@ -1188,7 +1194,7 @@ with the outputs at their defaults ("does not reference entities") is correct.
 
 If `Unity.Entities.dll` is not yet loaded at mod init time, an `AssemblyLoad` event handler waits
 for it. The handler must never throw: an exception here would leak into whatever game code triggered
-the load. An assembly whose very name throws is exactly what the shield protects against; it cannot
+the load. An assembly whose name itself throws is exactly what the shield protects against; it cannot
 be `Unity.Entities`.
 
 ## Launcher facts timing
@@ -1278,7 +1284,9 @@ still reports.
 
 ## Diagnostic gates
 
-Two independent switches in the `Debug` config section, both off by default.
+Six switches in the `Debug` config section, all off by default. The two below cover most reports.
+`VerticalProfile` and `AlignmentTrace` are research traces for one question each, `Profiling` is the
+timing report, and `VerifySolve` checks the threaded solver against the main thread.
 
 **`VerboseLogging`** answers *what did the coordinator decide, and why*: commit and release lines,
 dispatch, the anchor trace and its finalisation, launch crediting, envelope and launcher state, and
@@ -1288,13 +1296,12 @@ and the one whose output is small enough to read.
 **`TraceFlightModel`** answers *how was that flight time produced*: the integrator's step trace
 (`sim-track`), the waypoint sim (`wp-track`), per-missile telemetry (`track`), launch geometry
 (`launch-rail`, `sim-launch`), stage transitions (`stage-obs`, `stage-model`, `int-phases`) and the
-estimate-versus-actual `gap`. It belongs to investigations that are closed, and it is kept because
-re-deriving the flight model without it cost several sessions.
+estimate-versus-actual `gap`. It is the tool for a flight time that looks wrong.
 
-It is deliberately separate because it dominates everything else. On a two-mission 2026-09-07 run it
-was **5,923 of 6,567 lines, 90 percent of the log**, which buried the coordination lines the verbose
-setting exists to show. It also costs real work: the per-missile block it gates runs two extra flight
-sims and a waypoint sim per round, purely to print a comparison.
+It is deliberately separate because it dominates everything else: in a traced session it is about 90
+percent of the log, which would bury the coordination lines the verbose setting exists to show. It
+also costs real work: the per-missile block it gates runs two extra flight sims and a waypoint sim
+per round, purely to print a comparison.
 
-`SHORTFALL`, the `anchored` summary and every warning stay unconditional, because those are the lines
-users send in.
+`SHORTFALL`, the `anchored` summary and the warnings stay unconditional, because those are the lines
+users send in. The exception is `launch-uncredited`, which only `VerboseLogging` prints.

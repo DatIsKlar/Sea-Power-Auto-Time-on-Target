@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Build AutoTOT and install it as a local Sea Power mod (loaded via AnchorChain).
+# LIVETEST=1 ./install.sh installs the live test build instead (see below).
 set -euo pipefail
 
 # Fall back to a private .NET SDK install only when dotnet isn't on PATH already.
@@ -29,11 +30,19 @@ if [ -z "${GAME_DIR:-}" ]; then
     exit 1
 fi
 
-echo ">> building..."
-dotnet build -c Release -v minimal
-
-echo ">> staging dist..."
-cp bin/Release/AutoTOT.dll dist/AutoTOT/AutoTOT.dll
+# LIVETEST=1 builds the live test build (runner compiled in, bin/LiveTest/) and installs it without
+# touching dist/, which only ever holds the Workshop build.
+if [ "${LIVETEST:-0}" = "1" ]; then
+    echo ">> building the live test build (runner included)..."
+    dotnet build -c Release -v minimal -p:LiveTest=true
+    SRC=bin/LiveTest/AutoTOT.dll
+else
+    echo ">> building..."
+    dotnet build -c Release -v minimal
+    echo ">> staging dist..."
+    cp bin/Release/AutoTOT.dll dist/AutoTOT/AutoTOT.dll
+    SRC=dist/AutoTOT/AutoTOT.dll
+fi
 
 DEST="$GAME_DIR/Sea Power_Data/StreamingAssets/AutoTOT"
 echo ">> installing to: $DEST"
@@ -55,6 +64,6 @@ install_atomic() {
 }
 
 install_atomic dist/AutoTOT/_info.ini "$DEST/_info.ini"
-install_atomic dist/AutoTOT/AutoTOT.dll "$DEST/AutoTOT.dll"
+install_atomic "$SRC" "$DEST/AutoTOT.dll"
 
 echo ">> done. Enable 'Auto Time-on-Target' in the Mods menu, then restart the game."

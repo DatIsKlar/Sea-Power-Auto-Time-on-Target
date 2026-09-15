@@ -7,7 +7,7 @@
   <PropertyGroup>
     <TargetFramework>netstandard2.1</TargetFramework>
     <AssemblyName>AutoTOT</AssemblyName>
-    <Version>0.2.0</Version>
+    <Version>0.2.1</Version>
     <LangVersion>latest</LangVersion>
     <!-- We reference game/Unity/BepInEx DLLs by hint path; don't pull the ref pack -->
     <DisableImplicitFrameworkReferences>true</DisableImplicitFrameworkReferences>
@@ -35,6 +35,19 @@
     <!-- The offline replay lab under tools/ compiles the mod's own solver sources against its own
          stubs and entry point. Those must not join the mod build. -->
     <Compile Remove="tools/**/*.cs" />
+  </ItemGroup>
+
+  <!-- The live test runner drives menus, loads missions and quits the game when a plan file exists,
+       so the Workshop build leaves it out. -p:LiveTest=true (what LIVETEST=1 ./install.sh passes)
+       compiles it in, defines LIVETEST, and builds into its own folders so the two builds never
+       share an output or an intermediate file. -->
+  <PropertyGroup Condition="'$(LiveTest)' == 'true'">
+    <DefineConstants>$(DefineConstants);LIVETEST</DefineConstants>
+    <OutputPath>bin/LiveTest/</OutputPath>
+    <IntermediateOutputPath>obj/LiveTest/</IntermediateOutputPath>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(LiveTest)' != 'true'">
+    <Compile Remove="Diagnostics/LiveTestRunner*.cs" />
   </ItemGroup>
 
   <ItemGroup>

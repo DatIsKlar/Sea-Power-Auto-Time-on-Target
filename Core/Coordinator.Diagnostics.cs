@@ -15,7 +15,7 @@ namespace AutoTOT
     internal static partial class Coordinator
     {
         /// <summary>
-        /// D11 of docs/plans/open/anchor-liveness.md: what the launch-state snapshot was actually
+        /// What the launch-state snapshot was actually
         /// built from, and what it produced against the live estimate for the same shot.
         ///
         /// This estimator feeds the shared impact and had no trace of any kind. On 2026-09-07e it
@@ -65,7 +65,7 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// D1, D2 and D4 of docs/plans/done/2026-09-07-aircraft-anchor-impact-slide.md: the shared impact
+        /// The shared impact
         /// prediction every time it MOVES, decomposed into the two terms that produce it.
         ///
         /// The defect this exists to measure is that `LastRoundLaunch` is an absolute timestamp from
@@ -220,7 +220,7 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// D1 of docs/plans/open/anchor-liveness.md: why an anchor that has launched NOTHING is still
+        /// Why an anchor that has launched NOTHING is still
         /// holding the strike.
         ///
         /// The 2026-09-07 run 3 left one link in the chain inferred rather than observed. A circling
@@ -294,7 +294,7 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// D2 of docs/plans/open/anchor-liveness.md: every move of the shared impact, with the number
+        /// Every move of the shared impact, with the number
         /// of followers that have ALREADY released against the old value.
         ///
         /// A round in the air has spent its lead, so a later move of the shared impact is unfixable
@@ -393,10 +393,8 @@ namespace AutoTOT
         }
 
         // ------------------------------------------------------------------------------------
-        // Phase 1 diagnostics, docs/plans/open/BETA-RELEASE-AUDIT-PLAN.md. Each was written to prove
-        // or kill one finding of that audit before its fix; the ones whose findings closed have been
-        // removed (docs/plans/reference/removed-diagnostics.md). Nothing below changes a timing
-        // decision.
+        // Diagnostics written to prove or rule out release-path defects before they were fixed; the
+        // ones whose defects closed have been removed. Nothing below changes a timing decision.
         // ------------------------------------------------------------------------------------
 
         /// <summary>Cadence for the estimator census. Sim time, so a paused game is quiet and time
@@ -442,8 +440,7 @@ namespace AutoTOT
                 $"{UnitNaming.SafeName(it.Target)}: its anchor {ai?.AmmoId} from " +
                 $"{UnitNaming.SafeName(ai?.Unit)} left the schedule {simNow - a.LeftScheduleSim:0.0}s ago " +
                 $"with {a.LaunchTimes.Count} launch(es) observed and RippleDone={a.RippleDone}. " +
-                $"This order has been held {held:0.0}s and nothing can release it. " +
-                $"D1 of the beta-release audit.");
+                $"This order has been held {held:0.0}s and nothing can release it.");
         }
 
         /// <summary>
@@ -489,7 +486,7 @@ namespace AutoTOT
                 $"[AutoTOT] anchor-exit {s.Item?.AmmoId} from {UnitNaming.SafeName(s.Item?.Unit)} " +
                 $"({reason}): left the schedule after dispatch with NO launch observed and " +
                 $"RippleDone=false, holding {waiting} of {followers} follower(s). Nothing can release " +
-                $"them now. D1 of the beta-release audit.");
+                $"them now.");
         }
 
         /// <summary>
@@ -513,7 +510,7 @@ namespace AutoTOT
                 $"requested {requested}, observed {observed}, interval {interval:0.00}s, " +
                 $"observedSpan {span:0.0}s, {(it.Pooled ? "pooled lead" : "centering")} " +
                 $"{onObserved:0.0}s (commit value was " +
-                $"{used:0.0}s, correction {onObserved - used:+0.0;-0.0}s). D6 of the beta-release audit.");
+                $"{used:0.0}s, correction {onObserved - used:+0.0;-0.0}s).");
         }
 
         /// <summary>
@@ -566,8 +563,7 @@ namespace AutoTOT
                     Bootstrap.Log.LogWarning(
                         $"[AutoTOT] stock-check {UnitNaming.SafeName(it.Unit)} {it.AmmoId}: requested " +
                         $"{requested} across {targets} target(s){owed}, launchers can supply " +
-                        $"{available}. The strike is over-committed by {requested - available}. " +
-                        $"D9 of the beta-release audit.");
+                        $"{available}. The strike is over-committed by {requested - available}.");
                 else if (VerboseLog && (targets > 1 || outstanding > 0))
                     Bootstrap.Log.LogInfo(
                         $"[AutoTOT] stock-check {UnitNaming.SafeName(it.Unit)} {it.AmmoId}: requested " +

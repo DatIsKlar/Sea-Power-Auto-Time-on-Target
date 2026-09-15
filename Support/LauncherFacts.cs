@@ -76,8 +76,7 @@ namespace AutoTOT
             // C: what one round costs the launcher's own state machine, declared OnRailWarmup plus
             // the hatch animation. Paid before round 1 (hence its place in StartupDelay) and again
             // before every later round, because WeaponSystemLauncher.cs:842 clears _onRail after
-            // every launch. Measured per state in the 2026-09-06 engage-state trace; see
-            // docs/plans/open/launcher-startup-delay.md.
+            // every launch, measured per state from recorded engage-state traces.
             public float LauncherCycle;
 
             // D: what a launcher that has never fired owes before its first round, over and above
@@ -182,6 +181,9 @@ namespace AutoTOT
         private static MethodInfo _acquisitionMethod;
         private static bool _acquisitionResolved;
         private static bool _acquisitionLogged;
+        private const int AcquisitionFailuresBeforeDisable = 3;
+        private static int _acquisitionFailuresInARow;
+        private static bool _acquisitionFailureLogged;
 
         private static float AcquisitionSeconds(ObjectBase ship, WeaponParameters vwp)
         {
@@ -214,15 +216,31 @@ namespace AutoTOT
             try
             {
                 object r = _acquisitionMethod.Invoke(null, new object[] { ship, vwp });
+                _acquisitionFailuresInARow = 0;
                 return (r is float f && !float.IsNaN(f) && !float.IsInfinity(f)) ? Mathf.Max(0f, f) : 0f;
             }
             catch (Exception e)
             {
                 // Say so. A silent catch here returns the same 0 as a gate that is genuinely off,
                 // and those two need very different fixes.
-                Bootstrap.Log.LogWarning($"[AutoTOT] reaction-gate call failed, treating acquisition " +
-                                         $"as 0: {e.InnerException?.Message ?? e.Message}");
-                _acquisitionMethod = null;   // stop paying for a call that throws
+                //
+                // Given up only after several failures in a row, which is what a gate broken for every
+                // ship looks like. Giving up on the first one let a single ship's fault remove the
+                // acquisition delay from every later startup lead for the rest of the session.
+                string why = e.InnerException?.Message ?? e.Message;
+                if (!_acquisitionFailureLogged)
+                {
+                    _acquisitionFailureLogged = true;
+                    Bootstrap.Log.LogWarning($"[AutoTOT] reaction-gate call failed for {UnitNaming.SafeName(ship)}, " +
+                                             $"treating acquisition as 0: {why}");
+                }
+                if (++_acquisitionFailuresInARow >= AcquisitionFailuresBeforeDisable)
+                {
+                    Bootstrap.Log.LogWarning($"[AutoTOT] reaction-gate call failed {_acquisitionFailuresInARow} times " +
+                                             $"in a row, so launcher startup leaves out the acquisition delay for " +
+                                             $"the rest of the session: {why}");
+                    _acquisitionMethod = null;   // stop paying for a call that keeps throwing
+                }
                 return 0f;
             }
         }
@@ -389,7 +407,7 @@ namespace AutoTOT
             }
 
             // Cadence FLOOR from the launcher's own state cycle, shared out across the launchers
-            // that serve this ammunition. Item 3 of docs/plans/open/launcher-startup-delay.md.
+            // that serve this ammunition.
             //
             // The hatch floor above accounts for opening a tube and nothing else, but a launcher
             // pays its WHOLE cycle for every round, warm-up included: OnRailWarmup was established
@@ -433,8 +451,7 @@ namespace AutoTOT
             // resolution that measured it.
             float acquisition = AcquisitionSeconds(ship, vwp);
 
-            // D: what a launcher that has not fired yet owes before its first round. Item 6 of
-            // docs/plans/open/launcher-startup-delay.md.
+            // D: what a launcher that has not fired yet owes before its first round.
             //
             // A magazine-fed rail launcher lifts its first round from below deck before it can
             // shoot, then picks a container and trains: WarmingUp, ChoosingContainer,
@@ -638,7 +655,7 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// D3 of docs/plans/open/BETA-RELEASE-AUDIT-PLAN.md: a LIVE read of the guiding sensors for
+        /// A LIVE read of the guiding sensors for
         /// this ammunition, naming each sensor, its channel count and how many weapons it is
         /// currently guiding.
         ///

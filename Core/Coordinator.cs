@@ -247,8 +247,7 @@ namespace AutoTOT
             // still produces an ascent profile instead of a single line. -inf = never sampled.
             public float LastSubLogSim = float.NegativeInfinity;
 
-            // D1 (anchor liveness) and D2 (impact commitment), both from
-            // docs/plans/open/anchor-liveness.md. Diagnostics only; nothing here changes timing.
+            // For the anchor-liveness and impact-commitment lines only; nothing here changes timing.
             public float LastLivenessSim = float.NegativeInfinity;
             public float LastCommittedImpact = float.NaN;
             // Last observed shooter depth (ft, positive down) and when, for the ascent-progress hold
@@ -279,12 +278,11 @@ namespace AutoTOT
                                                    // and not just the anchor's own target
             public Scheduled Anchor;               // followers only: the anchor they sync to
             public bool LoggedAnchorWait;          // one "waiting for anchor" line per follower
-            public bool LoggedEnvelopeResidual;         // one asc-residual line per anchor
+            public bool LoggedEnvelopeResidual;         // one envelope-residual line per anchor
 
-            // Phase 1 diagnostics of docs/plans/open/BETA-RELEASE-AUDIT-PLAN.md. D1 asks whether a
-            // follower can be left holding on an anchor that has left _scheduled: the follower keeps
-            // a reference to the anchor object, so the anchor has to say when it went. -1 = still
-            // scheduled. D7 needs the hold's own age, which nothing recorded.
+            // Diagnostic state. Whether a follower can be left holding on an anchor that has left
+            // _scheduled: the follower keeps a reference to the anchor object, so the anchor has to
+            // say when it went. -1 = still scheduled. ScheduledAtSim gives a hold its own age.
             public float LeftScheduleSim = -1f;
             public bool LoggedOrphan;
             public float ScheduledAtSim = -1f;
@@ -391,7 +389,22 @@ namespace AutoTOT
                 OpenStrikeBatch();
                 return;
             }
-            CommitBatch(b);
+            try
+            {
+                CommitBatch(b);
+            }
+            catch (Exception e)
+            {
+                // The strike leaves _strikeBatch before the commit, so a throw here used to lose every
+                // collected order and leave the mode silently disarmed. How far the commit got is not
+                // known, so the orders are not put back, which could fire some of them twice. The mode
+                // stays armed, as after a normal fire, and the log says what happened.
+                OpenStrikeBatch();
+                Bootstrap.Log.LogError(
+                    $"[AutoTOT] strike failed to commit ({b.Items.Count} order(s)), so some or all of it " +
+                    $"will not fire. Still armed: order again whatever did not launch.\n{e}");
+                return;
+            }
             OpenStrikeBatch();
             Bootstrap.Log.LogInfo(
                 $"[AutoTOT] strike fired ({b.Items.Count} order(s)) and still armed: the next orders " +
@@ -484,7 +497,7 @@ namespace AutoTOT
         /// One observed anchor launch: when it left, where the shooter was at that instant, and the
         /// round itself.
         ///
-        /// D2 and D4 of docs/plans/done/2026-09-07-aircraft-anchor-impact-slide.md. PredictAnchorImpact pairs a
+        /// PredictAnchorImpact pairs a
         /// launch timestamp with a flight estimate taken from the shooter's CURRENT position, so the
         /// error it makes is the distance the shooter covered between the two. Nothing recorded that
         /// distance, which is why the slide could only ever be reconstructed after the fact.
@@ -525,7 +538,7 @@ namespace AutoTOT
         /// closing, it is the estimate failing. D6.</summary>
         private const float ImpactCollapseSeconds = 60f;
 
-        /// <summary>D1 of docs/plans/open/anchor-liveness.md: interval between anchor-liveness lines
+        /// <summary>Interval between anchor-liveness lines
         /// while an anchor has launched nothing. Matched to the envelope-track cadence so the two
         /// traces read side by side.</summary>
         private const float LivenessLogIntervalSim = 5f;
@@ -549,6 +562,7 @@ namespace AutoTOT
             ObjectBase unit, string ammoId, ObjectBase target,
             bool autoAttack, bool isFormationAttack, int shots, int priority)
         {
+            InterceptQueued = false;
             if (!Enabled) return false;            // master off -> fire normally
             // Auto-coordination off is a statement about ORDINARY orders, not about an armed
             // strike: arming one is an explicit request to collect what you order next, so it
@@ -624,7 +638,7 @@ namespace AutoTOT
             // order back would launch exactly the unguidable rounds this is preventing. True means
             // "the game must not fire this", and by not queueing it the order is dropped outright.
             int room = GuidanceRoom(unit, ammoId);
-            // D3 of the beta-release audit, intake side. `room` is budget arithmetic over the
+            // Intake side of the channel check. `room` is budget arithmetic over the
             // CACHED cap; the occupancy text is a live read of the same sensors. When a second order
             // arrives during the first one's launcher warm-up, the reservation for the dispatched
             // order has already been dropped (CommittedUnfired skips Fired items) while the sensor
@@ -637,7 +651,7 @@ namespace AutoTOT
                         $"[AutoTOT] channels-intake {ammoId} from {UnitNaming.SafeName(unit)}: asked for " +
                         $"{shots}, room {(room == int.MaxValue ? "uncapped" : room.ToString())}, " +
                         $"committedUnfired {CommittedUnfired(unit, ammoId)}, staged " +
-                        $"{StagedRounds(unit, ammoId)}, live {occ}. D3 of the beta-release audit.");
+                        $"{StagedRounds(unit, ammoId)}, live {occ}.");
             }
             if (room <= 0)
             {
@@ -668,6 +682,7 @@ namespace AutoTOT
                 Priority = priority,
                 IsFormation = isFormationAttack,
             });
+            InterceptQueued = true;   // held from here on; see InsertEngageTask_Patch
 
             // Flag channel pressure as the order lands, not at commit: with the panel collapsed the
             // commit-time answer arrives at the same moment the rounds do.
@@ -676,6 +691,29 @@ namespace AutoTOT
             if (VerboseLog)
                 Bootstrap.Log.LogInfo($"[AutoTOT] queued {UnitNaming.SafeName(unit)} -> {UnitNaming.SafeName(target)} ({ammoId} x{shots})");
             return true;
+        }
+
+        /// <summary>
+        /// Whether the last <see cref="TryIntercept"/> call got as far as holding its order. The
+        /// Harmony prefix reads it when the call throws, to choose between handing the order back to
+        /// the game and keeping it: once the order is held, handing it back would fire it twice.
+        /// Main thread only, like the game's own InsertEngageTask calls.
+        /// </summary>
+        internal static bool InterceptQueued;
+
+        /// <summary>
+        /// Drop the open batch for <paramref name="target"/> if it holds nothing. Only a
+        /// <see cref="TryIntercept"/> that threw between opening the batch and adding its order
+        /// leaves one; committed empty, it would report every order dropped when there never was one.
+        /// </summary>
+        internal static void DiscardEmptyBatch(ObjectBase target)
+        {
+            try
+            {
+                if (target != null && _openBatches.TryGetValue(target, out Batch b) && b.Items.Count == 0)
+                    _openBatches.Remove(target);
+            }
+            catch (Exception e) { ModLog.Warn("discarding an empty batch after a failed intercept", e); }
         }
 
         private static int _resetGeneration;
@@ -1035,12 +1073,6 @@ namespace AutoTOT
         }
 
         /// <summary>
-        /// Group-drag arrival delay for a grouped salvo: the leader throttles to 0.6x speed to let
-        /// the ripple form, so the GROUP arrives later than lastRoundLaunch + soloFlight. Derived
-        /// from the game's own shot-speed profile (see <see cref="FlightTime.GroupFormingDelay"/>).
-        /// 0 for non-grouped orders. <paramref name="span"/> is the launcher's ripple span.
-        /// </summary>
-        /// <summary>
         /// Release-to-impact time for an order: its flight plus the ripple lead, the startup lead and
         /// the group-drag delay. The anchor is the order with the largest, and the release gate
         /// tests the same sum against the time left, so anchor selection, re-election and release
@@ -1049,6 +1081,12 @@ namespace AutoTOT
         private static float EnrouteSeconds(Intent it, float flightEst, float groupDelay)
             => flightEst + it.ReleaseLead + it.StartupLead + groupDelay;
 
+        /// <summary>
+        /// Group-drag arrival delay for a grouped salvo: the leader throttles to 0.6x speed to let
+        /// the ripple form, so the GROUP arrives later than lastRoundLaunch + soloFlight. Derived
+        /// from the game's own shot-speed profile (see <see cref="FlightTime.GroupFormingDelay"/>).
+        /// 0 for non-grouped orders. <paramref name="span"/> is the launcher's ripple span.
+        /// </summary>
         private static float GroupDelay(Intent it, float span)
             => it.Grouped ? FlightTime.GroupFormingDelay(it.Unit, it.AmmoId, it.Target, span) : 0f;
 
@@ -1090,7 +1128,7 @@ namespace AutoTOT
             // climb out of it, and a boat at launch depth can be ordered deeper; both used to be
             // marked ready once and never asked again, so the order released against a startup lead
             // that had stopped being true. A surface ship is ready where it stands and needs no
-            // tracking. Finding 8 of docs/plans/open/BETA-RELEASE-AUDIT-PLAN.md.
+            // tracking.
             //
             // The too-low aircraft case is the one this matters most for: LaunchEnvelope returns 0
             // there deliberately (climb is energy-limited and the model will not fabricate it), so
@@ -1185,7 +1223,6 @@ namespace AutoTOT
 
         /// <summary>
         /// Centre each ship's POOLED ripple on the time on target, instead of each order's own.
-        /// Item 4 of docs/plans/open/launcher-startup-delay.md.
         ///
         /// A ship fires every round of one SystemName on one clock, SharedLaunchInterval apart,
         /// across all of its launchers and all of its orders: one timer per ship per name, reset by

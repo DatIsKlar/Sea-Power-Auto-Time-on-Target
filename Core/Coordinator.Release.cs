@@ -37,8 +37,6 @@ namespace AutoTOT
             // Proximity gate: far items reuse a prior Estimate on a long cadence (FlightRefreshSim),
             // near-release items on a short one (FlightRefreshNearSim). The reused value is always a
             // real Estimate output, so it cannot diverge from the commit path.
-            // See docs/plans/done/2026-08-30-performance-analysis.md and
-            // docs/plans/reference/estimator-cost.md.
             bool nearRelease = s.LastFlightEst >= 0f &&
                                timeLeft <= s.LastFlightEst + releaseGate + FlightGateMargin;
             float refreshCadence = nearRelease ? FlightRefreshNearSim : FlightRefreshSim;
@@ -71,7 +69,7 @@ namespace AutoTOT
                     // computed this instant, and at the game's 20x compression clamp that is up to
                     // 10 sim seconds of movement, with the 2 s far-item cadence on top. The item is
                     // then due again sooner, which is the whole effect: one extra refresh rather
-                    // than a release decided on a stale number. Chain audit A3.
+                    // than a release decided on a stale number.
                     //
                     // Real age is converted with the current compression rather than tracked in sim
                     // time. Over a 0.5 s window the two differ only if the player changed
@@ -175,7 +173,10 @@ namespace AutoTOT
                 // own slot comes after that round either way. See PoolSharedLaunchClock.
                 bool onAnchorClock = it.Pooled && s.Anchor?.Item != null && s.Anchor.Item.Pooled &&
                                      it.PoolClock == s.Anchor.Item.PoolClock && it.Unit == s.Anchor.Item.Unit;
-                if (!s.IsAnchor && s.Anchor != null && (s.Anchor.Fired || onAnchorClock) &&
+                // An order marked to fire when ready (MarkUnholdableOrders) arrives when its geometry
+                // says whatever it waits for, so holding it for the anchor's first round only costs
+                // the shot. Behind a submarine anchor that wait is the boat's whole ascent.
+                if (!s.IsAnchor && !it.FireImmediately && s.Anchor != null && (s.Anchor.Fired || onAnchorClock) &&
                     !s.Anchor.RippleDone && s.Anchor.LaunchTimes.Count == 0)
                 {
                     // D1: the hold is bounded by RippleDone, which only UpdateAnchorTracking sets,
@@ -203,7 +204,7 @@ namespace AutoTOT
                 // before round 1 leaves the rail, PLUS the group-drag delay (a grouped salvo flies
                 // slower than the solo estimate, so it must leave earlier to still arrive on time).
                 // FireImmediately: this order's arrival does not follow its release, so waiting
-                // gains nothing and costs the shot. See PreferUnholdableAnchor.
+                // gains nothing and costs the shot. See MarkUnholdableOrders in Coordinator.cs.
                 if (it.FireImmediately || timeLeft <= EnrouteSeconds(it, flightNow, groupDelay) + lookahead)
                 {
                     if (s.IsAnchor)
@@ -219,7 +220,7 @@ namespace AutoTOT
                         // Marked before removal purely so the anchor's follower list can still tell
                         // which of its orders are already in the air. A released round has spent its
                         // lead and a later move of the shared impact cannot reach it, which is what
-                        // D2 of docs/plans/open/anchor-liveness.md measures. No timing reads this.
+                        // the impact-commitment line measures. No timing reads this.
                         s.Fired = true;
                         _scheduled.RemoveAt(i);
                     }
@@ -415,7 +416,7 @@ namespace AutoTOT
 
         /// <summary>
         /// Hand one order to the game. Returns false when the game did not take it, which the caller
-        /// must act on: finding 4 of docs/plans/open/BETA-RELEASE-AUDIT-PLAN.md. This used to catch
+        /// must act on. This used to catch
         /// the exception, log it, and then mark the engagement fired and register a launch
         /// expectation anyway, so the mod believed rounds were coming that nothing had accepted, and
         /// a follower had already been dropped from the schedule by its caller.

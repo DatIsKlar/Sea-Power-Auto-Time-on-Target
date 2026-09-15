@@ -24,7 +24,7 @@ appears in the in-game **Mods** menu like any other mod.
 
 | Requirement | Notes |
 |---|---|
-| Sea Power | Public and beta branches are supported by the same DLL (tested up to the Unity 6 build). On **beta** the game's own `EstimateShot` is ~30 s off on lofting missiles, so AutoTOT uses a grounded step-integrator instead (all reference shots within a few seconds, incl. Mach-10 lofters flying through near-vacuum) with a ported waypoint-sim + legacy fallback; see [`docs/model/`](docs/model/00-index.md). On **public** the integrator gates off and the game's `SimulateShotLinear` drives timing. |
+| Sea Power | The same DLL runs on the public branch (0.8.2, build #358) and on the `stable` beta branch (build s367). On **beta** the game's own `EstimateShot` is 3 to 69 s off on the shots measured, so AutoTOT runs its own step integrator, with a ported waypoint sim as fallback: non-kinematic missiles land with a mean error of 0.55 s over flights of 40 s to 16 minutes (see [`docs/model/`](docs/model/00-index.md)). On **public** the integrator cannot bind and the game's `SimulateShotLinear` drives timing. |
 | BepInEx 5.x | Installed in the game folder (provides logging, config, Harmony) |
 | Anchor Chain (Steam Workshop item `3380210757`) | The chainloader that loads this mod; it also installs its preloader into `BepInEx/plugins/`. Enable it in the Mods menu too |
 | Seapower Multiplayer *(optional)* | Not needed, but AutoTOT ships a shield for that mod's multiplayer world-re-init crash (see [How it works](#how-it-works)) |
@@ -93,6 +93,12 @@ If `dotnet` is not on your PATH (e.g. a tarball install of the SDK), point
 Output: `bin/Release/AutoTOT.dll`. Building alone does not touch the game; that is
 the install step below.
 
+The live test runner (`Diagnostics/LiveTestRunner*.cs`) is not part of this build.
+`dotnet build -c Release -p:LiveTest=true` compiles it in and writes
+`bin/LiveTest/AutoTOT.dll`; `LIVETEST=1 ./install.sh` builds and installs that DLL
+without changing `dist/`. The driver in `tools/livetest/` needs it and refuses to
+start without it. Run `./install.sh` again afterwards to put the Workshop build back.
+
 ## Install & enable
 
 A local mod is any subfolder of `StreamingAssets/` containing an `_info.ini` + the
@@ -126,7 +132,7 @@ without a full restart leaves the mod listed but inactive in-game.
 Confirm in `<Sea Power>/BepInEx/LogOutput.log`:
 
 ```
-[AutoTOT] Auto Time-on-Target v0.2.0 loaded (Enabled=True, Armed=False, Unity=...)
+[AutoTOT] Auto Time-on-Target v0.2.1 loaded (Enabled=True, Armed=False, Unity=...)
 ```
 
 **Keep exactly one copy installed.** If you are also subscribed to the Workshop
@@ -145,7 +151,7 @@ The `dist/AutoTOT/` folder is exactly what you'd upload as a Steam Workshop item
 | **Alt+H** | Arm/disarm multi-target strike collection |
 | **Alt+F** | Fire the staged strike (works with the panel hidden) |
 
-Both use the configurable modifier (`ToggleModifier`; set to `None` for single-key). The **?**
+All four use the configurable modifier (`ToggleModifier`; set to `None` for single-key). The **?**
 in the panel's title bar lists the keys as configured, along with the salvo-stepper modifiers.
 
 ### Planner panel
@@ -280,7 +286,7 @@ Sources live in five folders by concern: `Core/` (pipeline + lifecycle),
 | `Core/AnchorChainEntry.cs` | AnchorChain entry point (`[ACPlugin]` + `IAnchorChainMod`) |
 | `Core/Bootstrap.cs` | Mod-menu gate, Harmony patching + DOTS shield install, config, pump/HUD lifecycle, Unity-exception forwarding |
 | `Core/Patches.cs` | Harmony prefix on `ObjectBase.InsertEngageTask` |
-| `Core/Coordinator.cs` (+`Coordinator.Anchor.cs`, `Coordinator.Release.cs`, `Coordinator.Channels.cs`, `Coordinator.Diagnostics.cs`) | Core pipeline: batching and anchor selection; observation anchoring; open-loop release and fire; the channel and magazine budget; the coordinator's log lines |
+| `Core/Coordinator.cs` (+`Coordinator.Pending.cs`, `Coordinator.Anchor.cs`, `Coordinator.Release.cs`, `Coordinator.Channels.cs`, `Coordinator.Diagnostics.cs`) | Core pipeline: batching and anchor selection; the deferred commit; observation anchoring; open-loop release and fire; the channel and magazine budget; the coordinator's log lines |
 | `Simulation/FlightTime.cs` | Flight-time API + caches: estimate entry, 3-tier kinematic wiring, speed profiles, group forming delay |
 | `Simulation/FlightTime.Integrator.cs` | Grounded step-integrator (primary tier, beta): setup, which reads the game state, and phase diagnostics |
 | `Simulation/FlightTime.Solve.cs` | The integration loop as a pure function of a snapshot, so it can run off the main thread |
@@ -288,11 +294,19 @@ Sources live in five folders by concern: `Core/` (pipeline + lifecycle),
 | `Simulation/FlightTime.Reflection.cs` | Reflection resolution for the game's sim internals (beta/legacy drift) + the typed-delegate fast path for per-step thrust/drag |
 | `Simulation/FlightTime.Stats.cs` | Estimator cost counters (simulations, steps, which tier answered) behind the `Profiling` switch |
 | `Simulation/WaypointSim.cs` | Reflection port of the public `SimulateShotLinear`, the middle-tier fallback estimator |
+| `Simulation/FlightTime.Waypoints.cs` | The waypoint route a non-kinematic round flies and its look-ahead point, as pure functions |
+| `Simulation/FlightTime.Lead.cs` | The game's lead intercept point, ported so the model aims where the round aims |
+| `Simulation/SubmarineAscent.cs`, `Simulation/AircraftDescent.cs` | Time for a submarine to rise, or an aircraft to descend, into its launch envelope |
 | `UI/Hud.cs` (+`Hud.Rows.cs`, `Hud.Render.cs`, `Hud.Actions.cs`, `Hud.Labels.cs`, `Hud.Mouse.cs`, `Hud.Styles.cs`) | IMGUI planner panel: layout, row data, drawing, strike actions, labels, pointer capture, styling |
 | `Diagnostics/LaunchDiagnostics.cs` (+`LaunchDiagnostics.Expectations.cs`, `LaunchDiagnostics.Tracing.cs`) | Impact reports; launch shortfall detection; per-missile tracing. Feeds anchor observations |
 | `Diagnostics/EngagementBoard.cs` | Per-target engagement state behind the HUD's ENGAGEMENTS list |
 | `Diagnostics/TelemetryCadence.cs` | Sampling offsets shared by the model and live-flight traces |
 | `Diagnostics/CoordinatorProfiler.cs` | Per-frame timing report behind the `Profiling` switch |
+| `Diagnostics/SolveInputDump.cs` | Research corpus writer behind `TraceFlightModel`: each traced round's solver input and flight result |
+| `Diagnostics/TargetMotionProbe.cs`, `Diagnostics/GuidanceStateProbe.cs` | Research traces behind `TraceFlightModel`: how a target ship moves across the map, and the inputs a missile's intercept point is built from |
+| `Diagnostics/VerticalProfiler.cs` | The `VerticalProfile` trace of submarine depth and aircraft altitude changes |
+| `Diagnostics/AlignmentProbe.cs` | The `AlignmentTrace` trace of a ship turning to bring a launcher to bear |
+| `Diagnostics/LiveTestRunner.cs`, `Diagnostics/LiveTestRunner.Plan.cs` | Unattended in-game test driver, compiled into the live test build only (see [Build](#build)) |
 | `Support/GameClock.cs` | Version-agnostic sim clock + launch-timestamp access (float/double beta drift) |
 | `Support/GameUnits.cs` | Shared unit conversions (Unity units ↔ metres/nm/knots) |
 | `Support/GameMath.cs` | Horizontal flatten, elevation and pitch helpers shared by the flight-time setup paths |
@@ -300,7 +314,10 @@ Sources live in five folders by concern: `Core/` (pipeline + lifecycle),
 | `Support/ShipAmmoKey.cs` | The (unit, ammunition) dictionary key used on the per-frame paths |
 | `Support/ModLog.cs` | Shared exception reporting, with and without the verbose gate |
 | `Support/LauncherFacts.cs` | Launcher cadence/ready rounds/reserve + cache, reload-wave helpers |
-| `Support/TtlCache.cs` | Tiny real-time TTL cache used on the per-frame UI paths |
+| `Support/LauncherProbe.cs` | Live launcher state (engage state, on-rail, usability) for the diagnostics |
+| `Support/LaunchEnvelope.cs`, `Support/SubmarineFacts.cs` | Launch-envelope delay for submarines and aircraft, the minimum-range check, and the submarine state they read |
+| `Support/IsExternalInit.cs` | Compiler shim that lets `netstandard2.1` use `init` properties |
+| `Support/TtlCache.cs` | Tiny real-time TTL cache used by FlightTime and LauncherFacts |
 | `Support/DotsScanHardening.cs` | Multiplayer mission-load crash shield for the DOTS assembly scan (discovery + deferred install) |
 
 ## Config
@@ -315,7 +332,7 @@ read once when the game starts and need a restart: `Enabled`, `AutoModeOnStart` 
 |---|---|---|---|
 | General | `Enabled` | `true` | Master on/off. When off, mod does nothing and the panel hides. Read at game start. |
 | General | `AutoModeOnStart` | `false` | Whether auto-coordination starts armed. Read at game start; the hotkey toggle then carries across missions. The planner panel works regardless. |
-| Interface | `ShowIndicator` | `true` | Show the planner panel and header bar. |
+| Interface | `ShowIndicator` | `true` | Draw the planner panel and its title bar. When off, nothing is drawn and nothing captures the mouse; the hotkeys still work. |
 | Interface | `ToggleModifier` | `LeftAlt` | Modifier held with hotkeys (`None` for single-key). |
 | Interface | `ToggleKey` | `T` | Key (with modifier) to arm/disarm auto-coordination. |
 | Interface | `OpenPanelKey` | `G` | Key (with modifier) to open/close the planner panel. |
@@ -325,7 +342,7 @@ read once when the game starts and need a restart: `Enabled`, `AutoModeOnStart` 
 | Interface | `UIScaleMultiplier` | `1.0` | Fine-trim on top of `UIScale` (0.5–2.0), so you can shrink the auto scale without giving it up. |
 | Timing | `GroupWindowSeconds` | `0.75` | Quiet gap (real s) after the last order before the batch locks in. |
 | Timing | `MaxCollectSeconds` | `6.0` | Hard cap (real s) on how long one target collects orders. |
-| Debug | `VerboseLogging` | `false` | Log every queued and released launch with timing details, plus per-shot flight-model diagnostics. Costly during a large salvo: it runs an extra flight simulation per missile, so leave it off unless you are investigating something. |
+| Debug | `VerboseLogging` | `false` | Log what the coordinator decided and why: every queued, committed and released order, the anchor trace, launch crediting and the impact residual. The flight-model internals are `TraceFlightModel`. Leave it off unless you are investigating something. |
 | Debug | `TraceFlightModel` | `false` | Log the flight-model internals behind every estimate: the integrator step trace, the waypoint sim, launch geometry, stage transitions and the estimate-versus-actual gap. Roughly ten times the volume of `VerboseLogging` and it runs extra simulations per round, so use it only when a flight time looks wrong. |
 | Debug | `VerticalProfile` | `false` | Log a 1 s trace of every submarine depth change and every aircraft altitude change, with the hull parameters each model uses. Order a depth or altitude change with no engagement and one manoeuvre becomes one labelled block in the log. |
 | Debug | `AlignmentTrace` | `false` | Log each time a surface ship starts or stops turning to bring a launcher to bear on an order, what ended the turn, and once a second the ship's heading, rudder, firing arcs and launcher states while it turns. For a ship that turns to fire and leaves some of its rounds aboard. |
@@ -346,10 +363,10 @@ read once when the game starts and need a restart: `Enabled`, `AutoModeOnStart` 
 
 ## Known limitations
 
-- Low-kinematics cruise missiles (e.g. Tomahawk) come out a few seconds short
-  on ~9.5-min cruises in every estimator tier: their guidance routes around
-  waypoints and adds distance no straight-line forward sim captures. Fast
-  missiles (e.g. SM-6) land within ±1s.
+- Flight-time accuracy is measured per missile family on the beta branch and listed in
+  [`docs/model/06-accuracy.md`](docs/model/06-accuracy.md). Most rounds land within about a
+  second of the estimate. The exceptions are kinematic missiles, whose random motor
+  performance alone spreads arrivals by a few seconds, and the YJ-20 case below.
 - Grouped-salvo group drag (e.g. SS-N-19, once ~20s late) is corrected by the
   `τ_form` term and lands within ~±2s at mid/long range. Remaining: at **close
   range** the terminal seeker trips before the group forms, so grouped salvos land
@@ -416,8 +433,7 @@ read once when the game starts and need a restart: `Enabled`, `AutoModeOnStart` 
 - **Against a ship formation, rounds often strike a ship other than the one you
   picked.** These missiles carry their own active seeker and do not split up the way
   a grouped salvo does, so one sent at a ship deep in a formation locks onto whatever
-  it detects first. The planner warns when two or more of your targets are in one
-  formation. Ships at the back of a formation can absorb nothing at all while
+  it detects first. Ships at the back of a formation can absorb nothing at all while
   the rounds meant for them kill the escorts in front. This is the game's seeker
   behaviour, not something the mod schedules around; the log marks such rounds
   `[RETARGETED -> ...]` so their flight times are not mistaken for estimator error.
@@ -454,9 +470,9 @@ Everything interesting lands in `<Sea Power>/BepInEx/LogOutput.log`, prefixed
 
 | Log line | Meaning |
 |---|---|
-| `... cannot make the shared impact on ...: closing at almost its own weapon's speed` | **WARN**: this shooter is flying at its target fast enough that delaying its release cannot delay its arrival, so the order is fired when ready instead of held. Its rounds still fly and still hit; they are simply not on the coordinated time. Normal for a strike aircraft, and never expected from a ship. |
+| `... cannot make the shared impact on ...: closing at almost its own weapon's speed` | **WARN**: this shooter is flying at its target fast enough that delaying its release cannot delay its arrival, so the order is fired when ready instead of held. Its rounds still fly and still hit; they are not on the coordinated time. Normal for a strike aircraft, and never expected from a ship. |
 | `Auto Time-on-Target v... loaded` | mod initialized (note the version: with two copies installed it reveals which one AnchorChain loaded) |
-| `estimator: integrator ACTIVE (beta branch, ...)` | the accurate flight model is running. Logged at startup whether or not `VerboseLogging` is on |
+| `estimator: integrator ACTIVE (beta branch, ...)` | the accurate flight model is running. Logged once, the first time a flight time is needed (normally as the first mission loads), whether or not `VerboseLogging` is on |
 | `estimator: integrator UNAVAILABLE on the public branch ...` | **WARN**: you are on the public branch, where the flight model cannot run. Coordination still works, timing is less accurate |
 | `estimator: ASYNC, N solve worker(s) started` / `running SYNCHRONOUSLY` | whether flight simulation runs on worker threads or the main thread (see `EstimatorThreads`) |
 | `queued A -> B` | an order was intercepted and is being held |
@@ -466,6 +482,7 @@ Everything interesting lands in `<Sea Power>/BepInEx/LogOutput.log`, prefixed
 | `anchored tgt: k/n launched over Xs` | ripple finalized; shared impact fixed |
 | `impact ... (flight Ns, final range m)` | verbose: where/when a missile ended |
 | `SHORTFALL ...` | **WARN**: fewer missiles launched than ordered against a live target (check ready/reserve numbers in the message) |
+| `no arrival: a coordinated ... ended ... m from ...` | **WARN**: a round AutoTOT timed ended its flight away from a target that is still afloat: shot down, decoyed or guidance lost. Reported once per ammunition per mission |
 | `DOTS scan hardening active: N scan method(s) shielded` | multiplayer crash shield installed (OK) |
 | `DOTS scan hardening: Unity.Entities not loaded yet ...` | shield defers until DOTS loads (OK); a `target resolved` line follows later |
 | `DOTS assembly scan would have crashed on an unnameable assembly` | the shield absorbed the multiplayer mission-load crash; load continues |
@@ -473,6 +490,8 @@ Everything interesting lands in `<Sea Power>/BepInEx/LogOutput.log`, prefixed
 | `AnchorChain: Attempted to load a duplicate plugin` | two copies of the mod are installed (local + Workshop); remove one |
 | `present but not enabled in the Mods menu, so it is standing down` | mod is unticked in the menu |
 | `launch tracking fault in ...` | **ERROR**: a read in launch tracking failed, usually because a game update changed a field. Launches are still counted and strikes still release; report with the stack |
+| `InsertEngageTask prefix threw ...` | **ERROR**: the mod failed while intercepting an order. The line says whether the order stays held by AutoTOT or went to the game uncoordinated; report with the stack |
+| `strike failed to commit ...` | **ERROR**: firing a strike threw part way. The strike mode stays armed; order again whatever did not launch, and report with the stack |
 | `coordinator tick error` / `Unity exception` | something threw; report with the stack |
 
 If the mod is enabled but does nothing in-game: **fully restart the game** (code mods
