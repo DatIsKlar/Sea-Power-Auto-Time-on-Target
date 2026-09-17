@@ -217,7 +217,8 @@ namespace AutoTOT.Lab
                         LaunchHeading = flownHeading,
                         // The mod builds the opening attitude from the heading, so a capture made on
                         // the flown rail carries both. Rebuilt with the mod's own expression.
-                        Att = GameMath.QEuler(-input.PrevPitch, FlightTime.YawOf(flownHeading), 0f),
+                        Att = GameMath.QEuler(-(input.LaunchPitch >= 0f ? input.LaunchPitch : 0f),
+                                              FlightTime.YawOf(flownHeading), 0f),
                     };
                     railSubs.Add($"{r.GetValueOrDefault("Key", Path.GetFileNameWithoutExtension(file))}: " +
                                  $"modelled {(modelledDeg + 360f) % 360f:F1} deg, flew {(flownDeg + 360f) % 360f:F1} deg");

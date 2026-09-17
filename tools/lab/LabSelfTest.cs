@@ -193,7 +193,7 @@ namespace AutoTOT.Lab
 
         /// <summary>
         /// The scorer's flown-rail substitution rebuilds the opening attitude as
-        /// QEuler(-PrevPitch, YawOf(LaunchHeading), 0), which is the mod's own construction. Every
+        /// QEuler(-LaunchPitch, YawOf(LaunchHeading), 0), which is the mod's own construction. Every
         /// capture with a rail heading carries both fields from the mod, so the rebuild has to
         /// reproduce the recorded Att on all of them, or a substituted round replays from an attitude
         /// no capture could contain. A quaternion and its negation are one rotation, hence |dot|.
@@ -204,12 +204,14 @@ namespace AutoTOT.Lab
             foreach (string file in Directory.GetFiles(corpus, "*.solveinput").OrderBy(f => f))
             {
                 Dictionary<string, string> kv = ReadDump(file);
-                if (!kv.ContainsKey("Att") || !kv.ContainsKey("LaunchHeading") || !kv.ContainsKey("PrevPitch"))
+                if (!kv.ContainsKey("Att") || !kv.ContainsKey("LaunchHeading") || !kv.ContainsKey("LaunchPitch"))
                     continue;
                 Vector3 h = V3(kv, "LaunchHeading");
                 if (h.x * h.x + h.z * h.z < 1e-8f) continue;
                 Quaternion recorded = Q(kv, "Att");
-                Quaternion rebuilt = GameMath.QEuler(-F(kv, "PrevPitch"), FlightTime.YawOf(h), 0f);
+                float launchPitch = F(kv, "LaunchPitch");
+                Quaternion rebuilt = GameMath.QEuler(-(launchPitch >= 0f ? launchPitch : 0f),
+                                                     FlightTime.YawOf(h), 0f);
                 float dot = Math.Abs(recorded.x * rebuilt.x + recorded.y * rebuilt.y +
                                      recorded.z * rebuilt.z + recorded.w * rebuilt.w);
                 AssertTrue($"launch attitude rebuild matches {Path.GetFileName(file)} (|dot| {dot:R})",

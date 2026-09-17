@@ -934,7 +934,6 @@ namespace AutoTOT
 
                 Vector3 pos = launchPos;
                 float velKnots = startVelKnots;
-                float t = 0f;
                 float prevPitch = launchPitch >= 0f ? launchPitch : 0f;
                 // Launch heading for a fixed launcher, the horizontal analogue of prevPitch: a launcher that cannot
                 // train fires along its own bearing, so an off-bearing shot flies its initial phase the wrong way and
@@ -961,14 +960,6 @@ namespace AutoTOT
                 // refund the budget spent on roll and silently restore the independent-limit rate.
                 // Re-seeded (roll zero) on any step that does not take the coupled branch.
                 Quaternion att = GameMath.QEuler(-prevPitch, YawOf(launchHeading), 0f);
-                float prevFlat = float.MaxValue;
-                bool tlGliding = false;
-                // Arrival latch: has the missile reached the current phase's target altitude
-                // yet? Before arrival it is transiting (bang-bang, so the finite-turn-rate nose-over
-                // still overshoots); after, it is holding (proportional, so it cannot limit-cycle).
-                bool altLatched = false;
-                int altLatchPhase = -1;
-                float prevAltErr = float.NaN;
 
                 Vector2[] altNodes = null;
                 float kappaEndFlat = 0f;
@@ -1009,7 +1000,6 @@ namespace AutoTOT
                 SwitchTarget switchTarget = ResolveSwitchTarget(target.IsAirUnit,
                     ap._forceDirectPoint, ap._midCourseCorrection.AllowsLauncherGuidance,
                     _dragFn != null || _dragMethod != null);
-                float nextSample = NoseOverIntervalSim;
                 bool trackDiag = Coordinator.TraceFlightModel && emitDiag;
                 string ammoLabel = ap._ammunitionFileName ?? "?";
                 if (trackDiag)
@@ -1139,19 +1129,10 @@ namespace AutoTOT
                     ToBearingTurnRate = toBearingTurnRate,
                     TurnRateBase = turnRateBase,
                     TurnDerateThresholdKn = turnDerateThresholdKn,
-                    AltLatchPhase = altLatchPhase,
-                    AltLatched = altLatched,
                     Att = att,
                     LaunchHeading = launchHeading,
-                    NextSample = nextSample,
                     Pos = pos,
-                    PrevAltErr = prevAltErr,
-                    PrevFlat = prevFlat,
-                    PrevPitch = prevPitch,
-                    T = t,
-                    TlGliding = tlGliding,
                     KappaEndFlat = kappaEndFlat,
-                    KappaProgress = 0f,
                     VelKnots = velKnots,
                     Legs = legs,
                     GroupLeader = groupLeader

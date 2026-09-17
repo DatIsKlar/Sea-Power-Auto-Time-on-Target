@@ -130,23 +130,12 @@ namespace AutoTOT
             /// the step loop pays one compare. 0 = the ammunition can never reach its own limit, so
             /// the derate is off. See FlightTime.Integrator.ResolveTurnDerateThreshold.</summary>
             internal float TurnDerateThresholdKn { get; init; }
-            internal int AltLatchPhase { get; init; }
-            internal bool AltLatched { get; init; }
             internal Quaternion Att { get; init; }
             internal Vector3 LaunchHeading { get; init; }
-            internal float NextSample { get; init; }
             internal Vector3 Pos { get; init; }
-            internal float PrevAltErr { get; init; }
-            internal float PrevFlat { get; init; }
-            internal float PrevPitch { get; init; }
-            internal float T { get; init; }
-            internal bool TlGliding { get; init; }
             /// <summary>Flat distance from launch to the end of the Kappa waypoint. This can be
             /// shorter than the shot when a non-terminal-loft round has a terminal waypoint.</summary>
             internal float KappaEndFlat { get; init; }
-            /// <summary>Waypoint.KappaLoft's monotonic internal progress. It catches up toward
-            /// geometric progress at no more than 2.5x flat motion; see Waypoint.UpdateWaypoint.</summary>
-            internal float KappaProgress { get; init; }
             internal float VelKnots { get; init; }
             /// <summary>The non-kinematic waypoint route, or null to fly the older altitude-command
             /// law. See FlightTime.Waypoints.cs.</summary>
@@ -570,19 +559,24 @@ namespace AutoTOT
             // The mover derates MaxTurnRate for the G-limit and only then spends the separate
             // hardcoded roll budget, so the addend rides above the derate rather than through it.
                 float       bankingRollAddend      = turnRate - turnRateBase;
-            int         altLatchPhase          = i.AltLatchPhase;
-            bool        altLatched             = i.AltLatched;
+            // Arrival latch: has the missile reached the current phase's target altitude yet?
+            // Before arrival it is transiting (bang-bang, so the finite-turn-rate nose-over still
+            // overshoots); after, it is holding (proportional, so it cannot limit-cycle).
+            int         altLatchPhase          = -1;
+            bool        altLatched             = false;
             Quaternion  att                    = i.Att;
             Vector3     launchHeading          = i.LaunchHeading;
-            float       nextSample             = i.NextSample;
+            float       nextSample             = NoseOverIntervalSim;
             Vector3     pos                    = i.Pos;
-            float       prevAltErr             = i.PrevAltErr;
-            float       prevFlat               = i.PrevFlat;
-            float       prevPitch              = i.PrevPitch;
-            float       t                      = i.T;
-            bool        tlGliding              = i.TlGliding;
+            float       prevAltErr             = float.NaN;
+            float       prevFlat               = float.MaxValue;
+            float       prevPitch              = launchPitch >= 0f ? launchPitch : 0f;
+            float       t                      = 0f;
+            bool        tlGliding              = false;
             float       kappaEndFlat           = i.KappaEndFlat;
-            float       kappaProgress          = i.KappaProgress;
+            // Waypoint.KappaLoft's monotonic internal progress. It catches up toward geometric
+            // progress at no more than 2.5x flat motion; see Waypoint.UpdateWaypoint.
+            float       kappaProgress          = 0f;
             float       velKnots               = i.VelKnots;
             bool        terminalLineStarted    = false;
             float       terminalLinePitch      = 0f;

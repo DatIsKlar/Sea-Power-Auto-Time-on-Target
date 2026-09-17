@@ -365,7 +365,8 @@ namespace AutoTOT.Lab
                 input = input with
                 {
                     LaunchHeading = flownHeading,
-                    Att = GameMath.QEuler(-input.PrevPitch, FlightTime.YawOf(flownHeading), 0f),
+                    Att = GameMath.QEuler(-(input.LaunchPitch >= 0f ? input.LaunchPitch : 0f),
+                                          FlightTime.YawOf(flownHeading), 0f),
                 };
             if (RoundedTargetVel(kv, r, in input, out Vector3 roundedVel))
                 input = input with { TargetVel = roundedVel };

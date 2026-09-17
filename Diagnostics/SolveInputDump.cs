@@ -188,19 +188,10 @@ namespace AutoTOT
                 b.AppendLine(F("ToBearingTurnRate", i.ToBearingTurnRate));
                 b.AppendLine(F("TurnRateBase", i.TurnRateBase));
                 b.AppendLine(F("TurnDerateThresholdKn", i.TurnDerateThresholdKn));
-                b.AppendLine(F("AltLatchPhase", i.AltLatchPhase));
-                b.AppendLine(F("AltLatched", i.AltLatched));
                 b.AppendLine(F("Att", i.Att));
                 b.AppendLine(F("LaunchHeading", i.LaunchHeading));
-                b.AppendLine(F("NextSample", i.NextSample));
                 b.AppendLine(F("Pos", i.Pos));
-                b.AppendLine(F("PrevAltErr", i.PrevAltErr));
-                b.AppendLine(F("PrevFlat", i.PrevFlat));
-                b.AppendLine(F("PrevPitch", i.PrevPitch));
-                b.AppendLine(F("T", i.T));
-                b.AppendLine(F("TlGliding", i.TlGliding));
                 b.AppendLine(F("KappaEndFlat", i.KappaEndFlat));
-                b.AppendLine(F("KappaProgress", i.KappaProgress));
                 b.AppendLine(F("VelKnots", i.VelKnots));
                 // The route as built in game, for comparison with the lab's rebuild. Each leg is
                 // endDist/mode/alt/climb/descent/clamp+skip; empty means the older altitude law.
