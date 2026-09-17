@@ -73,7 +73,7 @@ namespace AutoTOT.Lab
             {
                 List<float> g = gaps.ToList();
                 if (g.Count == 0) return $"{"-",7}{"-",7}{"-",7}{0,4}";
-                return $"{g.Average(),7:+0.0;-0.0}{g.Average(Math.Abs),7:0.0}{g.Max(Math.Abs),7:0.0}{g.Count,4}";
+                return $"{Math.Round(g.Average(), 1),7:+0.0;-0.0;0.0}{g.Average(Math.Abs),7:0.0}{g.Max(Math.Abs),7:0.0}{g.Count,4}";
             }
             static bool Shown(float v) => v > 0f;
 
