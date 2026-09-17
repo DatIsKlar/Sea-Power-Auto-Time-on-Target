@@ -30,6 +30,10 @@ namespace AutoTOT
             // Estimates at first sighting, for the gap line. -1 = unavailable.
             public float KinEstAtLaunch;   // the active estimator (the integrator on beta)
             public float LegacyEstAtLaunch; // the game's own EstimateShot intercept time
+            // The two flight times the game's tactical map shows for this shot, read for the corpus only
+            // (see GameTooltipEstimate, GameAttackLineEstimate). -1 = not captured.
+            public float GameTooltipEstAtLaunch;
+            public float GameAttackLineEstAtLaunch;
             public float PeakSpeedKn;      // highest speed the live missile reached (kn)
             public float PeakAltU;         // highest altitude seen (Unity units)
             public float LastSpeedKn;      // most recent speed (kn), roughly the impact speed
@@ -396,6 +400,11 @@ namespace AutoTOT
                             LastTelemetrySim = -1f,
                             KinEstAtLaunch = est,
                             LegacyEstAtLaunch = legacyEst,
+                            // Read only by the corpus writer, so skipped without a dump key.
+                            GameTooltipEstAtLaunch = dumpKey != null
+                                ? GameTooltipEstimate(w._launchPlatform, w._ap._ammunitionFileName, tgt) : -1f,
+                            GameAttackLineEstAtLaunch = dumpKey != null
+                                ? GameAttackLineEstimate(w._launchPlatform, w._ap._ammunitionFileName, tgt) : -1f,
                             PeakAltU = trace && w.transform != null ? w.transform.position.y : 0f,
                             LastSpeedKn = trace ? w._velocityInKnots : 0f,
                             PeakSpeedKn = trace ? w._velocityInKnots : 0f,
@@ -508,6 +517,8 @@ namespace AutoTOT
                 LastTelemetrySim = -1f,
                 KinEstAtLaunch = -1f,
                 LegacyEstAtLaunch = -1f,
+                GameTooltipEstAtLaunch = -1f,
+                GameAttackLineEstAtLaunch = -1f,
                 Shooter = w._launchPlatform,
                 ShooterAmmoId = ammo,
                 Coordinated = EngagementBoard.IsCoordinated(tgt),
@@ -626,6 +637,64 @@ namespace AutoTOT
         {
             var missile = w as Missile;
             return missile != null ? missile._motorPerformance : 1f;
+        }
+
+        private static System.Reflection.MethodInfo _getKinematicRange;
+        private static System.Reflection.FieldInfo _kinematicInterceptTime;
+        private static bool _getKinematicRangeLookedUp;
+
+        /// <summary>
+        /// The flight time the game's hover tooltip shows for this shot: the same call as
+        /// <c>ObjectBase.GetMaxEngagementRanges</c> (decompiled-beta-new s367, ObjectBase.cs:8280), whose
+        /// <c>TimeOfFlight</c> the tooltip prints. By reflection because its return type is
+        /// <c>MissileSimulator.KinematicRangeResult</c> here and <c>Missile.KinematicRangeResult</c> on public.
+        /// -1 when unreadable. Corpus capture only: up to nine game simulations per call.
+        /// </summary>
+        private static float GameTooltipEstimate(ObjectBase shooter, string ammoId, ObjectBase target)
+        {
+            try
+            {
+                Ammunition ammo = shooter != null ? shooter.getAmmunitionByName(ammoId) : null;
+                if (ammo?._ap == null || target == null) return -1f;
+                if (!_getKinematicRangeLookedUp)
+                {
+                    _getKinematicRangeLookedUp = true;
+                    _getKinematicRange = typeof(ObjectBase).GetMethod("GetKinematicRange",
+                        new System.Type[] { typeof(ObjectBase), typeof(Ammunition), typeof(Vector3), typeof(bool), typeof(float) });
+                    _kinematicInterceptTime = _getKinematicRange?.ReturnType.GetField("InterceptTime");
+                }
+                if (_getKinematicRange == null || _kinematicInterceptTime == null) return -1f;
+                object result = _getKinematicRange.Invoke(shooter, new object[]
+                    { target, ammo, target.transform.position, true, ammo._ap.TypicalTargetVelocity });
+                return result != null ? (float)_kinematicInterceptTime.GetValue(result) : -1f;
+            }
+            catch (System.Exception e)
+            {
+                ModLog.Warn("game tooltip estimate failed", e);
+                return -1f;
+            }
+        }
+
+        /// <summary>
+        /// The flight time the game's attack line shows for this shot: the closed-form intercept
+        /// <c>AttackingState.UpdateConventionalTargetPreview</c> calls (AttackingState.cs:928). -1 when the
+        /// game finds no intercept or the call fails.
+        /// </summary>
+        private static float GameAttackLineEstimate(ObjectBase shooter, string ammoId, ObjectBase target)
+        {
+            try
+            {
+                AmmunitionParameters ap = shooter != null ? shooter.getAmmunitionByName(ammoId)?._ap : null;
+                if (ap == null || target == null) return -1f;
+                return Missile.CalculateMissileInterceptTimeAnalytical(ap, shooter.transform.position,
+                    shooter.IsAirUnit ? shooter._velocityInKnots : 0f, target.transform.position,
+                    target.UnityVelocityVector, ap.GetDragFactor(shooter.IsAirUnit)).interceptTime;
+            }
+            catch (System.Exception e)
+            {
+                ModLog.Warn("game attack-line estimate failed", e);
+                return -1f;
+            }
         }
 
         /// <summary>
@@ -879,7 +948,8 @@ namespace AutoTOT
                                 s.TargetCourseAtEnd, s.TargetSpeedAtEnd,
                                 (s.TargetPosAtEnd - s.TargetPosAtLaunch).magnitude,
                                 s.HasSpeedCommand, s.SpeedCommandAtLaunch, s.SpeedCommandChanges,
-                                s.LaunchCellBlock, flightEndGone, flightEndImpact);
+                                s.LaunchCellBlock, flightEndGone, flightEndImpact,
+                                s.GameTooltipEstAtLaunch, s.GameAttackLineEstAtLaunch);
 
                         // gap = actual flight - the estimate at launch (positive: the sim under-predicts),
                         // with peak altitude and terminal speed to say where. Arrivals only; a retargeted

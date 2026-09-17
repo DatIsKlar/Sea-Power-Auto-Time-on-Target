@@ -240,7 +240,8 @@ namespace AutoTOT
                                          LaunchDiagnostics.SpeedCommand speedCommand,
                                          List<string> speedCommandChanges,
                                          string launchCellBlock,
-                                         float flightEndGone = -1f, float flightEndImpact = -1f)
+                                         float flightEndGone = -1f, float flightEndImpact = -1f,
+                                         float gameTooltipEst = -1f, float gameAttackLineEst = -1f)
         {
             // A finished round with no input to pair against is a hole in the corpus; say so.
             if (string.IsNullOrEmpty(key))
@@ -306,6 +307,11 @@ namespace AutoTOT
                                                  ? "" : string.Join(";", pitchRateTrack)));
                 // The game's own estimator at launch, so the tiers can be compared across the corpus without re-flying.
                 b.AppendLine(F("LegacyEstAtLaunch", legacyEst));
+                // The two flight times the game's tactical map shows for this shot, read in the same frame as
+                // EstAtLaunch: the hover tooltip (ObjectBase.GetKinematicRange) and the attack line (the closed-form
+                // Missile.CalculateMissileInterceptTimeAnalytical). -1 = not captured.
+                b.AppendLine(F("GameTooltipEst", gameTooltipEst));
+                b.AppendLine(F("GameAttackLineEst", gameAttackLineEst));
                 // Where the game changed flight stage: the ground truth for the model's phase boundaries.
                 b.AppendLine(F("StageChanges", stageChanges == null || stageChanges.Count == 0
                                                ? "" : string.Join(";", stageChanges)));

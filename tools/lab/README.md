@@ -115,6 +115,12 @@ Check that the lab replays the model the game ran:
 
     dotnet run -- parity [corpus-dir] [--launch-estimate]
 
+Compare the two flight times the game's tactical map shows (`GameTooltipEst`, the hover tooltip, and
+`GameAttackLineEst`, the attack line) with the recorded flight and with `EstAtLaunch`, per family. Only
+captures that carry the fields are read; grouped salvos are scored on their last round:
+
+    dotnet run -- readouts [corpus-dir] [--rounds]
+
 `-` in place of a directory means the stored corpus, so `score -` is the usual command.
 
 Set `AUTOTOT_NO_WAYPOINT_LEGS=1` to replay with the non-kinematic waypoint route switched off, so one

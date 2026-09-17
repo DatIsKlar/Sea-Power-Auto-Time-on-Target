@@ -108,6 +108,7 @@ namespace AutoTOT.Lab
             if (args[0] == "selftest") return SelfTest(args.Skip(1).ToArray());
             if (args[0] == "parity") return Parity(args.Skip(1).ToArray());
             if (args[0] == "schedule") return ScheduleCommand(args.Skip(1).ToArray());
+            if (args[0] == "readouts") return Readouts(args.Skip(1).ToArray());
 
             bool score = args[0] == "score";
             if (score) args = args.Skip(1).ToArray();
