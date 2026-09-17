@@ -24,7 +24,7 @@ appears in the in-game **Mods** menu like any other mod.
 
 | Requirement | Notes |
 |---|---|
-| Sea Power | The same DLL runs on the public branch (0.8.2, build #358) and on the `stable` beta branch (build s367). On **beta** the game's own `EstimateShot` is 3 to 69 s off on the shots measured, so AutoTOT runs its own step integrator, with the game's estimator as fallback: non-kinematic missiles land with a mean error of 0.55 s over flights of 40 s to 16 minutes (see [`docs/model/`](docs/model/00-index.md)). On **public** the integrator cannot bind and the game's `SimulateShotLinear` drives timing. |
+| Sea Power | The same DLL runs on the public branch (0.8.2, build #358) and on the `stable` beta branch (build s367). On **beta** the game's own `EstimateShot` is 3 to 69 s off on the shots measured, so AutoTOT runs its own step integrator, with the game's estimator as fallback: non-kinematic missiles land with a mean error of 0.55 s over flights of 40 s to 16 minutes (see [the model documentation](https://github.com/DatIsKlar/SeaPowerFlightModel/blob/main/docs/model/00-index.md)). On **public** the integrator cannot bind and the game's `SimulateShotLinear` drives timing. |
 | BepInEx 5.x | Installed in the game folder (provides logging, config, Harmony) |
 | Anchor Chain (Steam Workshop item `3380210757`) | The chainloader that loads this mod; it also installs its preloader into `BepInEx/plugins/`. Enable it in the Mods menu too |
 | Seapower Multiplayer *(optional)* | Not needed, but AutoTOT ships a shield for that mod's multiplayer world-re-init crash (see [How it works](#how-it-works)) |
@@ -42,6 +42,12 @@ No NuGet packages are restored; every reference is a direct path, so the build w
 offline.
 
 ## Build
+
+The flight-time model is a separate repository,
+[SeaPowerFlightModel](https://github.com/DatIsKlar/SeaPowerFlightModel), included as the `FlightModel/` submodule
+and compiled into `AutoTOT.dll`. Clone with `git clone --recurse-submodules`, or run
+`git submodule update --init` in an existing clone. To build against a model checkout elsewhere, set
+`FlightModelDir` (command line or `AutoTOT.local.props`).
 
 `AutoTOT.csproj` references the game's DLLs in place, so the build needs two paths
 from you: your Sea Power install and the Anchor Chain chainloader DLL.
@@ -236,7 +242,7 @@ given while collection is off goes straight to the game with no coordination at 
 ## How it works
 
 Short version; pipeline detail in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md),
-the full flight-time model in [`docs/model/`](docs/model/00-index.md).
+the full flight-time model in [SeaPowerFlightModel's `docs/model/`](https://github.com/DatIsKlar/SeaPowerFlightModel/blob/main/docs/model/00-index.md).
 
 - **Flight times** come from a tiered estimator chain. On **beta** a grounded
   step integrator built on the game's own physics helpers is primary, with the
@@ -277,9 +283,9 @@ the full flight-time model in [`docs/model/`](docs/model/00-index.md).
 
 ## Code organization
 
-Sources live in five folders by concern: `Core/` (pipeline + lifecycle),
-`Simulation/` (flight-time estimation), `UI/` (planner panel), `Diagnostics/`
-(launch observation and profiling), `Support/` (shared utilities).
+Sources live in four folders by concern: `Core/` (pipeline + lifecycle), `UI/` (planner panel), `Diagnostics/`
+(launch observation and profiling), `Support/` (shared utilities). The flight-time model is the `FlightModel/`
+submodule; its rows below are paths inside it.
 
 | File | Purpose |
 |---|---|
@@ -287,33 +293,33 @@ Sources live in five folders by concern: `Core/` (pipeline + lifecycle),
 | `Core/Bootstrap.cs` | Mod-menu gate, Harmony patching + DOTS shield install, config, pump/HUD lifecycle, Unity-exception forwarding |
 | `Core/Patches.cs` | Harmony prefix on `ObjectBase.InsertEngageTask` |
 | `Core/Coordinator.cs` (+`Coordinator.Pending.cs`, `Coordinator.Anchor.cs`, `Coordinator.Release.cs`, `Coordinator.Channels.cs`, `Coordinator.Diagnostics.cs`) | Core pipeline: batching and anchor selection; the deferred commit; observation anchoring; open-loop release and fire; the channel and magazine budget; the coordinator's log lines |
-| `Simulation/FlightTime.cs` | Flight-time API + caches: estimate entry, 3-tier kinematic wiring, speed profiles, group forming delay |
-| `Simulation/FlightTime.Integrator.cs` | Grounded step-integrator (primary tier, beta): setup, which reads the game state, and phase diagnostics |
-| `Simulation/FlightTime.Solve.cs` | The integration loop as a pure function of a snapshot, so it can run off the main thread |
-| `Simulation/FlightTime.Async.cs` | Worker pool that runs the loop, plus the self-check that compares a threaded result against the main thread |
-| `Simulation/FlightTime.Reflection.cs` | Reflection resolution for the game's sim internals (beta/legacy drift) + the typed-delegate fast path for per-step thrust/drag |
-| `Simulation/FlightTime.Stats.cs` | Estimator cost counters (simulations, steps, which tier answered) behind the `Profiling` switch |
-| `Simulation/FlightTime.Waypoints.cs` | The waypoint route a non-kinematic round flies and its look-ahead point, as pure functions |
-| `Simulation/FlightTime.Lead.cs` | The game's lead intercept point, ported so the model aims where the round aims |
-| `Simulation/SubmarineAscent.cs`, `Simulation/AircraftDescent.cs` | Time for a submarine to rise, or an aircraft to descend, into its launch envelope |
+| `FlightModel/Simulation/FlightTime.cs` | Flight-time API + caches: estimate entry, 3-tier kinematic wiring, speed profiles, group forming delay |
+| `FlightModel/Simulation/FlightTime.Integrator.cs` | Grounded step-integrator (primary tier, beta): setup, which reads the game state, and phase diagnostics |
+| `FlightModel/Simulation/FlightTime.Solve.cs` | The integration loop as a pure function of a snapshot, so it can run off the main thread |
+| `FlightModel/Simulation/FlightTime.Async.cs` | Worker pool that runs the loop, plus the self-check that compares a threaded result against the main thread |
+| `FlightModel/Simulation/FlightTime.Reflection.cs` | Reflection resolution for the game's sim internals (beta/legacy drift) + the typed-delegate fast path for per-step thrust/drag |
+| `FlightModel/Simulation/FlightTime.Stats.cs` | Estimator cost counters (simulations, steps, which tier answered) behind the `Profiling` switch |
+| `FlightModel/Simulation/FlightTime.Waypoints.cs` | The waypoint route a non-kinematic round flies and its look-ahead point, as pure functions |
+| `FlightModel/Simulation/FlightTime.Lead.cs` | The game's lead intercept point, ported so the model aims where the round aims |
+| `FlightModel/Simulation/SubmarineAscent.cs`, `FlightModel/Simulation/AircraftDescent.cs` | Time for a submarine to rise, or an aircraft to descend, into its launch envelope |
 | `UI/Hud.cs` (+`Hud.Rows.cs`, `Hud.Render.cs`, `Hud.Actions.cs`, `Hud.Labels.cs`, `Hud.Mouse.cs`, `Hud.Styles.cs`) | IMGUI planner panel: layout, row data, drawing, strike actions, labels, pointer capture, styling |
 | `Diagnostics/LaunchDiagnostics.cs` (+`LaunchDiagnostics.Expectations.cs`, `LaunchDiagnostics.Tracing.cs`) | Impact reports; launch shortfall detection; per-missile tracing. Feeds anchor observations |
 | `Diagnostics/EngagementBoard.cs` | Per-target engagement state behind the HUD's ENGAGEMENTS list |
-| `Diagnostics/TelemetryCadence.cs` | Sampling offsets shared by the model and live-flight traces |
+| `FlightModel/Diagnostics/TelemetryCadence.cs` | Sampling offsets shared by the model and live-flight traces |
 | `Diagnostics/CoordinatorProfiler.cs` | Per-frame timing report behind the `Profiling` switch |
 | `Diagnostics/SolveInputDump.cs` | Research corpus writer behind `TraceFlightModel`: each traced round's solver input and flight result |
 | `Diagnostics/LiveTestRunner.cs`, `Diagnostics/LiveTestRunner.Plan.cs` | Unattended in-game test driver, compiled into the live test build only (see [Build](#build)) |
-| `Support/GameClock.cs` | Version-agnostic sim clock + launch-timestamp access (float/double beta drift) |
-| `Support/GameUnits.cs` | Shared unit conversions (Unity units ↔ metres/nm/knots) |
-| `Support/GameMath.cs` | Horizontal flatten, elevation and pitch helpers shared by the flight-time setup paths |
+| `FlightModel/Support/GameClock.cs` | Version-agnostic sim clock + launch-timestamp access (float/double beta drift) |
+| `FlightModel/Support/GameUnits.cs` | Shared unit conversions (Unity units ↔ metres/nm/knots) |
+| `FlightModel/Support/GameMath.cs` | Horizontal flatten, elevation and pitch helpers shared by the flight-time setup paths |
 | `Support/UnitNaming.cs` | The one name-for-display helper, shared by the logs and the panel |
 | `Support/ShipAmmoKey.cs` | The (unit, ammunition) dictionary key used on the per-frame paths |
-| `Support/ModLog.cs` | Shared exception reporting, with and without the verbose gate |
+| `FlightModel/Support/ModLog.cs` | Shared exception reporting, with and without the verbose gate |
 | `Support/LauncherFacts.cs` | Launcher cadence/ready rounds/reserve + cache, reload-wave helpers |
 | `Support/LauncherProbe.cs` | Live launcher state (engage state, on-rail, usability) for the diagnostics |
 | `Support/LaunchEnvelope.cs`, `Support/SubmarineFacts.cs` | Launch-envelope delay for submarines and aircraft, the minimum-range check, and the submarine state they read |
-| `Support/IsExternalInit.cs` | Compiler shim that lets `netstandard2.1` use `init` properties |
-| `Support/TtlCache.cs` | Tiny real-time TTL cache used by FlightTime and LauncherFacts |
+| `FlightModel/Support/IsExternalInit.cs` | Compiler shim that lets `netstandard2.1` use `init` properties |
+| `FlightModel/Support/TtlCache.cs` | Tiny real-time TTL cache used by FlightTime and LauncherFacts |
 | `Support/DotsScanHardening.cs` | Multiplayer mission-load crash shield for the DOTS assembly scan (discovery + deferred install) |
 
 ## Config
@@ -358,7 +364,7 @@ read once when the game starts and need a restart: `Enabled`, `AutoModeOnStart` 
 ## Known limitations
 
 - Flight-time accuracy is measured per missile family on the beta branch and listed in
-  [`docs/model/06-accuracy.md`](docs/model/06-accuracy.md). Most rounds land within about a
+  [`docs/model/06-accuracy.md`](https://github.com/DatIsKlar/SeaPowerFlightModel/blob/main/docs/model/06-accuracy.md) in SeaPowerFlightModel. Most rounds land within about a
   second of the estimate. The exceptions are kinematic missiles, whose random motor
   performance alone spreads arrivals by a few seconds, and the YJ-20 case below.
 - Grouped-salvo group drag (e.g. SS-N-19, once ~20s late) is corrected by the

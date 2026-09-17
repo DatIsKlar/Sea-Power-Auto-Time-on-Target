@@ -21,6 +21,9 @@
     <BepInExCore>$(GameDir)/BepInEx/core</BepInExCore>
     <!-- AnchorChain chainloader (Steam Workshop item 3380210757) -->
     <AnchorChainDll Condition="'$(AnchorChainDll)' == ''">$(ANCHORCHAIN_DLL)</AnchorChainDll>
+    <!-- The flight model's sources: the FlightModel submodule (SeaPowerFlightModel), unless AutoTOT.local.props points
+         at a working copy elsewhere. -->
+    <FlightModelDir Condition="'$(FlightModelDir)' == ''">$(MSBuildThisFileDirectory)FlightModel</FlightModelDir>
   </PropertyGroup>
 
   <!-- Fail early with a helpful message instead of a wall of missing-reference errors. -->
@@ -29,12 +32,18 @@
            Text="GameDir is not set. Point the build at your Sea Power install via -p:GameDir=&quot;/path/to/Sea Power&quot;, the GAME_DIR environment variable, or an AutoTOT.local.props file (see README, Build)." />
     <Error Condition="'$(AnchorChainDll)' == ''"
            Text="AnchorChainDll is not set. Point the build at the Anchor Chain workshop item's AnchorChain.dll via -p:AnchorChainDll=&quot;...&quot;, the ANCHORCHAIN_DLL environment variable, or AutoTOT.local.props (see README, Build)." />
+    <Error Condition="!Exists('$(FlightModelDir)/Simulation/FlightTime.cs')"
+           Text="The flight model sources are missing at $(FlightModelDir). Run: git submodule update --init" />
   </Target>
 
   <ItemGroup>
-    <!-- The offline replay lab under tools/ compiles the mod's own solver sources against its own
-         stubs and entry point. Those must not join the mod build. -->
     <Compile Remove="tools/**/*.cs" />
+    <!-- The submodule folder holds the model AND its offline lab, which has its own stubs and entry point, so none of
+         it joins the default glob. The model is added explicitly from FlightModelDir. -->
+    <Compile Remove="FlightModel/**" />
+    <Compile Include="$(FlightModelDir)/Simulation/*.cs" Link="FlightModel/Simulation/%(Filename)%(Extension)" />
+    <Compile Include="$(FlightModelDir)/Support/*.cs" Link="FlightModel/Support/%(Filename)%(Extension)" />
+    <Compile Include="$(FlightModelDir)/Diagnostics/TelemetryCadence.cs" Link="FlightModel/Diagnostics/TelemetryCadence.cs" />
   </ItemGroup>
 
   <!-- The live test runner drives menus, loads missions and quits the game when a plan file exists,

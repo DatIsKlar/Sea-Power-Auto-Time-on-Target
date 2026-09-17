@@ -464,7 +464,7 @@ Measured accuracy: submarine ascent **1.4%** over 13 manoeuvres on three hulls; 
 **5.2%** over 4 descents on two airframes. Aircraft CLIMB is not modelled, being energy-limited
 through a private `_dragPower`; that case returns 0 and falls back to the launch-state hold.
 
-The ascent is **stepped through the game's own model** (`Simulation/SubmarineAscent.cs`),
+The ascent is **stepped through the game's own model** (`FlightModel/Simulation/SubmarineAscent.cs`),
 not divided by an assumed rate, because `Submarine.applyDepth` runs two mutually exclusive
 mechanisms:
 
@@ -520,7 +520,8 @@ ENGAGEMENTS overview.
 
 ## Flight-time estimates
 
-Full model documentation lives in [`model/`](model/00-index.md).
+The model is its own repository, [SeaPowerFlightModel](https://github.com/DatIsKlar/SeaPowerFlightModel), compiled into
+AutoTOT from the `FlightModel/` submodule. Its full documentation is [`docs/model/`](https://github.com/DatIsKlar/SeaPowerFlightModel/blob/main/docs/model/00-index.md).
 This section only summarizes what the scheduling pipeline consumes.
 
 `FlightTime.Estimate` runs a tiered chain and returns the first valid result:
@@ -965,9 +966,9 @@ frame. `Update`:
 
 ## File map
 
-Sources live in five folders by concern: `Core/` (pipeline + lifecycle),
-`Simulation/` (flight-time estimation), `UI/` (planner panel), `Diagnostics/`
-(launch observation and profiling), `Support/` (shared utilities).
+Sources live in four folders by concern: `Core/` (pipeline + lifecycle), `UI/` (planner panel), `Diagnostics/`
+(launch observation and profiling), `Support/` (shared utilities). The flight-time model is the `FlightModel/`
+submodule; its rows below are paths inside it.
 
 | File | Responsibility |
 |---|---|
@@ -980,32 +981,32 @@ Sources live in five folders by concern: `Core/` (pipeline + lifecycle),
 | `Core/Coordinator.Release.cs` | Release: due-time evaluation, flight-estimate resolution, envelope refresh, the fire paths |
 | `Core/Coordinator.Channels.cs` | The rounds a commit may order: guidance-channel reservations, channel and magazine budgets, commit revalidation, contention warning |
 | `Core/Coordinator.Diagnostics.cs` | The coordinator's log lines and the text helpers that build them |
-| `Simulation/FlightTime.cs` | Flight-time API: tier wiring, TTL caches, straight-line fallback, speed profile + group-forming delay |
-| `Simulation/FlightTime.Integrator.cs` | Grounded step integrator (tier 1, beta): the setup half, which reads game state, plus phase diagnostics |
-| `Simulation/FlightTime.Solve.cs` | The integration loop, written as a pure function of a snapshot |
-| `Simulation/FlightTime.Waypoints.cs` | The waypoint route a non-kinematic round flies, and its look-ahead point, as pure functions |
-| `Simulation/FlightTime.Lead.cs` | The game's lead intercept point, ported so the model aims where the round aims |
-| `Simulation/FlightTime.Async.cs` | Worker pool, result drain, and the solve self-check |
-| `Simulation/FlightTime.Reflection.cs` | Branch detection + reflection resolution, and the typed-delegate fast path for the per-step thrust/drag calls |
-| `Simulation/FlightTime.Stats.cs` | Estimator cost counters: sims, integration steps, setup vs loop time, which tier answered |
-| `Simulation/SubmarineAscent.cs`, `Simulation/AircraftDescent.cs` | Time for a submarine to rise, or an aircraft to descend, into its launch envelope |
-| `Support/GameClock.cs` | Version-agnostic sim clock + launch-timestamp access (float/double beta drift) |
-| `Support/GameUnits.cs` | Shared unit conversions (Unity units ↔ metres/nm/knots/feet) |
-| `Support/GameMath.cs` | Horizontal flatten and elevation-angle helpers used across the setup paths. Worker-safe |
-| `Support/ModLog.cs` | The two exception-report shapes (`Warn`, `VerboseWarn`) the reflection and estimator paths share |
+| `FlightModel/Simulation/FlightTime.cs` | Flight-time API: tier wiring, TTL caches, straight-line fallback, speed profile + group-forming delay |
+| `FlightModel/Simulation/FlightTime.Integrator.cs` | Grounded step integrator (tier 1, beta): the setup half, which reads game state, plus phase diagnostics |
+| `FlightModel/Simulation/FlightTime.Solve.cs` | The integration loop, written as a pure function of a snapshot |
+| `FlightModel/Simulation/FlightTime.Waypoints.cs` | The waypoint route a non-kinematic round flies, and its look-ahead point, as pure functions |
+| `FlightModel/Simulation/FlightTime.Lead.cs` | The game's lead intercept point, ported so the model aims where the round aims |
+| `FlightModel/Simulation/FlightTime.Async.cs` | Worker pool, result drain, and the solve self-check |
+| `FlightModel/Simulation/FlightTime.Reflection.cs` | Branch detection + reflection resolution, and the typed-delegate fast path for the per-step thrust/drag calls |
+| `FlightModel/Simulation/FlightTime.Stats.cs` | Estimator cost counters: sims, integration steps, setup vs loop time, which tier answered |
+| `FlightModel/Simulation/SubmarineAscent.cs`, `FlightModel/Simulation/AircraftDescent.cs` | Time for a submarine to rise, or an aircraft to descend, into its launch envelope |
+| `FlightModel/Support/GameClock.cs` | Version-agnostic sim clock + launch-timestamp access (float/double beta drift) |
+| `FlightModel/Support/GameUnits.cs` | Shared unit conversions (Unity units ↔ metres/nm/knots/feet) |
+| `FlightModel/Support/GameMath.cs` | Horizontal flatten and elevation-angle helpers used across the setup paths. Worker-safe |
+| `FlightModel/Support/ModLog.cs` | The two exception-report shapes (`Warn`, `VerboseWarn`) the reflection and estimator paths share |
 | `Support/UnitNaming.cs` | The one name-for-display helper, safe against destroyed objects |
 | `Support/ShipAmmoKey.cs` | The (unit, ammunition) dictionary key used by the per-frame paths |
 | `Support/LauncherFacts.cs` | Launcher cadence / ready rounds / reserve / guidance channels + TTL cache + reload-wave helpers |
 | `Support/LauncherProbe.cs` | Live launcher state (engage state, on-rail, usability) for the diagnostics |
 | `Support/LaunchEnvelope.cs`, `Support/SubmarineFacts.cs` | Launch-envelope delay for submarines and aircraft, and the submarine state it reads |
-| `Support/TtlCache.cs` | Tiny real-time TTL cache used by FlightTime and LauncherFacts |
+| `FlightModel/Support/TtlCache.cs` | Tiny real-time TTL cache used by FlightTime and LauncherFacts |
 | `Support/DotsScanHardening.cs` | Multiplayer mission-load crash shield for the DOTS assembly scan |
 | `Diagnostics/LaunchDiagnostics.cs` | Flight tracker: per-missile records, the weapon-list scan, retirement and impact reports |
 | `Diagnostics/LaunchDiagnostics.Expectations.cs` | Launch expectations: crediting, late crediting, shortfall detection; feeds anchor launch times |
 | `Diagnostics/LaunchDiagnostics.Tracing.cs` | Per-missile and per-launcher tracing behind the diagnostic switches |
 | `Diagnostics/SolveInputDump.cs` | The research corpus writer: solver input and flight result per traced round |
 | `Diagnostics/EngagementBoard.cs` | Per-target engagement state for the HUD (consolidated: one row per target) |
-| `Diagnostics/TelemetryCadence.cs` | Sampling offsets shared by the `sim-track` and `track` traces, so the two stay comparable |
+| `FlightModel/Diagnostics/TelemetryCadence.cs` | Sampling offsets shared by the `sim-track` and `track` traces, so the two stay comparable |
 | `Diagnostics/CoordinatorProfiler.cs` | Per-frame timing (`CoordinatorProfiler`): stage timers, counters, frame share, the 60-frame report |
 | `Diagnostics/LiveTestRunner.cs`, `Diagnostics/LiveTestRunner.Plan.cs` | Unattended in-game test driver. Inert unless `BepInEx/AutoTOT-livetest/plan.ini` exists, which it consumes on startup; then it walks the game from the main menu into a mission, fires the listed shots through the coordinator, waits for every round to retire, writes a result and quits. Nothing is clicked: every step calls the method the game's own button calls. Driver and plan format are under `tools/livetest/`. Compiled only into the live test build (`-p:LiveTest=true`, which defines `LIVETEST`); the Workshop build leaves it out, together with the panel hooks it calls (`Hud.StagePanelFor`, `StagePanelForShots`, `PressFireThisTarget`) and `LaunchDiagnostics.AnyCoordinatedInFlight` |
 | `UI/Hud.cs` (+ `.Rows` `.Render` `.Actions` `.Labels` `.Mouse` `.Styles` partials) | IMGUI planner panel: lifecycle and layout, row data, drawing, strike actions, labels, pointer capture, styling |
@@ -1087,7 +1088,7 @@ sensor track of the target, the weapon's declared performance (INI), and the gam
 own kinematic simulator, plus observation of the PLAYER'S OWN launch timing
 (user-approved ruling). It does NOT: learn per-type speeds at runtime, read own
 missiles' in-flight positions for guidance, use closure-rate feedback, or apply
-fitted constants. [`model/`](model/00-index.md) applies the
+fitted constants. [The model documentation](https://github.com/DatIsKlar/SeaPowerFlightModel/blob/main/docs/model/00-index.md) applies the
 same rule to the flight-time model.
 
 ## Submarine launch-depth gating

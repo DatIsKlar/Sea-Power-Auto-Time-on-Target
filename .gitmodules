@@ -1,0 +1,3 @@
+[submodule "FlightModel"]
+	path = FlightModel
+	url = /home/aaron/Documents/Sea Power Project/SeaPowerFlightModel

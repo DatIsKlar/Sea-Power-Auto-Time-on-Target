@@ -64,14 +64,15 @@ CFG_OVERRIDE="EstimatorThreads=0" tools/livetest/run.sh plans/big-strike-fps.ini
   retarget flag, observed compression, flown physics step and the corpus key.
 - `solve/`, the `.solveinput` and `.result` pair for each round that was dumped. The input is the
   complete solver state (every ammunition parameter, derived model state, launch attitude,
-  waypoint legs, altitude nodes, target position and velocity) and replays offline in `tools/lab`.
+  waypoint legs, altitude nodes, target position and velocity) and replays offline in the flight model repo's `tools/lab`.
   The result carries the flown outcome plus the altitude, flight and guard time series, the stage
   transitions with timestamps, and the game build the round was flown on.
 - `driver.txt`, the section name, status, process id and wall time.
 
 ## The corpus
 
-Every automated run imports its captures into the checked-in corpus at `tools/lab/corpus/` and
+Every automated run imports its captures into the checked-in corpus at `tools/lab/corpus/` of the flight model
+repository (`../SeaPowerFlightModel` beside AutoTOT; set `FLIGHT_MODEL_DIR` for another checkout) and
 rebuilds `index.csv`, so a real round flown today is available to score a model change tomorrow
 without launching the game. Import is keyed on the round id and skips duplicates, so re-running a
 plan is safe. Set `IMPORT=0` to skip it.
@@ -81,6 +82,7 @@ range, and the index carries `arrived`, `retargeted`, `minCompression`, `maxComp
 `flownStep`, so scoring filters them rather than losing them.
 
 ```
+# from SeaPowerFlightModel/
 tools/lab/bin/Release/net8.0/autotot-lab score tools/lab/corpus   # replay and score every round
 tools/lab/bin/Release/net8.0/autotot-lab parity tools/lab/corpus  # lab against the recorded estimate
 tools/lab/bin/Release/net8.0/autotot-lab selftest                 # invariants

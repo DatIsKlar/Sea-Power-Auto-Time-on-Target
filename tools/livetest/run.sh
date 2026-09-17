@@ -37,7 +37,8 @@ SOLVE="$GAME_DIR/BepInEx/AutoTOT-solve"
 # arrive, which the mod itself can only report as shot down, decoyed or guidance lost.
 GAMELOGS="$GAME_DIR/Sea Power_Data/Logs"
 RUNS="$HERE/runs"
-LAB="$ROOT/tools/lab"
+# The offline lab lives in the flight model repo (SeaPowerFlightModel), normally checked out beside AutoTOT.
+LAB="${FLIGHT_MODEL_DIR:-$ROOT/../SeaPowerFlightModel}/tools/lab"
 # Every round a real run flies is evidence for the offline model, so each run's captures are
 # imported into the checked-in corpus and the index rebuilt. Import is keyed on the round id and
 # skips duplicates, so re-running a plan is safe. IMPORT=0 turns it off.
