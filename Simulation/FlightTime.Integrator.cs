@@ -617,9 +617,6 @@ namespace AutoTOT
             public float DescentOnsetDeg;
         }
 
-        internal static float IntegratedEndTime(ObjectBase unit, AmmunitionParameters ap, ObjectBase target)
-            => IntegratedEndTimeCore(unit, ap, target, out _, emitDiag: false);
-
         /// <summary>
         /// The traced integration behind `int-phases`, `sim-launch` and `sim-track`, from the round's
         /// recorded <paramref name="launch"/> state so the trace describes the rail it actually flew,
@@ -761,11 +758,8 @@ namespace AutoTOT
         }
 
         private static float IntegratedEndTimeCore(ObjectBase unit, AmmunitionParameters ap,
-            ObjectBase target, out IntegratedPhases phases, bool emitDiag)
-            => IntegratedEndTimeCore(unit, ap, target, out phases, emitDiag, default);
-
-        private static float IntegratedEndTimeCore(ObjectBase unit, AmmunitionParameters ap,
-            ObjectBase target, out IntegratedPhases phases, bool emitDiag, in LaunchState launch)
+            ObjectBase target, out IntegratedPhases phases, bool emitDiag,
+            in LaunchState launch = default)
         {
             if (!TryBuildSolveInput(unit, ap, target, out SolveInput input, out phases, emitDiag, launch))
                 return -1f;
@@ -778,21 +772,15 @@ namespace AutoTOT
         /// therefore main-thread only. Produces the immutable input the step loop runs on, so the
         /// same setup feeds both the synchronous path and the worker pool. False means the integrator
         /// declines and the caller should fall through to the next tier.
-        /// </summary>
-        internal static bool TryBuildSolveInput(ObjectBase unit, AmmunitionParameters ap,
-            ObjectBase target, out SolveInput input, out IntegratedPhases phases, bool emitDiag)
-            => TryBuildSolveInput(unit, ap, target, out input, out phases, emitDiag, default);
-
-        /// <summary>
-        /// As above, with an optional <see cref="LaunchState"/> override. When one is supplied the
-        /// setup answers for the shot as it ACTUALLY left the rail (position, speed and rail
-        /// bearing at that instant) rather than for a hypothetical shot from the platform's current
-        /// position. Everything downstream of the setup is unchanged: the same step loop runs on the
-        /// same immutable input, which is the point of this seam.
+        ///
+        /// With a <see cref="LaunchState"/> the setup answers for the shot as it ACTUALLY left the
+        /// rail (position, speed and rail bearing at that instant) rather than for a hypothetical
+        /// shot from the platform's current position. Everything downstream is unchanged: the same
+        /// step loop runs on the same immutable input, which is the point of this seam.
         /// </summary>
         internal static bool TryBuildSolveInput(ObjectBase unit, AmmunitionParameters ap,
             ObjectBase target, out SolveInput input, out IntegratedPhases phases, bool emitDiag,
-            in LaunchState launch)
+            in LaunchState launch = default)
         {
             input = default;
             phases = default;

@@ -483,7 +483,7 @@ namespace AutoTOT
 
         private static float KinematicRaw(ObjectBase unit, AmmunitionParameters ap, ObjectBase target)
         {
-            float integrated = IntegratedEndTime(unit, ap, target);
+            float integrated = IntegratedEndTimeCore(unit, ap, target, out _, emitDiag: false);
             // An implausible answer is treated exactly like a decline, so the lower tiers get their
             // turn instead of the caller being handed a number that cannot be true.
             if (integrated > MinValidSeconds && IsImplausible(integrated, unit, ap, target))

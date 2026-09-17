@@ -39,9 +39,6 @@ namespace AutoTOT
             DeadReckoned = 2,
         }
 
-        /// <summary>The game's own knots-to-units literal in these three methods.</summary>
-        private const float LeadKnotsToUnity = 0.0076554087f;
-
         /// <summary>Setup's choice of <see cref="SwitchTarget"/>, as a pure function so the lab derives
         /// an older capture's value by the same rule.</summary>
         internal static SwitchTarget ResolveSwitchTarget(bool airTarget, bool forceDirectPoint,
@@ -80,11 +77,11 @@ namespace AutoTOT
         {
             Vector3 toTarget = knownTgt - pos;
             float distance = toTarget.magnitude;
-            float speedU = speedKn * LeadKnotsToUnity;
+            float speedU = speedKn * GameUnits.KnotsToUnityPerSecond;
             float speed = speedU;
             // Early in the flight the round is assumed to reach cruise speed.
             if (travelledFlatU * 4f < distance)
-                speed = Mathf.Max(speed, maxVelKn * LeadKnotsToUnity / 1.3f);
+                speed = Mathf.Max(speed, maxVelKn * GameUnits.KnotsToUnityPerSecond / 1.3f);
 
             float t = SolveInterceptQuadratic(speed, toTarget, knownVel);
             if (t <= 0f) return -1f;
@@ -170,7 +167,7 @@ namespace AutoTOT
             float midAltitude = top - descentShare * drop * 0.5f;
             float drag = LeadDrag(midAltitude, speedU, dragFactor, targetAltitude, liftFactor, stallKn);
             float endKn = Mathf.Max(speedKn - drag * interceptTime, 0f);
-            return (speedU + endKn * LeadKnotsToUnity) * 0.5f;
+            return (speedU + endKn * GameUnits.KnotsToUnityPerSecond) * 0.5f;
         }
 
         /// <summary>MissileSimulator.CalculateDrag for one second at zero pitch with the motor off, the

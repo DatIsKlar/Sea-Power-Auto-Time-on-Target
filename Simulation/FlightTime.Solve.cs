@@ -1122,8 +1122,6 @@ namespace AutoTOT
                         kappaEndFlat >= flatDistTotal - WaypointDistanceEpsilonU;
                     if (!nonKin && lofting && altNodes != null && kappaStillActive)
                     {
-                        float routeDist = Mathf.Max(kappaEndFlat > 0f ? kappaEndFlat
-                            : xNow + flatDist, WaypointDistanceEpsilonU);
                         float flatSpeed = Mathf.Max(velKnots * KU *
                             Mathf.Abs(Mathf.Cos(prevPitch * Mathf.Deg2Rad)), 0f);
                         // GeoPosition.GetDistance ignores height by default. For the Kappa
@@ -1138,30 +1136,6 @@ namespace AutoTOT
                         kappaProgress = Mathf.Max(kappaProgress,
                             Mathf.Min(geometric, kappaProgress + progressStep));
 
-                        float look = Mathf.Clamp(flatSpeed * WaypointSteeringLookaheadSim,
-                                                 WaypointDistanceEpsilonU,
-                                                 Mathf.Max(flatDist, WaypointDistanceEpsilonU));
-                        float futureProgress = Mathf.Min(kappaProgress +
-                            (1f - kappaProgress) * look /
-                            Mathf.Max(flatDist, WaypointDistanceEpsilonU), 1f);
-                        float curveNow = InterpNodeAlt(altNodes, routeDist * kappaProgress);
-                        float curveFuture = InterpNodeAlt(altNodes, routeDist * futureProgress);
-                        float curveRun = Mathf.Max((futureProgress - kappaProgress) * routeDist,
-                                                   WaypointDistanceEpsilonU);
-                        float tangentAlt = curveNow + look * (curveFuture - curveNow) / curveRun;
-
-                        float correctionRun = Mathf.Clamp(flatSpeed * WaypointFutureLookaheadSim,
-                                                          look,
-                            Mathf.Max((1f - kappaProgress) * routeDist, look));
-                        float correctionProgress = Mathf.Min(kappaProgress +
-                            correctionRun / routeDist, 1f);
-                        float correctionAlt = InterpNodeAlt(altNodes,
-                            routeDist * correctionProgress);
-                        float floorAlt = pos.y + look * (correctionAlt - pos.y) / correctionRun;
-                        float commandAlt = Mathf.Max(tangentAlt, floorAlt);
-                        targetPitch = Mathf.Clamp(
-                            Mathf.Atan2(commandAlt - pos.y, look) * Mathf.Rad2Deg,
-                            -descentDeg, altitudeClimbCommandDeg);
                         if (LiveKappaLoft)
                         {
                             // The waypoint's start point is where the missile is when its initial phase ends
@@ -1210,6 +1184,38 @@ namespace AutoTOT
                             float kCommand = Mathf.Max(kChord, pos.y - kRun * Mathf.Tan(kFloorAngle));
                             targetPitch = Mathf.Clamp(Mathf.Atan2(kCommand - pos.y,
                                 Mathf.Max(kLead, WaypointDistanceEpsilonU)) * Mathf.Rad2Deg, -89f, 89f);
+                        }
+                        else
+                        {
+                            // The sampled-node command, reachable only with the live curve off
+                            // (lab AUTOTOT_NO_LIVE_KAPPA=1). In game LiveKappaLoft is always on, so
+                            // computing it here would only be thrown away by the branch above.
+                            float routeDist = Mathf.Max(kappaEndFlat > 0f ? kappaEndFlat
+                                : xNow + flatDist, WaypointDistanceEpsilonU);
+                            float look = Mathf.Clamp(flatSpeed * WaypointSteeringLookaheadSim,
+                                                     WaypointDistanceEpsilonU,
+                                                     Mathf.Max(flatDist, WaypointDistanceEpsilonU));
+                            float futureProgress = Mathf.Min(kappaProgress +
+                                (1f - kappaProgress) * look /
+                                Mathf.Max(flatDist, WaypointDistanceEpsilonU), 1f);
+                            float curveNow = InterpNodeAlt(altNodes, routeDist * kappaProgress);
+                            float curveFuture = InterpNodeAlt(altNodes, routeDist * futureProgress);
+                            float curveRun = Mathf.Max((futureProgress - kappaProgress) * routeDist,
+                                                       WaypointDistanceEpsilonU);
+                            float tangentAlt = curveNow + look * (curveFuture - curveNow) / curveRun;
+
+                            float correctionRun = Mathf.Clamp(flatSpeed * WaypointFutureLookaheadSim,
+                                                              look,
+                                Mathf.Max((1f - kappaProgress) * routeDist, look));
+                            float correctionProgress = Mathf.Min(kappaProgress +
+                                correctionRun / routeDist, 1f);
+                            float correctionAlt = InterpNodeAlt(altNodes,
+                                routeDist * correctionProgress);
+                            float floorAlt = pos.y + look * (correctionAlt - pos.y) / correctionRun;
+                            float commandAlt = Mathf.Max(tangentAlt, floorAlt);
+                            targetPitch = Mathf.Clamp(
+                                Mathf.Atan2(commandAlt - pos.y, look) * Mathf.Rad2Deg,
+                                -descentDeg, altitudeClimbCommandDeg);
                         }
                     }
                     else if (isTerminalLoft && lofting)
@@ -1365,8 +1371,13 @@ namespace AutoTOT
                 float pitchRate = (pitchDeg - prevPitch) / dt;
 
                 float thrust;
+                // Only the motor clock differs between the builds: the offline replay reads it through
+                // OfflineThrustClock, the shipped mod reads the step clock. So the call is written once.
 #if AUTOTOT_OFFLINE
                 float thrustClock = OfflineThrustClock(t);
+#else
+                float thrustClock = t;
+#endif
                 if (_thrustFn != null) thrust = _thrustFn(ap, isAir, thrustClock, dt);
                 else
                 {
@@ -1374,15 +1385,6 @@ namespace AutoTOT
                     thrustArgs[0] = ap; thrustArgs[1] = isAir; thrustArgs[2] = thrustClock; thrustArgs[3] = dt;
                     thrust = (float)_thrustMethod.Invoke(null, thrustArgs);
                 }
-#else
-                if (_thrustFn != null) thrust = _thrustFn(ap, isAir, t, dt);
-                else
-                {
-                    if (thrustArgs == null) thrustArgs = new object[4];
-                    thrustArgs[0] = ap; thrustArgs[1] = isAir; thrustArgs[2] = t; thrustArgs[3] = dt;
-                    thrust = (float)_thrustMethod.Invoke(null, thrustArgs);
-                }
-#endif
 #if AUTOTOT_OFFLINE
                 thrust *= OfflineMotorScale;
 #endif
@@ -1432,20 +1434,11 @@ namespace AutoTOT
                         }
                         offlineStepKn = sumKn / offlineSub;
                     }
-                    else if (_dragFn != null)
-                        dragThisStep = _dragFn(pos.y, velKnots * KU, dt, -pitchDeg, dragFactor,
-                                               motorBurning, dragTargetAlt, ap.LiftFactor,
-                                               ap.MinVelocity, -pitchRate);
                     else
-                    {
-                        if (dragArgs == null) dragArgs = new object[10];
-                        dragArgs[0] = pos.y; dragArgs[1] = velKnots * KU; dragArgs[2] = dt; dragArgs[3] = -pitchDeg;
-                        dragArgs[4] = dragFactor; dragArgs[5] = motorBurning;
-                        dragArgs[6] = dragTargetAlt;
-                        dragArgs[7] = ap.LiftFactor; dragArgs[8] = ap.MinVelocity; dragArgs[9] = -pitchRate;
-                        dragThisStep = (float)_dragMethod.Invoke(null, dragArgs);
-                    }
-#else
+#endif
+                    // Written once. The substep branch above is offline-only; the drag call itself is
+                    // the same in both builds, so it sits after the #endif. The shipped build's
+                    // preprocessor drops the block above and is left with exactly this if/else.
                     if (_dragFn != null)
                         dragThisStep = _dragFn(pos.y, velKnots * KU, dt, -pitchDeg, dragFactor,
                                                motorBurning, dragTargetAlt, ap.LiftFactor,
@@ -1459,7 +1452,6 @@ namespace AutoTOT
                         dragArgs[7] = ap.LiftFactor; dragArgs[8] = ap.MinVelocity; dragArgs[9] = -pitchRate;
                         dragThisStep = (float)_dragMethod.Invoke(null, dragArgs);
                     }
-#endif
                     velKnots -= dragThisStep;
                     // No stage-speed clamp here: kinematic ammo is thrust minus drag, uncapped.
                     // The live mover adds thrust unconditionally for Kinematics != None
