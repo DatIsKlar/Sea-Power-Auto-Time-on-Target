@@ -46,6 +46,28 @@
     <Compile Include="$(FlightModelDir)/Diagnostics/TelemetryCadence.cs" Link="FlightModel/Diagnostics/TelemetryCadence.cs" />
   </ItemGroup>
 
+  <!-- Stamp the flight model commit this build compiled ("-dirty" when that checkout has local changes), so the startup
+       log line says which model a DLL carries. -->
+  <Target Name="StampFlightModelCommit" BeforeTargets="GetAssemblyAttributes">
+    <Exec Command="git -C &quot;$(FlightModelDir)&quot; rev-parse --short HEAD" ConsoleToMSBuild="true" IgnoreExitCode="true" StandardOutputImportance="low">
+      <Output TaskParameter="ConsoleOutput" PropertyName="FlightModelHead" />
+    </Exec>
+    <Exec Command="git -C &quot;$(FlightModelDir)&quot; status --porcelain --untracked-files=no -- Simulation Support Diagnostics" ConsoleToMSBuild="true" IgnoreExitCode="true" StandardOutputImportance="low">
+      <Output TaskParameter="ConsoleOutput" PropertyName="FlightModelChanges" />
+    </Exec>
+    <PropertyGroup>
+      <FlightModelCommit Condition="'$(FlightModelHead)' == ''">unknown</FlightModelCommit>
+      <FlightModelCommit Condition="'$(FlightModelHead)' != '' and '$(FlightModelChanges)' == ''">$(FlightModelHead)</FlightModelCommit>
+      <FlightModelCommit Condition="'$(FlightModelHead)' != '' and '$(FlightModelChanges)' != ''">$(FlightModelHead)-dirty</FlightModelCommit>
+    </PropertyGroup>
+    <ItemGroup>
+      <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+        <_Parameter1>FlightModelCommit</_Parameter1>
+        <_Parameter2>$(FlightModelCommit)</_Parameter2>
+      </AssemblyAttribute>
+    </ItemGroup>
+  </Target>
+
   <!-- The live test runner drives menus, loads missions and quits the game when a plan file exists,
        so the Workshop build leaves it out. -p:LiveTest=true (what LIVETEST=1 ./install.sh passes)
        compiles it in, defines LIVETEST, and builds into its own folders so the two builds never

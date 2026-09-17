@@ -188,11 +188,19 @@ namespace AutoTOT
             pump.AddComponent<LiveTestRunner>();   // inert unless BepInEx/AutoTOT-livetest/plan.ini exists
 #endif
 
-            Log.LogInfo($"Auto Time-on-Target v{Version} loaded (Enabled={Coordinator.Enabled}, Armed={Coordinator.Active}, Unity={Application.unityVersion}).");
+            Log.LogInfo($"Auto Time-on-Target v{Version} loaded (Enabled={Coordinator.Enabled}, Armed={Coordinator.Active}, Unity={Application.unityVersion}, flight model {FlightModelCommit()}).");
         }
 
         // Calls GetName() on every loaded assembly, as the DOTS TypeManager does, and reports the ones that
         // throw. Never throws itself.
+        /// <summary>The SeaPowerFlightModel commit compiled into this DLL, stamped by AutoTOT.csproj.</summary>
+        private static string FlightModelCommit()
+        {
+            foreach (AssemblyMetadataAttribute a in typeof(Bootstrap).Assembly.GetCustomAttributes(typeof(AssemblyMetadataAttribute), false))
+                if (a.Key == "FlightModelCommit") return a.Value;
+            return "unknown";
+        }
+
         private static void LogAssembliesThatFailGetName()
         {
             try

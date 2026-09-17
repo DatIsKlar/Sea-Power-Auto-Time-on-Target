@@ -44,6 +44,21 @@ else
     SRC=dist/AutoTOT/AutoTOT.dll
 fi
 
+# A local build compiles the model working copy that AutoTOT.local.props names (normally ../SeaPowerFlightModel), while
+# GitHub builds the commit the FlightModel submodule pins. Say so when they differ, so a release does not ship a model
+# the repository cannot rebuild.
+MODEL_DIR="${FLIGHT_MODEL_DIR:-../SeaPowerFlightModel}"
+PIN="$(git ls-tree HEAD FlightModel 2>/dev/null | awk '{print $3}')"
+if [ -n "$PIN" ] && [ -d "$MODEL_DIR/.git" ]; then
+    HEAD_SHA="$(git -C "$MODEL_DIR" rev-parse HEAD)"
+    DIRTY="$(git -C "$MODEL_DIR" status --porcelain --untracked-files=no -- Simulation Support Diagnostics)"
+    if [ "$HEAD_SHA" != "$PIN" ] || [ -n "$DIRTY" ]; then
+        echo ">> NOTE: built with the flight model at $MODEL_DIR (${HEAD_SHA:0:7}${DIRTY:+, uncommitted changes}), but the"
+        echo "   FlightModel submodule pins ${PIN:0:7}. Before a release: commit the model, then"
+        echo "   git -C FlightModel fetch && git -C FlightModel checkout ${HEAD_SHA:0:7} && git add FlightModel"
+    fi
+fi
+
 DEST="$GAME_DIR/Sea Power_Data/StreamingAssets/AutoTOT"
 echo ">> installing to: $DEST"
 mkdir -p "$DEST"
