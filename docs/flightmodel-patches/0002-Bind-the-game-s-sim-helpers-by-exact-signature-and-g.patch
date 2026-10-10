@@ -1,0 +1,184 @@
+From ff3dcdf8feac10cfb9b4f0bdda32237454ac7d59 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 10 Oct 2026 21:01:52 +0000
+Subject: [PATCH 2/4] Bind the game's sim helpers by exact signature and guard
+ the clock
+
+ResolveByName matched name and parameter count only, so an overload a
+game update adds could bind and then throw on every step. The thrust,
+drag, loft-cap and optimal-loft lookups now take the exact types, public
+or not. A missing CalculateDrag is reported, since "integrator ACTIVE"
+otherwise hides that every kinematic round declines.
+
+GameClock.Resolve no longer throws out of SimNow when a property's type
+changes, and an unresolved clock is warned whatever the verbose setting.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01CzoHVFmrnnLpRPAqi9LMXe
+---
+ Simulation/FlightTime.Reflection.cs | 53 +++++++++++------------------
+ Support/GameClock.cs                | 46 +++++++++++++++++--------
+ 2 files changed, 51 insertions(+), 48 deletions(-)
+
+diff --git a/Simulation/FlightTime.Reflection.cs b/Simulation/FlightTime.Reflection.cs
+index 026c8b3..2a8d95c 100644
+--- a/Simulation/FlightTime.Reflection.cs
++++ b/Simulation/FlightTime.Reflection.cs
+@@ -16,7 +16,6 @@ namespace AutoTOT
+         internal const string LoftCapMethodName = "LoftCap";
+         internal const string OptimalLoftMethodName = "SearchOptimalLoftAltitude";
+         internal const string AltitudeNodesMethodName = "BuildAltitudeNodes";
+-        internal const int OptimalLoftParameterCount = 9;
+         internal const int AltitudeNodesParameterCount = 6;
+ 
+         // AmmunitionParameters fields that do not exist on the public branch. Mono faults a method reading a
+@@ -101,31 +100,25 @@ namespace AutoTOT
+ 
+                     if (_simIsBeta)
+                     {
+-                        _thrustMethod = ms.GetMethod(ThrustMethodName, new Type[]
+-                        { typeof(AmmunitionParameters), typeof(bool), typeof(float), typeof(float) });
+-                        _dragMethod = ms.GetMethod(DragMethodName, new Type[]
++                        // Exact signatures, public or not. The integrator passes arguments of exactly these
++                        // types, so a method matched on name and arity alone (an overload a game update adds)
++                        // would bind and then throw on every step.
++                        const BindingFlags AnyStatic = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static;
++                        _thrustMethod = ms.GetMethod(ThrustMethodName, AnyStatic, null, new Type[]
++                        { typeof(AmmunitionParameters), typeof(bool), typeof(float), typeof(float) }, null);
++                        _dragMethod = ms.GetMethod(DragMethodName, AnyStatic, null, new Type[]
+                         {
+                             typeof(float), typeof(float), typeof(float), typeof(float), typeof(float),
+                             typeof(bool), typeof(float), typeof(float), typeof(float), typeof(float)
+-                        });
+-                        _loftCapMethod = ms.GetMethod(LoftCapMethodName, new Type[]
+-                        { typeof(AmmunitionParameters), typeof(float), typeof(float) });
+-                        _optimalLoftMethod = ms.GetMethod(OptimalLoftMethodName, new Type[]
++                        }, null);
++                        _loftCapMethod = ms.GetMethod(LoftCapMethodName, AnyStatic, null, new Type[]
++                        { typeof(AmmunitionParameters), typeof(float), typeof(float) }, null);
++                        _optimalLoftMethod = ms.GetMethod(OptimalLoftMethodName, AnyStatic, null, new Type[]
+                         {
+                             typeof(AmmunitionParameters), typeof(Vector3), typeof(Vector3),
+                             typeof(Vector3), typeof(float), typeof(bool), typeof(float),
+                             typeof(float), typeof(float)
+-                        });
+-
+-                        if (_thrustMethod == null)
+-                            _thrustMethod = ResolveByName(ms, ThrustMethodName, 4);
+-                        if (_dragMethod == null)
+-                            _dragMethod = ResolveByName(ms, DragMethodName, 10);
+-                        if (_loftCapMethod == null)
+-                            _loftCapMethod = ResolveByName(ms, LoftCapMethodName, 3);
+-                        if (_optimalLoftMethod == null)
+-                            _optimalLoftMethod = ResolveByName(ms, OptimalLoftMethodName,
+-                                                               OptimalLoftParameterCount);
++                        }, null);
+ 
+                         const BindingFlags NPS = BindingFlags.NonPublic | BindingFlags.Static;
+                         _altNodesMethod = ms.GetMethod(AltitudeNodesMethodName, NPS, null, new Type[]
+@@ -168,6 +161,13 @@ namespace AutoTOT
+                 Bootstrap.Log.LogInfo(
+                     $"[AutoTOT] estimator: integrator ACTIVE ({branch} branch, " +
+                     $"fastPath {(_thrustFn != null && _dragFn != null)})");
++                // Without drag the setup declines every kinematic round (FlightTime.Integrator.cs), so "ACTIVE"
++                // alone would hide that only cruise missiles are being integrated.
++                if (_dragMethod == null)
++                    Bootstrap.Log.LogWarning(
++                        $"[AutoTOT] estimator: {DragMethodName} did not bind, so every rocket-motor (kinematic) " +
++                        $"round falls back to MaxRangePrecise; only cruise missiles are integrated. A game update " +
++                        $"has probably changed {MissileSimulatorType}.{DragMethodName}.");
+             }
+             else
+             {
+@@ -201,21 +201,6 @@ namespace AutoTOT
+             }
+         }
+ 
+-        private static MethodInfo ResolveByName(Type t, string name, int paramCount)
+-        {
+-            const BindingFlags F = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static;
+-            foreach (MethodInfo m in t.GetMethods(F))
+-            {
+-                if (m.Name != name) continue;
+-                ParameterInfo[] ps = m.GetParameters();
+-                if (ps.Length != paramCount) continue;
+-                bool byRef = false;
+-                foreach (ParameterInfo p in ps) if (p.ParameterType.IsByRef) { byRef = true; break; }
+-                if (!byRef) return m;   // the first match, as before
+-            }
+-            return null;
+-        }
+-
+         private static void LogSimInit(Type ms)
+         {
+             if (!Coordinator.VerboseLog) return;
+diff --git a/Support/GameClock.cs b/Support/GameClock.cs
+index ac7267c..28a5fb3 100644
+--- a/Support/GameClock.cs
++++ b/Support/GameClock.cs
+@@ -75,30 +75,48 @@ namespace AutoTOT
+             const BindingFlags F = BindingFlags.Public | BindingFlags.Static;
+             Type gt = typeof(GameTime);
+             string resolved = "UNRESOLVED";
++            Exception failure = null;
+ 
+             // Preferred: missionElapsedTime (double), the continuation of the removed float `time` and the
+-            // clock _launchTime uses.
+-            PropertyInfo mel = gt.GetProperty("missionElapsedTime", F);
+-            if (mel != null && mel.GetGetMethod() != null)
++            // clock _launchTime uses. Each binding is guarded: a property whose type changes (as _launchTime went
++            // from float to double) makes CreateDelegate throw, and this runs once, from SimNow.
++            try
+             {
+-                MethodInfo get = mel.GetGetMethod();
+-                var d = (Func<double>)Delegate.CreateDelegate(typeof(Func<double>), get);
+-                _getter = () => (float)d();
+-                resolved = "missionElapsedTime";
++                PropertyInfo mel = gt.GetProperty("missionElapsedTime", F);
++                if (mel != null && mel.GetGetMethod() != null)
++                {
++                    MethodInfo get = mel.GetGetMethod();
++                    var d = (Func<double>)Delegate.CreateDelegate(typeof(Func<double>), get);
++                    _getter = () => (float)d();
++                    resolved = "missionElapsedTime";
++                }
+             }
+-            else
++            catch (Exception e) { _getter = null; failure = e; }
++
++            if (_getter == null)
+             {
+                 // Fallback for any build without it: the old float `time`.
+-                PropertyInfo old = gt.GetProperty("time", F);
+-                if (old != null && old.GetGetMethod() != null)
++                try
+                 {
+-                    MethodInfo get = old.GetGetMethod();
+-                    _getter = (Func<float>)Delegate.CreateDelegate(typeof(Func<float>), get);
+-                    resolved = "time";
++                    PropertyInfo old = gt.GetProperty("time", F);
++                    if (old != null && old.GetGetMethod() != null)
++                    {
++                        MethodInfo get = old.GetGetMethod();
++                        _getter = (Func<float>)Delegate.CreateDelegate(typeof(Func<float>), get);
++                        resolved = "time";
++                    }
+                 }
++                catch (Exception e) { _getter = null; failure = failure ?? e; }
+             }
+ 
+-            if (Coordinator.VerboseLog)
++            // Unresolved, SimNow reads 0 forever and nothing can be timed, so this is said whatever the verbose
++            // setting.
++            if (_getter == null)
++                Bootstrap.Log.LogWarning(
++                    "[AutoTOT] game-clock: neither GameTime.missionElapsedTime nor GameTime.time could be read, " +
++                    "so the mission clock reads 0 and coordinated timing cannot work. A game update has probably " +
++                    "changed GameTime" + (failure != null ? $" ({failure.GetType().Name}: {failure.Message})." : "."));
++            else if (Coordinator.VerboseLog)
+                 Bootstrap.Log.LogInfo($"[AutoTOT] game-clock: {resolved}");
+         }
+     }
+-- 
+2.43.0
+

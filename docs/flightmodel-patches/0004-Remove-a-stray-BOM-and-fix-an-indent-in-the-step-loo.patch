@@ -1,0 +1,36 @@
+From c5022c6e3d1a65594967ca078a04ac498f240313 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 10 Oct 2026 21:01:52 +0000
+Subject: [PATCH 4/4] Remove a stray BOM and fix an indent in the step loop
+
+No code change; the step loop's arithmetic is untouched.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01CzoHVFmrnnLpRPAqi9LMXe
+---
+ Simulation/FlightTime.Solve.cs | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/Simulation/FlightTime.Solve.cs b/Simulation/FlightTime.Solve.cs
+index 4e35c1b..52b779a 100644
+--- a/Simulation/FlightTime.Solve.cs
++++ b/Simulation/FlightTime.Solve.cs
+@@ -1,5 +1,5 @@
+ using System;
+-﻿using UnityEngine;
++using UnityEngine;
+ using SeaPower;
+ 
+ namespace AutoTOT
+@@ -558,7 +558,7 @@ namespace AutoTOT
+             float       turnDerateThresholdKn  = i.TurnDerateThresholdKn;
+             // The mover derates MaxTurnRate for the G-limit and only then spends the separate
+             // hardcoded roll budget, so the addend rides above the derate rather than through it.
+-                float       bankingRollAddend      = turnRate - turnRateBase;
++            float       bankingRollAddend      = turnRate - turnRateBase;
+             // Arrival latch: has the missile reached the current phase's target altitude yet?
+             // Before arrival it is transiting (bang-bang, so the finite-turn-rate nose-over still
+             // overshoots); after, it is holding (proportional, so it cannot limit-cycle).
+-- 
+2.43.0
+
