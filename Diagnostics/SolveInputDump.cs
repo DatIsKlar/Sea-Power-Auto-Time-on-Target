@@ -334,8 +334,10 @@ namespace AutoTOT
                 // The target's hull, so a hull-entry arrival can be tested offline against FinalRangeM. The
                 // bounds are world-axis aligned, so read them with TargetCourseAtEnd.
                 b.AppendLine(F("TargetLengthM", targetLengthM));
-                b.AppendLine(F("TargetBoundsM",
-                               $"{targetBoundsM.x:0.##},{targetBoundsM.y:0.##},{targetBoundsM.z:0.##}"));
+                // Invariant like every other field here: the current culture would write "12,5,3,1,4" on a
+                // comma-decimal locale.
+                b.AppendLine(F("TargetBoundsM", string.Format(Inv, "{0:0.##},{1:0.##},{2:0.##}",
+                                                               targetBoundsM.x, targetBoundsM.y, targetBoundsM.z)));
                 // Target motion, so the lab can exclude a target that turned after launch.
                 b.AppendLine(F("TargetCourseAtLaunch", targetCourse0));
                 b.AppendLine(F("TargetSpeedAtLaunch", targetSpeed0));

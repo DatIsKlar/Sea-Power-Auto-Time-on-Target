@@ -449,6 +449,7 @@ namespace AutoTOT
             // Distinct sensors: port and starboard launchers often name the same radar, which must not count twice.
             HashSet<SensorSystem> seen = null;
             int free = 0;
+            bool unreadable = false;
             for (int i = 0; i < launchers.Count; i++)
             {
                 var sensors = launchers[i]?._vwp?._associatedSensors;
@@ -462,13 +463,17 @@ namespace AutoTOT
                     if (seen == null) seen = new HashSet<SensorSystem>();
                     if (!seen.Add(sn)) continue;
                     f.GuidanceSensorReady = true;
-                    free += Mathf.Max(0, WeaponChannels(sn) - (sn._associatedWeapons?.Count ?? 0));
+                    int channels = WeaponChannels(sn);
+                    // int.MaxValue is WeaponChannels' "could not read it", meaning uncapped: summed, it would
+                    // overflow (two such sensors wrap negative and refuse every order) or read as a real cap.
+                    if (channels == int.MaxValue) { unreadable = true; continue; }
+                    free += Mathf.Max(0, channels - (sn._associatedWeapons?.Count ?? 0));
                 }
             }
 
-            // Grouped ammo shares a channel, and ammo whose launchers name no usable guiding sensor
-            // is left uncapped rather than clamped to 0 on missing data.
-            if (f.CanGroup || !f.HasGuidanceSensors || seen == null) return;
+            // Grouped ammo shares a channel, and ammo whose launchers name no usable guiding sensor, or one
+            // whose channel count cannot be read, is left uncapped rather than clamped on missing data.
+            if (f.CanGroup || !f.HasGuidanceSensors || seen == null || unreadable) return;
             f.FreeGuidanceChannels = free;
 
             // The identity of the pool, not just its size.
@@ -585,7 +590,8 @@ namespace AutoTOT
                         if (!seen.Add(sn)) continue;
                         int ch = WeaponChannels(sn);
                         int occ = sn._associatedWeapons?.Count ?? 0;
-                        free += Mathf.Max(0, ch - occ);
+                        // An unreadable count (int.MaxValue) is uncapped; adding it would overflow the total.
+                        if (ch != int.MaxValue) free += Mathf.Max(0, ch - occ);
                         if (sb.Length > 0) sb.Append(", ");
                         sb.Append(sn._systemName ?? "sensor").Append(" cap ")
                           .Append(ch == int.MaxValue ? "n/a" : ch.ToString())

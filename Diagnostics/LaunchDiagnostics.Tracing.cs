@@ -211,7 +211,7 @@ namespace AutoTOT
 
             // Recorded as well as logged: the log rotates, the corpus does not.
             if (s.StageChanges.Count < 32)
-                s.StageChanges.Add($"{now}@t+{simNow - s.LaunchTime:0.0}s");
+                s.StageChanges.Add(Inv($"{now}@t+{simNow - s.LaunchTime:0.0}s"));
 
             float altU = w.transform != null ? w.transform.position.y : 0f;
             float slantM = GameUnits.MetersBetween(w, tgt);
@@ -221,8 +221,8 @@ namespace AutoTOT
 
             if (s.StageEvents.Count < 32)
                 s.StageEvents.Add(
-                    $"{simNow - s.LaunchTime:0.000}:{prev}>{now}:{flatU:0.000}:" +
-                    $"{slantM:0.000}:{altU:0.000}:{w._velocityInKnots:0.000}");
+                    Inv($"{simNow - s.LaunchTime:0.000}:{prev}>{now}:{flatU:0.000}:") +
+                    Inv($"{slantM:0.000}:{altU:0.000}:{w._velocityInKnots:0.000}"));
 
             Bootstrap.Log.LogInfo(
                 $"[AutoTOT] stage-obs {(w._ap != null ? w._ap._ammunitionFileName : "?")}#{w.GetInstanceID()}: " +
@@ -316,12 +316,12 @@ namespace AutoTOT
             float meanU = (float)(s.PitchRateSpeedU / n);
             float atMean = LiftLoad(meanPitch, mean, meanU);
             string ticks = n > 1 && s.PitchRateTickFirst >= 0
-                ? $"{(s.PitchRateTickLast - s.PitchRateTickFirst) / (float)(n - 1):0.0}" : "";
+                ? Inv($"{(s.PitchRateTickLast - s.PitchRateTickFirst) / (float)(n - 1):0.0}") : "";
             s.PitchRateTrack.Add(
-                $"{s.PitchRateWindow:0}:{n}:{mean:0.000}:{sd:0.000}:{s.PitchRateMin:0.000}:" +
-                $"{s.PitchRateMax:0.000}:{s.PitchRateAtOrBelowZero / (float)n:0.00}:" +
-                $"{s.PitchRateLlf2 / n:0.0000}:{atMean * atMean:0.0000}:{meanPitch:0.00}:" +
-                $"{meanU / GameUnits.KnotsToUnityPerSecond:0}:{ticks}");
+                Inv($"{s.PitchRateWindow:0}:{n}:{mean:0.000}:{sd:0.000}:{s.PitchRateMin:0.000}:") +
+                Inv($"{s.PitchRateMax:0.000}:{s.PitchRateAtOrBelowZero / (float)n:0.00}:") +
+                Inv($"{s.PitchRateLlf2 / n:0.0000}:{atMean * atMean:0.0000}:{meanPitch:0.00}:") +
+                Inv($"{meanU / GameUnits.KnotsToUnityPerSecond:0}:{ticks}"));
             s.PitchRateN = 0;
             s.PitchRateAtOrBelowZero = 0;
             s.PitchRateSum = s.PitchRateSq = s.PitchRateLlf2 = s.PitchRatePitch = s.PitchRateSpeedU = 0.0;
@@ -364,12 +364,12 @@ namespace AutoTOT
             float groupSpeed = m != null ? m._inGroupVelocityInKnots : -1f;
 
             s.FlightTrack.Add(
-                $"{age:0.000}:{pos.x:0.000}:{pos.y:0.000}:{pos.z:0.000}:" +
-                $"{w._velocityInKnots:0.000}:{pitch:0.000}:{heading:0.000}:{w._flightStage}:" +
-                $"{flatM:0.000}:{slantM:0.000}:{targetPos.x:0.000}:{targetPos.y:0.000}:" +
-                $"{targetPos.z:0.000}:{tgt.getHeading():0.000}:{tgt._velocityInKnots:0.000}:" +
-                $"{(groupActive ? 1 : 0)}:{(groupLeader ? 1 : 0)}:{groupSpeed:0.000}:" +
-                $"{dragTargetAltU:0.000}");
+                Inv($"{age:0.000}:{pos.x:0.000}:{pos.y:0.000}:{pos.z:0.000}:") +
+                Inv($"{w._velocityInKnots:0.000}:{pitch:0.000}:{heading:0.000}:{w._flightStage}:") +
+                Inv($"{flatM:0.000}:{slantM:0.000}:{targetPos.x:0.000}:{targetPos.y:0.000}:") +
+                Inv($"{targetPos.z:0.000}:{tgt.getHeading():0.000}:{tgt._velocityInKnots:0.000}:") +
+                Inv($"{(groupActive ? 1 : 0)}:{(groupLeader ? 1 : 0)}:{groupSpeed:0.000}:") +
+                Inv($"{dragTargetAltU:0.000}"));
         }
 
         /// <summary>
@@ -396,8 +396,8 @@ namespace AutoTOT
             float flatU = GameMath.FlatFromSlant(slantU, pos.y - tgt.transform.position.y);
             string Name(int v) => $"seek{(v & 1)},echo{((v & 2) >> 1)}";
             s.StageEvents.Add(
-                $"{simNow - s.LaunchTime:0.000}:{Name(prev)}>{Name(state)}:{flatU:0.000}:" +
-                $"{slantM:0.000}:{pos.y:0.000}:{w._velocityInKnots:0.000}");
+                Inv($"{simNow - s.LaunchTime:0.000}:{Name(prev)}>{Name(state)}:{flatU:0.000}:") +
+                Inv($"{slantM:0.000}:{pos.y:0.000}:{w._velocityInKnots:0.000}"));
         }
 
         /// <summary>Record discrete formation-state changes; group velocity itself is sampled in
@@ -413,8 +413,8 @@ namespace AutoTOT
             s.LastGroupLeader = leader;
             if (s.GroupChanges.Count < 32)
                 s.GroupChanges.Add(
-                    $"{simNow - s.LaunchTime:0.000}:{(active ? 1 : 0)}:{(leader ? 1 : 0)}:" +
-                    $"{m._inGroupVelocityInKnots:0.000}");
+                    Inv($"{simNow - s.LaunchTime:0.000}:{(active ? 1 : 0)}:{(leader ? 1 : 0)}:") +
+                    Inv($"{m._inGroupVelocityInKnots:0.000}"));
         }
 
         internal const string GuardTrackFields =
@@ -598,35 +598,35 @@ namespace AutoTOT
             }
 
             private string GuidanceTail() =>
-                $":{V(KnownTgt)}:{V5(KnownVel)}:{V(TrueTgt)}:{Travel:0.00}:{SpeedU:0.00000}:" +
-                $"{InsDrift:0.0000}:{(LeadOn ? 1 : 0)}";
+                Inv($":{V(KnownTgt)}:{V5(KnownVel)}:{V(TrueTgt)}:{Travel:0.00}:{SpeedU:0.00000}:") +
+                Inv($"{InsDrift:0.0000}:{(LeadOn ? 1 : 0)}");
 
             internal string Format()
             {
                 string tgtType = HasTarget ? TgtType.ToString() : "none";
-                string head = $"{Age:0.000}:{Stage}:{Dt:0.000}:{WpCount}:";
+                string head = Inv($"{Age:0.000}:{Stage}:{Dt:0.000}:{WpCount}:");
                 if (WpCount == 0)
-                    return head + $"::::::::::::::{V(Pos)}:{Vy:0.000}:{Pitch:0.000}::::" +
-                           $"{V(Intercept)}:::::::::::{tgtType}:" +
-                           $"{(InGroup ? 1 : 0)}" + GuidanceTail();
+                    return head + Inv($"::::::::::::::{V(Pos)}:{Vy:0.000}:{Pitch:0.000}::::") +
+                           Inv($"{V(Intercept)}:::::::::::{tgtType}:") +
+                           Inv($"{(InGroup ? 1 : 0)}") + GuidanceTail();
                 return head +
-                    $"{WpType}:{PitchMode}:{(Done ? 1 : 0)}:" +
-                    $"{(AllowExceed ? 1 : 0)}:{ClimbAngle:0.###}:" +
-                    $"{DescentAngle:0.###}:{EndAlt:0.###}:" +
-                    $"{EndHeightType}:{Boundary:0.000}:{Pct:0.000000}:{Total:0.000}:" +
-                    $"{CtxV:0.000}:{Arc}:{V(Pos)}:{Vy:0.000}:{Pitch:0.000}:{V(Goal)}:{V(Future)}:" +
-                    $"{V(LastWp)}:" +
-                    $"{V(Intercept)}:{Rate:0.###}:{Num2:0.000}:" +
-                    $"{Num3:0.000}:{Num4:0.000}:{Num6:0.0000}:{Num7:0.000}:{Num8:0.000}:" +
-                    $"{X:0.000}:{(Distinct ? 1 : 0)}:{(Fired ? 1 : 0)}:{tgtType}:" +
-                    $"{(InGroup ? 1 : 0)}" + GuidanceTail();
+                    Inv($"{WpType}:{PitchMode}:{(Done ? 1 : 0)}:") +
+                    Inv($"{(AllowExceed ? 1 : 0)}:{ClimbAngle:0.###}:") +
+                    Inv($"{DescentAngle:0.###}:{EndAlt:0.###}:") +
+                    Inv($"{EndHeightType}:{Boundary:0.000}:{Pct:0.000000}:{Total:0.000}:") +
+                    Inv($"{CtxV:0.000}:{Arc}:{V(Pos)}:{Vy:0.000}:{Pitch:0.000}:{V(Goal)}:{V(Future)}:") +
+                    Inv($"{V(LastWp)}:") +
+                    Inv($"{V(Intercept)}:{Rate:0.###}:{Num2:0.000}:") +
+                    Inv($"{Num3:0.000}:{Num4:0.000}:{Num6:0.0000}:{Num7:0.000}:{Num8:0.000}:") +
+                    Inv($"{X:0.000}:{(Distinct ? 1 : 0)}:{(Fired ? 1 : 0)}:{tgtType}:") +
+                    Inv($"{(InGroup ? 1 : 0)}") + GuidanceTail();
             }
         }
 
-        private static string V(Vector3 v) => $"{v.x:0.000},{v.y:0.000},{v.z:0.000}";
+        private static string V(Vector3 v) => Inv($"{v.x:0.000},{v.y:0.000},{v.z:0.000}");
 
         // A ship's velocity is a few hundredths of a unit per second; three decimals would round it away.
-        private static string V5(Vector3 v) => $"{v.x:0.00000},{v.y:0.00000},{v.z:0.00000}";
+        private static string V5(Vector3 v) => Inv($"{v.x:0.00000},{v.y:0.00000},{v.z:0.00000}");
 
         // ---- Capture helpers: a Vessel target's speed command, a missile's INS drift and the launcher cell
         // a round spawned in. Written into the .result of a traced round; the corpus scripts read them.

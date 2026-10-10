@@ -164,7 +164,7 @@ namespace AutoTOT
                     Mathf.Abs(step - s.LastStepSeen) > StepChangeRelativeTolerance * step)
                 {
                     if (s.StepChanges.Count < StepChangeCap)
-                        s.StepChanges.Add($"{simNow - s.LaunchTime:0.000}:{step:0.0000}");
+                        s.StepChanges.Add(Inv($"{simNow - s.LaunchTime:0.000}:{step:0.0000}"));
                     s.LastStepSeen = step;
                 }
             }
@@ -308,7 +308,7 @@ namespace AutoTOT
                             existing.NextTrackSample = simNow + TrackSampleIntervalSim;
                             float tAlt = w.transform != null ? w.transform.position.y : 0f;
                             existing.Track.Add(
-                                $"{simNow - existing.LaunchTime:0.#}:{tAlt:0.#}:{w._velocityInKnots:0}");
+                                Inv($"{simNow - existing.LaunchTime:0.#}:{tAlt:0.#}:{w._velocityInKnots:0}"));
                         }
                         if (trace && existing.Coordinated)
                         {
@@ -444,9 +444,9 @@ namespace AutoTOT
                         CaptureGroupMembership(w, fresh);
                         if (dumpKey != null)
                             fresh.GroupChanges.Add(
-                                $"{simNow - fresh.LaunchTime:0.000}:{(fresh.LastGroupActive ? 1 : 0)}:" +
-                                $"{(fresh.LastGroupLeader ? 1 : 0)}:" +
-                                $"{(freshMissile != null ? freshMissile._inGroupVelocityInKnots : -1f):0.000}");
+                                Inv($"{simNow - fresh.LaunchTime:0.000}:{(fresh.LastGroupActive ? 1 : 0)}:") +
+                                Inv($"{(fresh.LastGroupLeader ? 1 : 0)}:") +
+                                Inv($"{(freshMissile != null ? freshMissile._inGroupVelocityInKnots : -1f):0.000}"));
                         if (trace && coordinated)
                             MaybeRecordFlightTrack(w, tgt, fresh, simNow);
                         fresh.MinCompression = GameTime.TimeCompression;
@@ -501,14 +501,19 @@ namespace AutoTOT
             if (_flightTracker.ContainsKey(w)) return;
             EngagementBoard.TryGetPredictedImpact(tgt, out float pred);
             string ammo = w._ap != null ? w._ap._ammunitionFileName : null;
+            // The two reads the original fault may have come from are guarded again here: a throw from inside
+            // this catch would skip the rest of Tick (expectations, cleanup, retirement) on every frame.
+            float launchTime = simNow, distM = 0f;
+            try { launchTime = GameClock.LaunchStampOr(w, simNow); } catch { }
+            try { distM = GameUnits.MetersBetween(w, tgt); } catch { }
             // Stored before the credit, so a credit that throws cannot bring the round back as a
             // first sighting on the next tick.
             _flightTracker[w] = new FlightSample
             {
-                LaunchTime = GameClock.LaunchStampOr(w, simNow),
+                LaunchTime = launchTime,
                 AmmoName = ammo ?? "?",
                 TargetName = UnitNaming.SafeName(tgt),
-                LastDistM = GameUnits.MetersBetween(w, tgt),
+                LastDistM = distM,
                 LastSeenTime = simNow,
                 Target = tgt,
                 CurrentTarget = tgt,
@@ -524,7 +529,11 @@ namespace AutoTOT
                 Coordinated = EngagementBoard.IsCoordinated(tgt),
                 LastStage = w._flightStage,
             };
-            if (!creditAttempted) CreditLaunch(w, tgt);
+            if (!creditAttempted)
+            {
+                try { CreditLaunch(w, tgt); }
+                catch (System.Exception ce) { ReportFault("launch credit", ce); }
+            }
         }
 
         // Faults already reported this mission, keyed on stage and message.
@@ -621,7 +630,7 @@ namespace AutoTOT
             s.LastConvergeSeen = c.Converge;
             if (s.SpeedCommandChanges.Count >= SpeedCommandChangeCap) return;
             float t = simNow - s.LaunchTime;
-            s.SpeedCommandChanges.Add($"{t:0.000}:{c.Wanted:0.000}:{c.Converge:0.000}:{c.Speed:0.000}");
+            s.SpeedCommandChanges.Add(Inv($"{t:0.000}:{c.Wanted:0.000}:{c.Converge:0.000}:{c.Speed:0.000}"));
             Bootstrap.Log.LogInfo(
                 $"[AutoTOT] tgt-speed-command {UnitNaming.SafeName(tgt)} {(first ? "at launch" : "CHANGED")} " +
                 $"of {s.AmmoName} t+{t:0.0}s: speed {c.Speed:0.000}kn wanted {c.Wanted:0.000}kn " +
@@ -686,16 +695,40 @@ namespace AutoTOT
             {
                 AmmunitionParameters ap = shooter != null ? shooter.getAmmunitionByName(ammoId)?._ap : null;
                 if (ap == null || target == null) return -1f;
-                return Missile.CalculateMissileInterceptTimeAnalytical(ap, shooter.transform.position,
-                    shooter.IsAirUnit ? shooter._velocityInKnots : 0f, target.transform.position,
-                    target.UnityVelocityVector, ap.GetDragFactor(shooter.IsAirUnit)).interceptTime;
+                return AttackLineInterceptTime(ap, shooter, target);
             }
             catch (System.Exception e)
             {
-                ModLog.Warn("game attack-line estimate failed", e);
+                // Said once: on a branch without these members it fails for every traced round.
+                if (!_attackLineFaultLogged)
+                {
+                    _attackLineFaultLogged = true;
+                    ModLog.Warn("game attack-line estimate failed (reported once)", e);
+                }
                 return -1f;
             }
         }
+
+        private static bool _attackLineFaultLogged;
+
+        /// <summary>
+        /// A corpus field, formatted with the invariant culture. The lab parses these strings with '.' decimals
+        /// and ',' or ':' separators, so a comma-decimal locale (German, French) would make every track
+        /// unreadable. Log lines are for people and keep the current culture.
+        /// </summary>
+        private static string Inv(System.FormattableString s) => System.FormattableString.Invariant(s);
+
+        /// <summary>
+        /// The game call behind <see cref="GameAttackLineEstimate"/>, kept in its own method so a member missing on
+        /// the other game branch faults here, when this method is compiled, and reaches the caller's catch. Inline,
+        /// Mono would fault the caller at its own compilation, before its try could run (the reason GameClock and
+        /// LauncherFacts read branch-divergent members by reflection).
+        /// </summary>
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+        private static float AttackLineInterceptTime(AmmunitionParameters ap, ObjectBase shooter, ObjectBase target)
+            => Missile.CalculateMissileInterceptTimeAnalytical(ap, shooter.transform.position,
+                shooter.IsAirUnit ? shooter._velocityInKnots : 0f, target.transform.position,
+                target.UnityVelocityVector, ap.GetDragFactor(shooter.IsAirUnit)).interceptTime;
 
         /// <summary>
         /// Whether this round is flying in a missile group. Read at first sighting, before the formation has

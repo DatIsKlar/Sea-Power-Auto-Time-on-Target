@@ -224,7 +224,7 @@ namespace AutoTOT
             {
                 _resizing = false;
                 _dragging = false;
-                SetOverUi(false);
+                ReleaseOverUi();
                 return;
             }
 
@@ -235,7 +235,7 @@ namespace AutoTOT
             {
                 _resizing = false;
                 _dragging = false;
-                SetOverUi(false);
+                ReleaseOverUi();
                 return;
             }
 
@@ -284,7 +284,7 @@ namespace AutoTOT
             {
                 _resizing = false;
                 _dragging = false;
-                SetOverUi(false);
+                ReleaseOverUi();
                 return;
             }
 
@@ -293,7 +293,7 @@ namespace AutoTOT
             {
                 _resizing = false;
                 _dragging = false;
-                SetOverUi(false);
+                ReleaseOverUi();
                 return;
             }
 
@@ -361,6 +361,17 @@ namespace AutoTOT
                 if (ob.IsPlayerObject) _anchor = ob;
                 else { _target = ob; _targetVehicle = null; }
             }
+        }
+
+        /// <summary>
+        /// Hand the game's over-UI flag back, once. The flag is shared with the game's own edge-triggered window
+        /// hit-testing, and the setter is not cheap (Hud.Mouse.cs), so clearing it on every frame the panel is
+        /// hidden would both cost that each frame and wipe the flag the game set for its own windows, letting a
+        /// click over one of them reach the map.
+        /// </summary>
+        private void ReleaseOverUi()
+        {
+            if (_lastOverUi) SetOverUi(false);
         }
 
         private void OnGUI()

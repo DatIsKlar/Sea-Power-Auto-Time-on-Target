@@ -293,7 +293,8 @@ namespace AutoTOT
                     float etaSec = FlightTime.EstimateForDisplay(ship, r.AmmoId, _target);
                     CoordinatorProfiler.End(CoordinatorProfiler.Stage.UiEstimate);
                     CoordinatorProfiler.Count(CoordinatorProfiler.Counter.UiEstimateCalls);
-                    eta = FormatTime(etaSec);
+                    // Not positive: no estimate yet (this frame's solve budget went to other rows) or none at all.
+                    eta = etaSec > 0f ? FormatTime(etaSec) : "--";
                 }
                 float nm = GameUnits.NmBetween(ship, _target);
                 range = $"{nm:0.0}nm";

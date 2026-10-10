@@ -165,8 +165,9 @@ namespace AutoTOT
             if (__exception == null)
                 return null;
 
-            ReportOnce(__exception);
-            return IsAssemblyNameFailure(__exception) ? null : __exception;
+            bool shielded = IsAssemblyNameFailure(__exception);
+            ReportOnce(__exception, shielded);
+            return shielded ? null : __exception;
         }
 
         /// <summary>
@@ -186,19 +187,24 @@ namespace AutoTOT
             return false;
         }
 
-        private static void ReportOnce(Exception ex)
+        private static void ReportOnce(Exception ex, bool shielded)
         {
             string id = $"{ex.GetType().FullName}: {ex.Message}";
             bool isNew;
             lock (_reported)
                 isNew = _reported.Add(id);
 
-            if (isNew)
-            {
+            if (!isNew) return;
+            // Only an absorbed failure gets the "treating it as non-ECS" line; anything else is re-thrown to the
+            // game, and saying it was absorbed would mislead whoever is debugging that crash.
+            if (shielded)
                 Bootstrap.Log.LogWarning(
                     $"[AutoTOT] DOTS assembly scan would have crashed on an unnameable assembly; " +
                     $"treating it as non-ECS so mission load can continue. Underlying: {id}");
-            }
+            else
+                Bootstrap.Log.LogWarning(
+                    $"[AutoTOT] DOTS assembly scan threw something the shield does not cover, so it is " +
+                    $"passed on to the game unchanged: {id}");
         }
 
         /// <summary>Best-effort identifier for an assembly whose GetName()/FullName may itself throw.</summary>
