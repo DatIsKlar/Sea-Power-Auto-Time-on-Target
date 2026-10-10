@@ -114,7 +114,11 @@ restore_cfg() { [ -n "$cfg_backup" ] && [ -f "$cfg_backup" ] && cp "$cfg_backup"
 if [ -n "$CFG_OVERRIDE" ]; then
     [ -f "$CFG" ] || { echo "CFG_OVERRIDE given but no config at $CFG" >&2; exit 2; }
     cfg_backup="$(mktemp)"; cp "$CFG" "$cfg_backup"
-    trap 'restore_cfg; rm -rf "$TMPD"' EXIT INT TERM
+    trap 'restore_cfg; rm -rf "$TMPD"' EXIT
+    # A trap that only cleaned up let Ctrl-C return to the loop, which then launched the next section
+    # without a plan; exiting runs the EXIT trap above once.
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
     for kv in $CFG_OVERRIDE; do
         k="${kv%%=*}"; v="${kv#*=}"
         grep -qiE "^[[:space:]]*$k[[:space:]]*=" "$CFG" || { echo "unknown config key: $k" >&2; restore_cfg; exit 2; }
@@ -126,12 +130,15 @@ fi
 summary_rows=()
 for sec in "${SECTIONS[@]}"; do
     name="$(basename "$sec" .ini | sed 's/^[0-9]*-//')"
-    timeout_s="$(sed -n 's/^[[:space:]]*TimeoutSec[[:space:]]*=[[:space:]]*\([0-9.]*\).*/\1/p' "$sec" | head -n1)"
-    contact_s="$(sed -n 's/^[[:space:]]*WaitForContactSec[[:space:]]*=[[:space:]]*\([0-9.]*\).*/\1/p' "$sec" | head -n1)"
-    comp="$(sed -n 's/^[[:space:]]*Compression[[:space:]]*=[[:space:]]*\([0-9.]*\).*/\1/p' "$sec" | head -n1)"
+    # Keys case-insensitively, as the in-game parser reads them.
+    timeout_s="$(sed -n 's/^[[:space:]]*TimeoutSec[[:space:]]*=[[:space:]]*\([0-9.]*\).*/\1/Ip' "$sec" | head -n1)"
+    contact_s="$(sed -n 's/^[[:space:]]*WaitForContactSec[[:space:]]*=[[:space:]]*\([0-9.]*\).*/\1/Ip' "$sec" | head -n1)"
+    comp="$(sed -n 's/^[[:space:]]*Compression[[:space:]]*=[[:space:]]*\([0-9.]*\).*/\1/Ip' "$sec" | head -n1)"
     : "${timeout_s:=1500}" "${contact_s:=120}" "${comp:=1}"
-    # TimeoutSec is sim seconds; at compression c it passes c times faster in wall time.
-    limit=$(( STARTUP_ALLOWANCE + ${contact_s%.*} + ${timeout_s%.*} / ${comp%.*} ))
+    # TimeoutSec is sim seconds; at compression c it passes c times faster in wall time. In awk, since shell
+    # arithmetic is integer-only: Compression=0.5 divided by zero there, and ".5" was a syntax error.
+    limit="$(awk -v a="$STARTUP_ALLOWANCE" -v c="$contact_s" -v t="$timeout_s" -v k="$comp" \
+        'BEGIN { if (k + 0 <= 0) k = 1; printf "%d", a + c + t / k }')"
 
     stamp="$(date +%Y%m%d-%H%M%S)"
     out="$RUNS/$stamp-$name"; mkdir -p "$out"

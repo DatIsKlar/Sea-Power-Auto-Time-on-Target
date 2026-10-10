@@ -244,7 +244,11 @@ def main():
             lines[j] = f"{m.group(1)}{m.group(2)},{feet},{m.group(4)}\n"
             k, wm = find(lines, span, WPT)
             if k is not None and wm.group(2).strip():
-                lines[k] = f"{wm.group(1)}{re.sub(r'(-?[\\d.]+),(-?[\\d.]+),(-?[\\d.]+)', lambda mm: f'{mm.group(1)},{feet},{mm.group(3)}', wm.group(2))}\n"
+                # Built outside the f-string: inside one, r'[\\d.]' reaches re as a backslash class (Python 3.12+)
+                # or is a syntax error (3.11 and older), and the waypoint heights were never changed.
+                waypoints = re.sub(r'(-?[\d.]+),(-?[\d.]+),(-?[\d.]+)',
+                                   lambda mm: f'{mm.group(1)},{feet},{mm.group(3)}', wm.group(2))
+                lines[k] = f"{wm.group(1)}{waypoints}\n"
             i += 3
         elif op == 'heading':
             sec = args[i + 1]

@@ -29,6 +29,12 @@ if [ -z "${GAME_DIR:-}" ]; then
     echo "  GAME_DIR=\"/path/to/Sea Power\" ./install.sh" >&2
     exit 1
 fi
+# Checked before building: a typo, or an MSBuild property such as $(HOME) that only the build expands,
+# would otherwise create a stray folder below and report the install as done.
+if [ ! -d "$GAME_DIR/Sea Power_Data/StreamingAssets" ]; then
+    echo "GAME_DIR does not look like a Sea Power install (no Sea Power_Data/StreamingAssets): $GAME_DIR" >&2
+    exit 1
+fi
 
 # LIVETEST=1 builds the live test build (runner compiled in, bin/LiveTest/) and installs it without
 # touching dist/, which only ever holds the Workshop build.
@@ -44,15 +50,19 @@ else
     SRC=dist/AutoTOT/AutoTOT.dll
 fi
 
-# A local build compiles the model working copy that AutoTOT.local.props names (normally ../SeaPowerFlightModel), while
-# GitHub builds the commit the FlightModel submodule pins. Say so when they differ, so a release does not ship a model
-# the repository cannot rebuild.
-MODEL_DIR="${FLIGHT_MODEL_DIR:-../SeaPowerFlightModel}"
-PIN="$(git ls-tree HEAD FlightModel 2>/dev/null | awk '{print $3}')"
-if [ -n "$PIN" ] && [ -d "$MODEL_DIR/.git" ]; then
-    HEAD_SHA="$(git -C "$MODEL_DIR" rev-parse HEAD)"
-    DIRTY="$(git -C "$MODEL_DIR" status --porcelain --untracked-files=no -- Simulation Support Diagnostics)"
-    if [ "$HEAD_SHA" != "$PIN" ] || [ -n "$DIRTY" ]; then
+# The build compiles the model at FlightModelDir: AutoTOT.local.props when it sets one (normally a working copy at
+# ../SeaPowerFlightModel), else the FlightModel submodule, while GitHub builds the commit the submodule pins. Say so
+# when they differ, so a release does not ship a model the repository cannot rebuild. Read the same way the build
+# resolves it, rather than guessed, so the note compares the checkout that was actually compiled.
+MODEL_DIR="$(sed -n 's/^[[:space:]]*<FlightModelDir>\(.*\)<\/FlightModelDir>.*/\1/p' AutoTOT.local.props 2>/dev/null | head -n1 || true)"
+MODEL_DIR="${MODEL_DIR:-FlightModel}"
+# The git reads are allowed to fail (a ZIP download, git not installed): under set -e a failed pipeline would
+# end the script here, after the build and before the install, without a word.
+PIN="$(git ls-tree HEAD FlightModel 2>/dev/null | awk '{print $3}' || true)"
+if [ -n "$PIN" ] && [ -e "$MODEL_DIR/.git" ]; then
+    HEAD_SHA="$(git -C "$MODEL_DIR" rev-parse HEAD 2>/dev/null || true)"
+    DIRTY="$(git -C "$MODEL_DIR" status --porcelain --untracked-files=no -- Simulation Support Diagnostics 2>/dev/null || true)"
+    if [ -n "$HEAD_SHA" ] && { [ "$HEAD_SHA" != "$PIN" ] || [ -n "$DIRTY" ]; }; then
         echo ">> NOTE: built with the flight model at $MODEL_DIR (${HEAD_SHA:0:7}${DIRTY:+, uncommitted changes}), but the"
         echo "   FlightModel submodule pins ${PIN:0:7}. Before a release: commit the model, then"
         echo "   git -C FlightModel fetch && git -C FlightModel checkout ${HEAD_SHA:0:7} && git add FlightModel"
