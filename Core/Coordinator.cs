@@ -465,20 +465,6 @@ namespace AutoTOT
             if (!unit.DoesAmmoMatchTarget(ammo._ap, target, out _))
                 return false; // weapon cannot engage this target type
 
-            // Inside minimum launch range the game turns the ship to unmask and then never fires or ends the
-            // order, so it is refused. Returning true means "the game must not fire this": the prefix fires
-            // the order itself when this returns false.
-            if (LaunchEnvelope.IsInsideMinimumRange(unit, ammo._ap, target,
-                                                    out float tooCloseNm, out float minNm))
-            {
-                Bootstrap.Log.LogWarning(
-                    $"[AutoTOT] order refused: {UnitNaming.SafeName(unit)} is {tooCloseNm:0.0}nm from " +
-                    $"{UnitNaming.SafeName(target)}, inside the {minNm:0.0}nm minimum launch range " +
-                    $"for {ammoId}. The game would turn the ship to unmask and then hold the order " +
-                    $"without ever launching it. Open the range, or use a shooter further out.");
-                return true;
-            }
-
             // Verbose only: a player who switched auto off is not asking to be told.
             if (autoOff)
             {
@@ -488,6 +474,21 @@ namespace AutoTOT
                         $"({UnitNaming.SafeName(unit)} -> {UnitNaming.SafeName(target)}, " +
                         $"{ammoId} x{shots}).");
                 return false;
+            }
+
+            // Inside minimum launch range the game turns the ship to unmask and then never fires or ends the
+            // order, so a collected order is refused. Returning true means "the game must not fire this": the
+            // prefix fires the order itself when this returns false. After the auto-off test, so an order the
+            // mod is not collecting reaches the game untouched, as the README promises.
+            if (LaunchEnvelope.IsInsideMinimumRange(unit, ammo._ap, target,
+                                                    out float tooCloseNm, out float minNm))
+            {
+                Bootstrap.Log.LogWarning(
+                    $"[AutoTOT] order refused: {UnitNaming.SafeName(unit)} is {tooCloseNm:0.0}nm from " +
+                    $"{UnitNaming.SafeName(target)}, inside the {minNm:0.0}nm minimum launch range " +
+                    $"for {ammoId}. The game would turn the ship to unmask and then hold the order " +
+                    $"without ever launching it. Open the range, or use a shooter further out.");
+                return true;
             }
 
             Batch batch = _strikeBatch;
@@ -604,6 +605,8 @@ namespace AutoTOT
             LaunchDiagnostics.Reset();
             EngagementBoard.Clear();
             _reservations.Clear();
+            _stageFaultsLogged.Clear();
+            _releaseFaultsLogged.Clear();
             _lastReleaseSimNow = -1f;
             // The census cadence is sim time, and the next mission's clock restarts at zero.
             _lastCensusSim = float.NegativeInfinity;
@@ -640,17 +643,21 @@ namespace AutoTOT
                                    LaunchDiagnostics.LastRetireMs);
 
             // After DrainCompleted and before release, so a commit completed by this frame's results releases
-            // on this tick.
+            // on this tick. Each stage is guarded on its own, like the diagnostics above: one that throws on
+            // every tick must not stop ReleaseDueLaunches, and with it every held order.
             CoordinatorProfiler.Begin(CoordinatorProfiler.Stage.Pending);
-            PumpPendingCommits();
+            try { PumpPendingCommits(); }
+            catch (Exception e) { ReportStageFault("pending commits", e); }
             CoordinatorProfiler.End(CoordinatorProfiler.Stage.Pending);
 
             CoordinatorProfiler.Begin(CoordinatorProfiler.Stage.Commit);
-            CommitReadyBatches();
+            try { CommitReadyBatches(); }
+            catch (Exception e) { ReportStageFault("batch commit", e); }
             CoordinatorProfiler.End(CoordinatorProfiler.Stage.Commit);
 
             CoordinatorProfiler.Begin(CoordinatorProfiler.Stage.Anchor);
-            UpdateAnchorTracking(simNow);
+            try { UpdateAnchorTracking(simNow); }
+            catch (Exception e) { ReportStageFault("anchor tracking", e); }
             CoordinatorProfiler.End(CoordinatorProfiler.Stage.Anchor);
 
             PruneReservations(simNow);
@@ -688,8 +695,64 @@ namespace AutoTOT
             {
                 Batch b = _openBatches[key];
                 _openBatches.Remove(key);
-                CommitBatch(b);
+                // Removed before the commit, so a commit that throws cannot repeat every tick; its orders were
+                // intercepted and the game will not fire them, so the ones left unscheduled are named.
+                try { CommitBatch(b); }
+                catch (Exception e) { ReportFailedCommit("batch commit", b.Items, e); }
             }
+        }
+
+        // Stage faults already logged this mission, keyed on stage and message, so a repeating fault is said once.
+        private const int MaxStageFaultMessages = 32;
+        private static readonly HashSet<string> _stageFaultsLogged = new HashSet<string>();
+
+        /// <summary>
+        /// Report a fault one coordinator stage absorbed so the others could run. Once per stage and message per
+        /// mission, with the stack.
+        /// </summary>
+        private static void ReportStageFault(string stage, Exception e)
+        {
+            if (_stageFaultsLogged.Count >= MaxStageFaultMessages ||
+                !_stageFaultsLogged.Add(stage + "|" + e.GetType().Name + "|" + e.Message)) return;
+            Bootstrap.Log.LogError(
+                $"[AutoTOT] coordinator {stage} fault, contained so the other stages still run; " +
+                $"reported once per message:\n{e}");
+        }
+
+        /// <summary>
+        /// A commit threw part way. Its orders were intercepted, so the game will not fire them on its own: name
+        /// the ones that ended up neither scheduled nor pending, so the player can reissue them. Every failed commit
+        /// is reported, since each loses different orders.
+        /// </summary>
+        private static void ReportFailedCommit(string stage, List<Intent> items, Exception e)
+        {
+            var lost = new System.Text.StringBuilder();
+            int n = 0;
+            if (items != null)
+            {
+                for (int i = 0; i < items.Count; i++)
+                {
+                    Intent it = items[i];
+                    if (it == null || IsHeldIntent(it)) continue;
+                    n++;
+                    if (lost.Length > 0) lost.Append(", ");
+                    lost.Append($"{it.AmmoId} x{Mathf.Max(1, it.Shots)} {UnitNaming.SafeName(it.Unit)} -> " +
+                                $"{UnitNaming.SafeName(it.Target)}");
+                }
+            }
+            Bootstrap.Log.LogError(
+                $"[AutoTOT] {stage} failed part way: {n} order(s) were dropped and will NOT fire" +
+                (n > 0 ? $" ({lost})" : "") + ". Reissue them if they are still wanted, and report this " +
+                $"with the stack:\n{e}");
+        }
+
+        /// <summary>True while an intent is scheduled or waiting in a pending commit.</summary>
+        private static bool IsHeldIntent(Intent it)
+        {
+            for (int i = 0; i < _scheduled.Count; i++)
+                if (ReferenceEquals(_scheduled[i].Item, it)) return true;
+            if (_pending.Count > 0 && PendingHolds(it)) return true;
+            return false;
         }
 
         /// <summary>
@@ -885,7 +948,13 @@ namespace AutoTOT
         /// <see cref="FlightTime.GroupFormingDelay"/>. 0 when not grouped; <paramref name="span"/> is the ripple span.
         /// </summary>
         private static float GroupDelay(Intent it, float span)
-            => it.Grouped ? FlightTime.GroupFormingDelay(it.Unit, it.AmmoId, it.Target, span) : 0f;
+            => it.Grouped ? FiniteOrZero(FlightTime.GroupFormingDelay(it.Unit, it.AmmoId, it.Target, span)) : 0f;
+
+        /// <summary>
+        /// A lead that is not a real number reads as none. A NaN lead would make every release gate false
+        /// (<c>timeLeft &lt;= NaN</c>), holding the order until the mission ends.
+        /// </summary>
+        private static float FiniteOrZero(float seconds) => GameMath.IsFinite(seconds) ? seconds : 0f;
 
         /// <summary>Fill an intent's timing from its ship's launcher facts: release lead, startup lead,
         /// reload waves.</summary>
@@ -906,7 +975,7 @@ namespace AutoTOT
             // which is right: its launch time is the uncertain one. envelope-sim logs the predicted transit
             // for comparison with envelope-track.
             System.Text.StringBuilder ascTrace = VerboseLog ? new System.Text.StringBuilder() : null;
-            it.EnvelopeLead = LaunchEnvelope.TimeToReady(it.Unit, it.AmmoId, ascTrace);
+            it.EnvelopeLead = FiniteOrZero(LaunchEnvelope.TimeToReady(it.Unit, it.AmmoId, ascTrace));
             it.StartupLead += it.EnvelopeLead;
             // Tracked for every platform whose launch envelope can change while held: an aircraft can climb
             // out of its band, a boat can be ordered deeper. Surface ships are ready where they stand. For a

@@ -119,18 +119,38 @@ namespace AutoTOT
             for (int i = 0; i < _pending.Count; )
             {
                 PendingCommit pc = _pending[i];
-                pc.Frames++;
-                bool ready = PumpPending(pc);
-                if (!ready && nowReal - pc.StartedReal >= PendingDeadlineReal)
+                try
                 {
-                    ForceResolvePending(pc, nowReal - pc.StartedReal);
-                    ready = true;
+                    pc.Frames++;
+                    bool ready = PumpPending(pc);
+                    if (!ready && nowReal - pc.StartedReal >= PendingDeadlineReal)
+                    {
+                        ForceResolvePending(pc, nowReal - pc.StartedReal);
+                        ready = true;
+                    }
+                    if (!ready) { i++; continue; }
+                    // Removed before scheduling, so the accounting never sees the rounds in both places.
+                    _pending.RemoveAt(i);
+                    CompletePending(pc);
                 }
-                if (!ready) { i++; continue; }
-                // Removed before scheduling, so the accounting never sees the rounds in both places.
-                _pending.RemoveAt(i);
-                CompletePending(pc);
+                catch (System.Exception e)
+                {
+                    // Dropped rather than retried: a commit that throws on every tick would otherwise hold its
+                    // rounds against the channel budget for the rest of the mission and never release. The index
+                    // stays, since the next commit now sits at i.
+                    int at = _pending.IndexOf(pc);
+                    if (at >= 0) _pending.RemoveAt(at);
+                    ReportFailedCommit("pending commit", pc.Items, e);
+                }
             }
+        }
+
+        /// <summary>True when a pending commit holds this exact intent.</summary>
+        private static bool PendingHolds(Intent it)
+        {
+            for (int p = 0; p < _pending.Count; p++)
+                if (_pending[p].Items.Contains(it)) return true;
+            return false;
         }
 
         /// <summary>

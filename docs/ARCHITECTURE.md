@@ -960,9 +960,15 @@ frame. `Update`:
   has been absent for the debounce, under its own try/catch, so a reset that throws is logged and not
   retried every frame.
 - In mission, a mission clock that runs backwards by more than 1 s with no reset in between
-  logs a warning: it would mean a new mission started without the exit being seen.
+  means a new mission started without the exit being seen, so it is warned and the coordinator is
+  reset there and then.
+- With `Enabled` off the Pump does not tick the coordinator at all.
 - `Coordinator.Tick()` in try/catch. A new exception message
-  is logged in full; a repeat of the same one is restated every 30 s real with a count.
+  is logged in full; a repeat of the same one is restated every 30 s real with a count. Inside it,
+  the pending, commit and anchor stages each have their own try/catch, and so does each order in
+  `ReleaseDueLaunches`, so one fault that repeats every tick cannot stop the others releasing. A
+  commit that throws part way is dropped rather than retried, and the orders it leaves neither
+  scheduled nor pending are named in an ERROR line, since the game will not fire them on its own.
 
 ## File map
 

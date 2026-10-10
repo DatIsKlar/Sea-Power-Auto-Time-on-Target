@@ -493,6 +493,9 @@ Everything interesting lands in `<Sea Power>/BepInEx/LogOutput.log`, prefixed
 | `InsertEngageTask prefix threw ...` | **ERROR**: the mod failed while intercepting an order. The line says whether the order stays held by AutoTOT or went to the game uncoordinated; report with the stack |
 | `strike failed to commit ...` | **ERROR**: firing a strike threw part way. The strike mode stays armed; order again whatever did not launch, and report with the stack |
 | `coordinator tick error` / `Unity exception` | something threw; report with the stack |
+| `coordinator ... fault, contained so the other stages still run` / `release of ... faulted` | **ERROR**: one coordinator stage or one held order threw; everything else keeps releasing. Report with the stack |
+| `... failed part way: N order(s) were dropped and will NOT fire` | **ERROR**: committing a batch or strike threw; the orders it names are not coming. Reissue them, and report with the stack |
+| `mission clock went back ... resetting the coordinator now` | **WARN**: a new mission started without the old one's exit being seen, so the coordinator was reset then. Expected only when a mission is loaded straight from another |
 
 If the mod is enabled but does nothing in-game: **fully restart the game** (code mods
 only chainload at process start), and check for the `loaded` line above. The panel

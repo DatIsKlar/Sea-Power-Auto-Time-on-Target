@@ -391,8 +391,8 @@ namespace AutoTOT
             private int _errorRepeats;
             private float _lastErrorLogReal;
 
-            // A mission clock that jumps back with no reset means a new mission may be running on the old
-            // state. Warned only.
+            // A mission clock that jumps back with no reset means a new mission is running on the old state (one
+            // loaded without the view model going absent long enough), so the reset runs then.
             private const float ClockBackwardsToleranceSeconds = 1f;
             private float _lastSimNow = -1f;
 
@@ -436,13 +436,23 @@ namespace AutoTOT
                 _wasInMission = inMission;
 
                 if (!inMission) return;
+                // The master switch is read at startup only; with it off nothing is collected or scheduled, so
+                // the per-frame launch scan and the stages behind it have nothing to do.
+                if (!Coordinator.Enabled) return;
 
                 float simNow = GameClock.SimNow();
                 if (_lastSimNow >= 0f && simNow < _lastSimNow - ClockBackwardsToleranceSeconds)
+                {
+                    // Every held order and anchor refers to the previous mission's units and clock, so carrying
+                    // them over would fire on stale state; the reset the exit debounce missed runs here.
                     Log.LogWarning(
                         $"[AutoTOT] mission clock went back from {_lastSimNow:0.0}s to {simNow:0.0}s " +
-                        $"with no mission reset in between. A new mission may be running on the " +
-                        $"previous one's state; please send this log.");
+                        $"with no mission reset in between, so a new mission is running: resetting the " +
+                        $"coordinator now. Please send this log if it happened mid-mission.");
+                    ResetSafely("coordinator", Coordinator.Reset);
+                    _lastErrorMsg = null;
+                    _errorRepeats = 0;
+                }
                 _lastSimNow = simNow;
 
                 try

@@ -40,8 +40,6 @@ namespace AutoTOT
             // Read now: a later solve overwrites the tier, and a cache hit runs no tier at all.
             bool estCached = FlightTime.WasLastCallCacheHit;
             ModelStats.Tier estTier = ModelStats.LastTier;
-            
-            if (est <= FlightTime.MinValidSeconds) return a.ImpactAtSim;
 
             float lastLaunch = a.LaunchTimes[k - 1];
             bool allAway = k >= n;
@@ -59,6 +57,9 @@ namespace AutoTOT
             // The last round's launch state is a measurement only once it is away; a round still to come has none.
             float snapshot = allAway ? LaunchStateEstimate(a, it, k - 1, est) : -1f;
             bool fromLaunchState = snapshot > FlightTime.MinValidSeconds;
+            // No usable estimate: keep the last prediction, which PublishImpact also writes to the anchor's own
+            // ImpactAtSim. Tested after the launch-state estimate, which needs no live one once every round is away.
+            if (!fromLaunchState && est <= FlightTime.MinValidSeconds) return a.ImpactAtSim;
             float flight = fromLaunchState ? snapshot : est;
             // An independent salvo releases half a ripple early and the prediction subtracts that half back.
             // ReleaseLead describes the ordered salvo; a stalled ripple passes what the launches actually
@@ -137,8 +138,21 @@ namespace AutoTOT
         {
             if (a.FiredAtSim >= 0f && (simNow - a.FiredAtSim) > NoLaunchMaxHoldSim) return false;
             if (LauncherFactsSource.IsPreparingToFire(it.Unit, it.AmmoId)) return true;
-            // Maintained every tick by SampleShooterProgress from the moment the anchor fires.
+            // Maintained by SampleShooterProgress from the moment the anchor fires until its first round leaves.
             return a.LastAscending;
+        }
+
+        /// <summary>
+        /// The mid-ripple form of <see cref="AnchorStillWorking"/>, for an anchor with rounds away: the launcher's
+        /// own intent, bounded by <see cref="NoLaunchMaxHoldSim"/> as before. The ascent verdict is left out because
+        /// it stops updating at the first launch, and it is usually true then (a boat or an aircraft inside its
+        /// post-unblock grace, or a ship whose round was credited before the first sample): read mid-ripple it kept
+        /// a stalled ripple open, and the shared impact sliding later with it, until the 300 s cap.
+        /// </summary>
+        private static bool AnchorStillCycling(Scheduled a, Intent it, float simNow)
+        {
+            if (a.FiredAtSim >= 0f && (simNow - a.FiredAtSim) > NoLaunchMaxHoldSim) return false;
+            return LauncherFactsSource.IsPreparingToFire(it.Unit, it.AmmoId);
         }
 
         /// <summary>
@@ -317,8 +331,8 @@ namespace AutoTOT
                 // before it, it maintains the no-launch stall verdict.
                 if (a.FiredAtSim >= 0f && (k == 0 || VerboseLog))
                 {
-                    // maintainVerdict is false once the ripple has started: AnchorStillWorking reads the
-                    // verdict in the mid-ripple stall arm, so sampling it then would change when a stall is declared.
+                    // maintainVerdict is false once the ripple has started: the verdict describes the climb or
+                    // descent to the launch envelope, and the mid-ripple stall arm (AnchorStillCycling) does not read it.
                     SampleShooterProgress(a, it, simNow, maintainVerdict: k == 0);
                     LogAnchorLiveness(a, it, simNow, k, n, interval);
                 }
@@ -348,12 +362,13 @@ namespace AutoTOT
                 PublishImpact(a, pred);
 
                 bool complete = k >= n;
-                // Stall = launches stopped, or nothing launched for a long while. Both arms consult
-                // AnchorStillWorking: a launcher mid cycle outranks the timer (a turning ship's gap between
-                // pairs can exceed StallMinWindowSim), and it self-limits at NoLaunchMaxHoldSim.
+                // Stall = launches stopped, or nothing launched for a long while. In both arms a launcher mid cycle
+                // outranks the timer (a turning ship's gap between pairs can exceed StallMinWindowSim), and both
+                // self-limit at NoLaunchMaxHoldSim. Only the no-launch arm also reads the ascent verdict; see
+                // AnchorStillCycling.
                 bool stalled = k > 0
                     ? (simNow - a.LaunchTimes[k - 1]) > Mathf.Max(StallCadenceMultiplier * interval, StallMinWindowSim)
-                      && !AnchorStillWorking(a, it, simNow)
+                      && !AnchorStillCycling(a, it, simNow)
                     : a.FiredAtSim >= 0f && (simNow - a.FiredAtSim) > NoLaunchStallSim
                       && !AnchorStillWorking(a, it, simNow);
                 if (complete || stalled)
@@ -495,10 +510,13 @@ namespace AutoTOT
 
         /// <summary>
         /// Hand the anchor's prediction to every held order and every strike target's board row, so rows of
-        /// other targets do not freeze.
+        /// other targets do not freeze. The anchor's own <see cref="Scheduled.ImpactAtSim"/> follows too: it is
+        /// what <see cref="PredictAnchorImpact"/> falls back on when no estimate is available, and left at the
+        /// commit value that fallback snapped every held order back to the commit-time impact.
         /// </summary>
         private static void PublishImpact(Scheduled a, float impactSim)
         {
+            a.ImpactAtSim = impactSim;
             if (a.Followers != null)
                 for (int j = 0; j < a.Followers.Count; j++)
                     a.Followers[j].ImpactAtSim = impactSim;

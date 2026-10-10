@@ -186,11 +186,12 @@ namespace AutoTOT
                 : NoLaunchStallSim;
 
             bool preparing = LauncherFactsSource.IsPreparingToFire(it.Unit, it.AmmoId);
-            bool working = AnchorStillWorking(a, it, simNow);
-            // Which arm answered, in AnchorStillWorking's order; the hard cap overrides both signals.
+            // The test the stall arm in force uses: the ascent verdict counts only before the first round.
+            bool working = k > 0 ? AnchorStillCycling(a, it, simNow) : AnchorStillWorking(a, it, simNow);
+            // Which signal answered, in that test's order; the hard cap overrides both.
             string why = sinceFired > NoLaunchMaxHoldSim ? "hard-cap"
                        : preparing ? "preparing"
-                       : a.LastAscending ? "progress-or-grace"
+                       : k == 0 && a.LastAscending ? "progress-or-grace"
                        : "none";
 
             Bootstrap.Log.LogInfo(

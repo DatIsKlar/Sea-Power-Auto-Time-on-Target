@@ -200,7 +200,7 @@ namespace AutoTOT
             // Release one round of the order's guidance reservation. Above the empty-list return on purpose:
             // a single-shot order has no expectation in normal play, so crediting below it would leave the
             // reservation to its timeout and the ship refusing its next order.
-            Coordinator.CreditReservedLaunch(platform, ammoFile);
+            Coordinator.CreditReservedLaunch(platform, ammoFile, tgt);
 
             // With the list empty, a round arriving after the last order retired must still be reported.
             // Everything below the guard keeps its original condition, since _shipLastLaunchSim feeds the deadlines.
@@ -485,6 +485,9 @@ namespace AutoTOT
                 if (!done && simNow < e.DeadlineSim) continue;
 
                 // Remember the order, keyed by ship and ammo, so a round arriving after its window can be reported.
+                // Bounded like the traces, since each entry holds a target reference; cleared before the insert,
+                // so the order just retired is the one entry that survives.
+                if (_retiredExpectations.Count >= RetiredExpectationCap) _retiredExpectations.Clear();
                 _retiredExpectations[new ShipAmmoKey(e.Unit, e.AmmoFile)] =
                     new RetiredExpectation { Sim = simNow, Launched = e.Launched,
                                              Requested = e.Requested, Target = e.Target,
@@ -492,8 +495,6 @@ namespace AutoTOT
                 _launchExpectations.RemoveAt(i);
                 // Traces carry over to the next order on a launcher, but are kept only while some order is open.
                 if (_launchExpectations.Count == 0) _launcherTraces.Clear();
-                // Bounded like the traces: each entry holds a target reference.
-                if (_retiredExpectations.Count > RetiredExpectationCap) _retiredExpectations.Clear();
                 if (e.Launched >= e.Requested)
                 {
                     if (Coordinator.VerboseLog)

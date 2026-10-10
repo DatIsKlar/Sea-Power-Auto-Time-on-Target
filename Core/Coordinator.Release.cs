@@ -78,13 +78,23 @@ namespace AutoTOT
             return flightNow;
         }
 
+        // Release faults already logged this mission, keyed on type and message.
+        private static readonly HashSet<string> _releaseFaultsLogged = new HashSet<string>();
+
+        /// <summary>Most frames of sim time one tick's release lookahead may cover; see ReleaseDueLaunches.</summary>
+        private const float LookaheadMaxFrames = 2f;
+
         private static void ReleaseDueLaunches(float simNow)
         {
             if (_scheduled.Count == 0) { _lastReleaseSimNow = simNow; return; }
 
             // Half-a-step lookahead: the missile launches a fraction of a sim step after this decision.
-            // Measured in sim time, so a paused game adds none.
+            // Measured in sim time, so a paused game adds none. Capped at a couple of frames' worth: after a gap
+            // with no tick (a menu that drops the view model while the sim runs on), the whole gap would become
+            // lookahead and release every due follower early by half of it.
             float simStep = (_lastReleaseSimNow >= 0f) ? Mathf.Max(0f, simNow - _lastReleaseSimNow) : 0f;
+            float frameSim = Time.unscaledDeltaTime * Mathf.Max(GameTime.TimeCompression, 1f);
+            if (frameSim > 0f) simStep = Mathf.Min(simStep, LookaheadMaxFrames * frameSim);
             float lookahead = LookaheadFraction * simStep;
             _lastReleaseSimNow = simNow;
             _flightEstimatesThisFrame = 0;
@@ -93,120 +103,143 @@ namespace AutoTOT
             {
                 Scheduled s = _scheduled[i];
                 Intent it = s.Item;
-
-                if (it.Unit == null || it.Unit.IsDestroyed || it.Target == null || it.Target.IsDestroyed)
+                // Each order on its own guard: one that throws on every tick must not hold every order after it.
+                try
                 {
-                    bool shooterGone = it.Unit == null || it.Unit.IsDestroyed;
-                    string reason = shooterGone ? "shooter destroyed" : "target destroyed";
-                    _scheduled.RemoveAt(i);
-                    // Every anchor removal goes through RetireAnchor, released or not.
-                    if (s.IsAnchor) RetireAnchor(s, simNow, reason);
-                    NoteScheduleExit(s, simNow, reason);   // after the retire, see its summary
-                    // It never fires, so no fired row will prune its target from the board; drop it now.
-                    DropImpactDataIfUnscheduled(it.Target);
-                    LogDroppedItem(s);
-                    continue;
-                }
-
-                float timeLeft = s.ImpactAtSim - simNow;
-
-                // GroupDelay does not depend on the flight estimate, and the proximity gate below needs it.
-                if (s.GroupDelayCached < 0f)
-                {
-                    CoordinatorProfiler.Begin(CoordinatorProfiler.Stage.GroupDelay);
-                    s.GroupDelayCached = GroupDelay(it, it.ReleaseLead);
-                    CoordinatorProfiler.End(CoordinatorProfiler.Stage.GroupDelay);
-                }
-                float groupDelay = s.GroupDelayCached;
-                CoordinatorProfiler.Count(CoordinatorProfiler.Counter.GroupDelayCalls);
-
-                // A follower never fires before its anchor has put a round up: the anchor is the longest
-                // enroute, so going first can only be early. Bounded by RippleDone (completion or
-                // NoLaunchMaxHoldSim). A pooled follower on the anchor's own launch clock holds even before
-                // the anchor fires, so the anchor's round is the clock's first; see PoolSharedLaunchClock.
-                bool onAnchorClock = it.Pooled && s.Anchor?.Item != null && s.Anchor.Item.Pooled &&
-                                     it.PoolClock == s.Anchor.Item.PoolClock && it.Unit == s.Anchor.Item.Unit;
-                // An order that fires when ready (MarkUnholdableOrders) gains nothing by waiting for the anchor.
-                if (!s.IsAnchor && !it.FireImmediately && s.Anchor != null && (s.Anchor.Fired || onAnchorClock) &&
-                    !s.Anchor.RippleDone && s.Anchor.LaunchTimes.Count == 0)
-                {
-                    // Reported once if the anchor has left _scheduled, since nothing can then release this follower.
-                    DiagnoseOrphanedFollower(s, simNow);
-                    if (VerboseLog && !s.LoggedAnchorWait)
+                    if (it.Unit == null || it.Unit.IsDestroyed || it.Target == null || it.Target.IsDestroyed)
                     {
-                        s.LoggedAnchorWait = true;
-                        Bootstrap.Log.LogInfo(
-                            $"[AutoTOT] holding {it.AmmoId} from {UnitNaming.SafeName(it.Unit)}: " +
-                            $"anchor {s.Anchor.Item?.AmmoId} from {UnitNaming.SafeName(s.Anchor.Item?.Unit)} " +
-                            $"has launched nothing yet.");
-                    }
-                    continue;
-                }
-
-                RefreshEnvelopeLead(s, it, simNow);
-
-                float releaseGate = it.ReleaseLead + it.StartupLead + groupDelay + lookahead;
-                float flightNow = ResolveFlightEstimate(s, it, simNow, timeLeft, releaseGate);
-
-                // Release when time left <= flight + ripple lead + startup lead + group-drag delay
-                // (EnrouteSeconds), or at once for an order whose arrival does not follow its release.
-                if (it.FireImmediately || timeLeft <= EnrouteSeconds(it, flightNow, groupDelay) + lookahead)
-                {
-                    if (s.IsAnchor)
-                    {
-                        // The anchor stays in _scheduled after firing, so UpdateAnchorTracking can observe its ripple.
-                        if (s.Fired) continue;
-                        s.Fired = true;
-                        s.FiredAtSim = simNow;
-                    }
-                    else
-                    {
-                        // Marked before removal so the anchor's follower list knows which orders are away. No
-                        // timing reads it.
-                        s.Fired = true;
+                        bool shooterGone = it.Unit == null || it.Unit.IsDestroyed;
+                        string reason = shooterGone ? "shooter destroyed" : "target destroyed";
                         _scheduled.RemoveAt(i);
+                        // Every anchor removal goes through RetireAnchor, released or not.
+                        if (s.IsAnchor) RetireAnchor(s, simNow, reason);
+                        NoteScheduleExit(s, simNow, reason);   // after the retire, see its summary
+                        // It never fires, so no fired row will prune its target from the board; drop it now.
+                        DropImpactDataIfUnscheduled(it.Target);
+                        LogDroppedItem(s);
+                        continue;
                     }
-                    // Guardrail for invariant 1 in ResolveFlightEstimate: a large overshoot means the batch
-                    // collapsed onto one tick. Logged once per item, ungated.
-                    float overshoot = flightNow - timeLeft;
-                    if (overshoot > SlackWarnSeconds)
-                        Bootstrap.Log.LogWarning(
-                            $"[AutoTOT] {it.AmmoId} from {UnitNaming.SafeName(it.Unit)} released {overshoot:0.0}s " +
-                            $"past-due (est flight {flightNow:0.0}s > time-to-impact {timeLeft:0.0}s): " +
-                            $"launch stagger lost; commit/release flight estimates likely diverged.");
-                    if (VerboseLog)
+
+                    // A fired anchor stays only so UpdateAnchorTracking can watch its ripple; refreshing its flight
+                    // estimate here would only spend the per-frame solve budget the held orders need.
+                    if (s.IsAnchor && s.Fired) continue;
+
+                    float timeLeft = s.ImpactAtSim - simNow;
+
+                    // GroupDelay does not depend on the flight estimate, and the proximity gate below needs it.
+                    if (s.GroupDelayCached < 0f)
                     {
-                        AmmunitionParameters ap = it.Unit.getAmmunitionByName(it.AmmoId)?._ap;
-                        // Verbose-only, but it runs the model, so it is timed like any other sim.
-                        CoordinatorProfiler.Begin(CoordinatorProfiler.Stage.FlightEstimate);
-                        float kinematicEst = (ap != null) ? FlightTime.Kinematic(it.Unit, ap, it.Target) : -1f;
-                        CoordinatorProfiler.End(CoordinatorProfiler.Stage.FlightEstimate);
-                        CoordinatorProfiler.CountEstimate(FlightTime.WasLastCallCacheHit);
-                        string src = (kinematicEst > FlightTime.MinValidSeconds) ? "kinematic" : "straight-line fallback";
-                        Bootstrap.Log.LogInfo(
-                            $"[AutoTOT] launch {it.AmmoId} from {UnitNaming.SafeName(it.Unit)}" +
-                            $"{(s.IsAnchor ? " (anchor)" : "")}: " +
-                            $"est flight {flightNow:0.0}s ({src}), " +
-                            $"releaseLead {it.ReleaseLead:0.0}s, startupLead {it.StartupLead:0.0}s, " +
-                            $"groupDelay {groupDelay:0.0}s, " +
-                            $"impactAt {s.ImpactAtSim:0.0}, now {simNow:0.0}, " +
-                            $"simStep {simStep:0.0}s, overshoot {overshoot:0.0}s" +
-                            SubmarineFacts.Describe(it.Unit, it.AmmoId));
+                        CoordinatorProfiler.Begin(CoordinatorProfiler.Stage.GroupDelay);
+                        s.GroupDelayCached = GroupDelay(it, it.ReleaseLead);
+                        CoordinatorProfiler.End(CoordinatorProfiler.Stage.GroupDelay);
                     }
-                    // Age of the estimate this release used: 0 = this frame, -1 = never estimated.
-                    CoordinatorProfiler.ReleaseStaleness(s.LastFlightEst >= 0f ? simNow - s.LastFlightEstSim : -1f);
-                    if (!Fire(it, s.IsAnchor ? s : null, s.ImpactAtSim))
+                    float groupDelay = s.GroupDelayCached;
+                    CoordinatorProfiler.Count(CoordinatorProfiler.Counter.GroupDelayCalls);
+
+                    // A follower never fires before its anchor has put a round up: the anchor is the longest
+                    // enroute, so going first can only be early. Bounded by RippleDone (completion or
+                    // NoLaunchMaxHoldSim). A pooled follower on the anchor's own launch clock holds even before
+                    // the anchor fires, so the anchor's round is the clock's first; see PoolSharedLaunchClock.
+                    bool onAnchorClock = it.Pooled && s.Anchor?.Item != null && s.Anchor.Item.Pooled &&
+                                         it.PoolClock == s.Anchor.Item.PoolClock && it.Unit == s.Anchor.Item.Unit;
+                    // An order that fires when ready (MarkUnholdableOrders) gains nothing by waiting for the anchor.
+                    if (!s.IsAnchor && !it.FireImmediately && s.Anchor != null && (s.Anchor.Fired || onAnchorClock) &&
+                        !s.Anchor.RippleDone && s.Anchor.LaunchTimes.Count == 0)
                     {
-                        // The game refused it. An anchor retires through the one exit so its followers are
-                        // handed over; a follower is simply gone, as the warning says.
+                        // Reported once if the anchor has left _scheduled, since nothing can then release this follower.
+                        DiagnoseOrphanedFollower(s, simNow);
+                        if (VerboseLog && !s.LoggedAnchorWait)
+                        {
+                            s.LoggedAnchorWait = true;
+                            Bootstrap.Log.LogInfo(
+                                $"[AutoTOT] holding {it.AmmoId} from {UnitNaming.SafeName(it.Unit)}: " +
+                                $"anchor {s.Anchor.Item?.AmmoId} from {UnitNaming.SafeName(s.Anchor.Item?.Unit)} " +
+                                $"has launched nothing yet.");
+                        }
+                        continue;
+                    }
+
+                    RefreshEnvelopeLead(s, it, simNow);
+
+                    float releaseGate = it.ReleaseLead + it.StartupLead + groupDelay + lookahead;
+                    float flightNow = ResolveFlightEstimate(s, it, simNow, timeLeft, releaseGate);
+
+                    // Release when time left <= flight + ripple lead + startup lead + group-drag delay
+                    // (EnrouteSeconds), or at once for an order whose arrival does not follow its release.
+                    if (it.FireImmediately || timeLeft <= EnrouteSeconds(it, flightNow, groupDelay) + lookahead)
+                    {
                         if (s.IsAnchor)
                         {
-                            int at = _scheduled.IndexOf(s);
-                            if (at >= 0) _scheduled.RemoveAt(at);
-                            RetireAnchor(s, simNow, "the game refused the order");
-                            NoteScheduleExit(s, simNow, "the game refused the order");
+                            // The anchor stays in _scheduled after firing, so UpdateAnchorTracking can observe its ripple.
+                            if (s.Fired) continue;
+                            s.Fired = true;
+                            s.FiredAtSim = simNow;
+                        }
+                        else
+                        {
+                            // Marked before removal so the anchor's follower list knows which orders are away. No
+                            // timing reads it.
+                            s.Fired = true;
+                            _scheduled.RemoveAt(i);
+                        }
+                        // Guardrail for invariant 1 in ResolveFlightEstimate: a large overshoot means the batch
+                        // collapsed onto one tick. Against the whole enroute time the gate used, leads included, so
+                        // an order with a long startup lead (a submarine's ascent) is not under-reported. Logged
+                        // once per item, ungated.
+                        float enroute = EnrouteSeconds(it, flightNow, groupDelay);
+                        float overshoot = enroute - timeLeft;
+                        if (overshoot > SlackWarnSeconds && !it.FireImmediately)
+                            Bootstrap.Log.LogWarning(
+                                $"[AutoTOT] {it.AmmoId} from {UnitNaming.SafeName(it.Unit)} released {overshoot:0.0}s " +
+                                $"past-due (enroute {enroute:0.0}s, est flight {flightNow:0.0}s, > time-to-impact " +
+                                $"{timeLeft:0.0}s): launch stagger lost; commit/release flight estimates likely diverged.");
+                        if (VerboseLog)
+                        {
+                            AmmunitionParameters ap = it.Unit.getAmmunitionByName(it.AmmoId)?._ap;
+                            // Verbose-only, but it runs the model, so it is timed like any other sim.
+                            CoordinatorProfiler.Begin(CoordinatorProfiler.Stage.FlightEstimate);
+                            float kinematicEst = (ap != null) ? FlightTime.Kinematic(it.Unit, ap, it.Target) : -1f;
+                            CoordinatorProfiler.End(CoordinatorProfiler.Stage.FlightEstimate);
+                            CoordinatorProfiler.CountEstimate(FlightTime.WasLastCallCacheHit);
+                            string src = (kinematicEst > FlightTime.MinValidSeconds) ? "kinematic" : "straight-line fallback";
+                            Bootstrap.Log.LogInfo(
+                                $"[AutoTOT] launch {it.AmmoId} from {UnitNaming.SafeName(it.Unit)}" +
+                                $"{(s.IsAnchor ? " (anchor)" : "")}: " +
+                                $"est flight {flightNow:0.0}s ({src}), " +
+                                $"releaseLead {it.ReleaseLead:0.0}s, startupLead {it.StartupLead:0.0}s, " +
+                                $"groupDelay {groupDelay:0.0}s, " +
+                                $"impactAt {s.ImpactAtSim:0.0}, now {simNow:0.0}, " +
+                                $"simStep {simStep:0.0}s, overshoot {overshoot:0.0}s" +
+                                SubmarineFacts.Describe(it.Unit, it.AmmoId));
+                        }
+                        // Age of the estimate this release used: 0 = this frame, -1 = never estimated.
+                        CoordinatorProfiler.ReleaseStaleness(s.LastFlightEst >= 0f ? simNow - s.LastFlightEstSim : -1f);
+                        if (!Fire(it, s.IsAnchor ? s : null, s.ImpactAtSim))
+                        {
+                            // The game refused it. An anchor retires through the one exit so its followers are
+                            // handed over; a follower is simply gone, as the warning says.
+                            if (s.IsAnchor)
+                            {
+                                int at = _scheduled.IndexOf(s);
+                                if (at >= 0) _scheduled.RemoveAt(at);
+                                RetireAnchor(s, simNow, "the game refused the order");
+                                NoteScheduleExit(s, simNow, "the game refused the order");
+                            }
+                            else
+                            {
+                                // It never fired, so no fired row will prune its target's board row either.
+                                DropImpactDataIfUnscheduled(it.Target);
+                            }
                         }
                     }
+                }
+                catch (Exception e)
+                {
+                    if (_releaseFaultsLogged.Count < MaxStageFaultMessages &&
+                        _releaseFaultsLogged.Add(e.GetType().Name + "|" + e.Message))
+                        Bootstrap.Log.LogError(
+                            $"[AutoTOT] release of {it?.AmmoId} from {UnitNaming.SafeName(it?.Unit)} faulted; " +
+                            $"the other held orders still release. Reported once per message:\n{e}");
                 }
             }
         }
@@ -222,7 +255,7 @@ namespace AutoTOT
             if (simNow - s.LastEnvelopeSim < EnvelopeRefreshSim) return;
             s.LastEnvelopeSim = simNow;
 
-            float fresh = LaunchEnvelope.TimeToReady(it.Unit, it.AmmoId);
+            float fresh = FiniteOrZero(LaunchEnvelope.TimeToReady(it.Unit, it.AmmoId));
             float delta = fresh - it.EnvelopeLead;
             if (Mathf.Approximately(delta, 0f)) return;
 

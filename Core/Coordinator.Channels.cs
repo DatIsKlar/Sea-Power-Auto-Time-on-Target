@@ -23,6 +23,7 @@ namespace AutoTOT
         private sealed class Reservation
         {
             public ObjectBase Unit;
+            public ObjectBase Target;  // the order's target: only a round aimed at it is this order's
             public string AmmoId;      // the order's ammunition id, for the sensor-sharing lookup
             // AmmunitionParameters._ammunitionFileName, what a launched round reports; can differ from the ammo id.
             public string AmmoFile;
@@ -59,6 +60,7 @@ namespace AutoTOT
             _reservations.Add(new Reservation
             {
                 Unit = it.Unit,
+                Target = it.Target,
                 AmmoId = it.AmmoId,
                 AmmoFile = string.IsNullOrEmpty(ammoFile) ? it.AmmoId : ammoFile,
                 Shots = shots,
@@ -70,15 +72,19 @@ namespace AutoTOT
 
         /// <summary>
         /// Credit one observed launch against the oldest matching reservation. Called from the launch
-        /// tracker's first sighting, which sees every round.
+        /// tracker's first sighting, which sees every round. Matched on the target as well as the ship and
+        /// ammunition: a round of the same weapon fired at something else (FIRE NOW, an order given with
+        /// collection off, the AI) is not this order's, and crediting it would free a channel the order's own
+        /// round still needs.
         /// </summary>
-        internal static void CreditReservedLaunch(ObjectBase unit, string ammoFile)
+        internal static void CreditReservedLaunch(ObjectBase unit, string ammoFile, ObjectBase target)
         {
             if (unit == null || ammoFile == null) return;
             for (int i = 0; i < _reservations.Count; i++)
             {
                 Reservation r = _reservations[i];
                 if (r.Unit != unit || r.Launched >= r.Shots) continue;
+                if (r.Target != null && target != null && r.Target != target) continue;
                 if (!string.Equals(r.AmmoFile, ammoFile, StringComparison.Ordinal) &&
                     !string.Equals(r.AmmoId, ammoFile, StringComparison.Ordinal)) continue;
                 r.Launched++;
