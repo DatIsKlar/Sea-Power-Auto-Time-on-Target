@@ -55,7 +55,12 @@ fi
 # when they differ, so a release does not ship a model the repository cannot rebuild. Read the same way the build
 # resolves it, rather than guessed, so the note compares the checkout that was actually compiled.
 MODEL_DIR="$(sed -n 's/^[[:space:]]*<FlightModelDir>\(.*\)<\/FlightModelDir>.*/\1/p' AutoTOT.local.props 2>/dev/null | head -n1 || true)"
+# $(MSBuildThisFileDirectory) is the props file's own folder, which is where this script runs.
+MODEL_DIR="${MODEL_DIR//\$(MSBuildThisFileDirectory)/}"
 MODEL_DIR="${MODEL_DIR:-FlightModel}"
+case "$MODEL_DIR" in
+    *'$('*) echo ">> NOTE: FlightModelDir uses an MSBuild property ($MODEL_DIR), so the model pin was not compared." ;;
+esac
 # The git reads are allowed to fail (a ZIP download, git not installed): under set -e a failed pipeline would
 # end the script here, after the build and before the install, without a word.
 PIN="$(git ls-tree HEAD FlightModel 2>/dev/null | awk '{print $3}' || true)"
