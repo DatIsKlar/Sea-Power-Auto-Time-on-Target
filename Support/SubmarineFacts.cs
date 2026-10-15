@@ -77,9 +77,8 @@ namespace AutoTOT
             {
                 DepthU = s.DepthFt / GameUnits.UnityToFeet,
                 TargetDepthU = targetFt / GameUnits.UnityToFeet,
-                // The launch is unblocked at the weapon's ceiling, 25.4 ft before the commanded depth, so the
-                // delay runs to there; TargetDepthU still shapes the ascent.
-                GateDepthU = s.MaxLaunchDepthFt / GameUnits.UnityToFeet,
+                // No GateDepthU: the launcher stops blocking at the ceiling, but in flight the first round leaves
+                // when the boat reaches the commanded depth, 25.4 ft shallower, so the delay runs to there.
                 PitchDeg = s.PitchDeg,
                 BallastRateU = sub._currentDepthChangeUsingTanks,
                 SpeedKn = s.SpeedKn,
