@@ -19,7 +19,7 @@ namespace AutoTOT
         public const string Guid = "com.seapowermods.autotot";
 
         // Keep in sync with AutoTOT.csproj <Version>; AnchorChainEntry's [ACPlugin] references this.
-        internal const string Version = "0.2.1";
+        internal const string Version = "0.2.2";
 
         internal static ManualLogSource Log = BepInEx.Logging.Logger.CreateLogSource("AutoTOT");
         public static Harmony Harmony { get; private set; }
