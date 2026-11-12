@@ -170,6 +170,12 @@ namespace AutoTOT
 
                 case State.Arm:
                 {
+                    if (_plan.NodeSweep)
+                    {
+                        RunNodeSweep();
+                        Enter(State.Finish);
+                        return;
+                    }
                     if (_shots.Count == 0 && !ResolveShots()) return;   // ResolveShots failed the run
                     List<string> waiting = UncontactedTargets();
                     if (waiting.Count > 0)

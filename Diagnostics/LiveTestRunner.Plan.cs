@@ -46,6 +46,9 @@ namespace AutoTOT
             public bool FireNow;
             // Accept shots inside minimum launch range, to create the order the game turns to unmask and never fires.
             public bool AllowInsideMinRange;
+            // Compare the ported altitude-node function with the game's at Arm, then finish without firing
+            // (LiveTestRunner.NodeSweep.cs). Shot lines are not needed.
+            public bool NodeSweep;
             // Delay firing until the geometry is right. See LiveTestRunner.HoldSatisfied.
             public float HoldUntilSec;
             public string HoldShooter;
@@ -103,7 +106,7 @@ namespace AutoTOT
             if (plans.Count > 1)
                 _notes.Add($"{plans.Count - 1} further section(s) ignored; one section per launch");
             if (string.IsNullOrEmpty(_plan.Mission)) { Finish("REJECTED plan has no Mission="); return true; }
-            if (_plan.Shots.Count == 0) { Finish("REJECTED plan has no Shot lines"); return true; }
+            if (_plan.Shots.Count == 0 && !_plan.NodeSweep) { Finish("REJECTED plan has no Shot lines"); return true; }
             return true;
         }
 
@@ -138,6 +141,7 @@ namespace AutoTOT
                 else if (key.Equals("PanelFire", StringComparison.OrdinalIgnoreCase)) cur.PanelFire = ParseB(val, false);
                 else if (key.Equals("FireNow", StringComparison.OrdinalIgnoreCase)) cur.FireNow = ParseB(val, false);
                 else if (key.Equals("AllowInsideMinRange", StringComparison.OrdinalIgnoreCase)) cur.AllowInsideMinRange = ParseB(val, false);
+                else if (key.Equals("NodeSweep", StringComparison.OrdinalIgnoreCase)) cur.NodeSweep = ParseB(val, false);
                 else if (key.Equals("HoldUntilSec", StringComparison.OrdinalIgnoreCase)) cur.HoldUntilSec = ParseF(val, 0f);
                 else if (key.Equals("HoldUntilRangeNm", StringComparison.OrdinalIgnoreCase))
                 {

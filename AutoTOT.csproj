@@ -80,6 +80,9 @@
   <ItemGroup Condition="'$(LiveTest)' != 'true'">
     <Compile Remove="Diagnostics/LiveTestRunner*.cs" />
   </ItemGroup>
+  <ItemGroup Condition="'$(LiveTest)' == 'true'">
+    <Compile Include="$(FlightModelDir)/Diagnostics/AltitudeNodeCheck.cs" Link="FlightModel/Diagnostics/AltitudeNodeCheck.cs" />
+  </ItemGroup>
 
   <ItemGroup>
     <!-- BCL (Mono) -->
