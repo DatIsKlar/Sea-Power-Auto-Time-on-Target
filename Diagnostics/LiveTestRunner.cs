@@ -112,14 +112,15 @@ namespace AutoTOT
 
                 case State.Load:
                 {
-                    // Same two statements as ScenarioMenuViewModel's Play command.
+                    // Same two statements as ScenarioMenuViewModel's Play command. Game 0.9.0 made
+                    // currentMissionFilePath read-only; OpenMission sets it and mounts the mission's file layer.
                     string path = Singleton<FileManager>.Instance.GetFile("missions/" + _plan.Mission);
                     if (string.IsNullOrEmpty(path) || !File.Exists(path))
                     {
                         Fail($"REJECTED mission not found: missions/{_plan.Mission}");
                         return;
                     }
-                    Globals.currentMissionFilePath = path;
+                    Globals.OpenMission(path);
                     MissionManager.DoLoad();
                     Enter(State.Start);
                     return;
